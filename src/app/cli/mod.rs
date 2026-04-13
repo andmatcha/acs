@@ -1,0 +1,37 @@
+mod commands;
+pub(crate) mod common;
+mod config;
+mod control;
+mod help;
+mod logger;
+mod monitor;
+mod signal;
+
+use std::env;
+use std::process::ExitCode;
+
+pub fn run() -> ExitCode {
+    let mut args = env::args();
+    let bin_name = args.next().unwrap_or_else(|| String::from("acs"));
+
+    match args.next().as_deref() {
+        Some("--help") | Some("-h") => {
+            help::print_help(&bin_name);
+            ExitCode::SUCCESS
+        }
+        Some("help") => help::print_help_topic(&bin_name, args.next().as_deref()),
+        Some("controllers") => commands::list_controllers(),
+        Some("ports") => commands::list_ports(),
+        Some("control") => control::run(args.collect(), &bin_name),
+        Some("monitor") => monitor::run(args.collect(), &bin_name),
+        Some(command) => {
+            eprintln!("unknown subcommand: {command}");
+            help::print_usage(&bin_name);
+            ExitCode::from(2)
+        }
+        None => {
+            help::print_help(&bin_name);
+            ExitCode::SUCCESS
+        }
+    }
+}

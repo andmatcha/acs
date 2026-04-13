@@ -1,0 +1,18 @@
+{
+  "log_dir": "logs",
+  "control": {
+    "port": "",
+    "baud": 115200,
+    "controller": "0",
+    "format": "arm9",
+    "monitor_ports": [
+      ""
+    ]
+  },
+  "monitor": {
+    "ports": [
+      ""
+    ],
+    "baud": 115200
+  }
+}
