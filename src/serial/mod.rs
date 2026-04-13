@@ -107,34 +107,17 @@ impl fmt::Display for SerialError {
     }
 }
 
-pub struct SerialConnection {
+pub struct SerialWriter {
     port_name: String,
     writer: Box<dyn SerialPort>,
-    _monitor: SerialMonitor,
 }
 
-impl SerialConnection {
-    pub fn open(config: &SerialConfig, callback: SerialCallback) -> Result<Self, SerialError> {
+impl SerialWriter {
+    pub fn open(config: &SerialConfig) -> Result<Self, SerialError> {
         let writer = open_port(config)?;
-        writer
-            .clear(ClearBuffer::Input)
-            .map_err(|source| SerialError::Configure {
-                port: config.port.clone(),
-                source,
-            })?;
-
-        let reader = writer
-            .try_clone()
-            .map_err(|source| SerialError::Configure {
-                port: config.port.clone(),
-                source,
-            })?;
-        let monitor = SerialMonitor::from_reader(reader, config.port.clone(), callback)?;
-
         Ok(Self {
             port_name: config.port.clone(),
             writer,
-            _monitor: monitor,
         })
     }
 
@@ -145,10 +128,6 @@ impl SerialConnection {
                 port: self.port_name.clone(),
                 source,
             })
-    }
-
-    pub fn port_name(&self) -> &str {
-        &self.port_name
     }
 }
 

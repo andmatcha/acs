@@ -1,20 +1,19 @@
 use super::common::{dedup_strings, default_baud_rate, default_log_dir, next_value, parse_u32_arg};
 use super::config;
 use super::help::{is_help_flag, print_control_help};
-use super::serial_dashboard::{SerialDashboard, make_serial_callback, open_serial_monitors};
 use super::signal;
 use crate::input::compact;
 use crate::input::ds4_hid::Ds4Controller;
 use crate::output::OutputFormat;
 use crate::port_display::{PortDisplayConfig, parse_display_assignment};
-use crate::serial::{self, SerialConfig, SerialConnection, SerialEvent};
+use crate::serial;
+use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntime, SessionSpec};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-const CONTROLLER_POLL_MILLIS: i32 = 20;
-const RENDER_INTERVAL: Duration = Duration::from_millis(100);
+const LOOP_INTERVAL: Duration = Duration::from_millis(20);
+const CONTROLLER_POLL_MILLIS: i32 = 0;
 
 #[derive(Debug, Default)]
 struct ControlCliOptions {
@@ -75,30 +74,43 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to open controller: {error}"))?;
     let controller_info = controller.info().clone();
     let mut driver = settings.format.create_driver();
-    let mut dashboard =
-        SerialDashboard::new("acs control", settings.raw, "control", &settings.log_dir)?;
-    let log_path = dashboard.log_path().to_path_buf();
-    let log_path_display = log_path.display().to_string();
-
-    let (event_tx, event_rx) = mpsc::channel::<SerialEvent>();
-    let callback = make_serial_callback(event_tx);
-    let serial_config = SerialConfig {
-        port: settings.port.clone(),
-        baud_rate: settings.baud,
-    };
-    let mut output = SerialConnection::open(&serial_config, callback.clone())
-        .map_err(|error| error.to_string())?;
-
     let extra_monitor_ports = settings
         .monitor_ports
         .into_iter()
-        .filter(|port| port != output.port_name())
+        .filter(|port| port != &settings.port)
         .collect::<Vec<_>>();
-    let _extra_monitors = open_serial_monitors(&extra_monitor_ports, settings.baud, callback)?;
+    let mut inputs = vec![SessionInputSpec {
+        id: settings.port.clone(),
+        port: settings.port.clone(),
+        baud_rate: settings.baud,
+        display_mode: settings.display.resolve_input(&settings.port),
+    }];
+    inputs.extend(extra_monitor_ports.iter().map(|port| SessionInputSpec {
+        id: port.clone(),
+        port: port.clone(),
+        baud_rate: settings.baud,
+        display_mode: settings.display.resolve_input(port),
+    }));
+    let mut session = SessionRuntime::new(SessionSpec {
+        title: String::from("acs control"),
+        command_name: String::from("control"),
+        raw_input: settings.raw,
+        log_dir: settings.log_dir.clone(),
+        header_lines: Vec::new(),
+        inputs,
+        outputs: vec![SessionOutputSpec {
+            id: String::from("main"),
+            port: settings.port.clone(),
+            baud_rate: settings.baud,
+            format_name: driver.format_name().to_owned(),
+            display_mode: settings.display.resolve_output(&settings.port),
+        }],
+    })?;
+    let log_path = session.log_path().to_path_buf();
+    let log_path_display = log_path.display().to_string();
 
     signal::install_handler();
-
-    dashboard.set_header_lines(vec![
+    session.set_header_lines(vec![
         format!(
             "controller: {} ({})",
             controller_info
@@ -117,62 +129,22 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         format!("log: {log_path_display}"),
         String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
     ]);
-    dashboard.configure_output_port(
-        &settings.port,
-        settings.baud,
-        driver.format_name(),
-        settings.display.resolve_output(&settings.port),
-    );
-    dashboard.configure_input_port(
-        &settings.port,
-        settings.baud,
-        settings.display.resolve_input(&settings.port),
-    );
-    for port in &extra_monitor_ports {
-        dashboard.configure_input_port(port, settings.baud, settings.display.resolve_input(port));
-    }
-
-    dashboard.render(None)?;
-    let mut dirty = false;
-    let mut last_render = Instant::now();
-
-    loop {
-        dashboard.handle_dashboard_action()?;
-
-        if dashboard.drain_serial_events(&event_rx)? {
-            dirty = true;
-        }
-
-        if signal::is_stop_requested() {
-            break;
-        }
-
-        if let Some(report) = controller
-            .read_next_report(CONTROLLER_POLL_MILLIS)
-            .map_err(|error| format!("failed to read controller input: {error}"))?
-        {
-            if let Ok(compact_report) = compact::convert_input_report(&report) {
+    session.run_loop_with_tick(
+        LOOP_INTERVAL,
+        signal::is_stop_requested,
+        |_, _| Ok(()),
+        |session| {
+            if let Some(report) = controller
+                .read_next_report(CONTROLLER_POLL_MILLIS)
+                .map_err(|error| format!("failed to read controller input: {error}"))?
+                && let Ok(compact_report) = compact::convert_input_report(&report)
+            {
                 let bytes = driver.encode(&compact_report)?;
-                output
-                    .write_bytes(&bytes)
-                    .map_err(|error| error.to_string())?;
-                dashboard.record_output(output.port_name(), &bytes)?;
-                dirty = true;
+                session.write_output("main", &bytes)?;
             }
-        }
-
-        if !dashboard.is_paused() && dirty && last_render.elapsed() >= RENDER_INTERVAL {
-            dashboard.render(None)?;
-            dirty = false;
-            last_render = Instant::now();
-        } else if dirty {
-            continue;
-        }
-    }
-
-    let _ = dashboard.drain_serial_events(&event_rx)?;
-    let _ = dashboard.flush_pending_input_lines()?;
-    dashboard.render(Some("stopped"))?;
+            Ok(())
+        },
+    )?;
 
     Ok(log_path)
 }

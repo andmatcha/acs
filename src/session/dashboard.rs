@@ -1,13 +1,10 @@
-use super::logger::CommandLogger;
 use crate::port_display::PortDisplayMode;
-use crate::serial::{SerialCallback, SerialConfig, SerialEvent, SerialLineBuffer, SerialMonitor};
+use crate::serial::SerialLineBuffer;
+use crate::session::logger::CommandLogger;
 use crate::ui::text_dashboard::{TextDashboard, TextDashboardAction};
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
 
-pub(crate) struct SerialDashboard {
+pub(crate) struct SessionDashboard {
     dashboard: TextDashboard,
     logger: CommandLogger,
     line_buffer: SerialLineBuffer,
@@ -15,7 +12,7 @@ pub(crate) struct SerialDashboard {
     paused: bool,
 }
 
-impl SerialDashboard {
+impl SessionDashboard {
     pub(crate) fn new(
         title: impl Into<String>,
         raw_input: bool,
@@ -103,45 +100,36 @@ impl SerialDashboard {
             .map_err(|error| format!("failed to write log: {error}"))
     }
 
-    pub(crate) fn drain_serial_events(
-        &mut self,
-        event_rx: &Receiver<SerialEvent>,
-    ) -> Result<bool, String> {
-        let mut changed = false;
+    pub(crate) fn record_input(&mut self, port: &str, bytes: &[u8]) -> Result<bool, String> {
+        self.dashboard.record_input_bytes(port, bytes);
 
-        while let Ok(event) = event_rx.try_recv() {
-            if self.handle_event(event)? {
-                changed = true;
-            }
+        if self.raw_input {
+            self.dashboard.add_input(port, bytes);
+            self.logger
+                .log_input(port, bytes)
+                .map_err(|error| format!("failed to write log: {error}"))?;
+            return Ok(true);
+        }
+
+        let mut changed = false;
+        for line in self.line_buffer.push_chunk(port, bytes) {
+            self.dashboard.add_input(port, &line);
+            self.logger
+                .log_input(port, &line)
+                .map_err(|error| format!("failed to write log: {error}"))?;
+            changed = true;
         }
 
         Ok(changed)
     }
 
-    pub(crate) fn wait_for_serial_events(
-        &mut self,
-        event_rx: &Receiver<SerialEvent>,
-        wait_interval: Duration,
-    ) -> Result<bool, String> {
-        let mut changed = false;
-
-        match event_rx.recv_timeout(wait_interval) {
-            Ok(event) => {
-                if self.handle_event(event)? {
-                    changed = true;
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(String::from("serial monitor channel disconnected"));
-            }
-        }
-
-        if self.drain_serial_events(event_rx)? {
-            changed = true;
-        }
-
-        Ok(changed)
+    pub(crate) fn record_input_error(&mut self, port: &str, message: &str) -> Result<bool, String> {
+        self.dashboard
+            .set_input_status(port, format!("error: {message}"));
+        self.logger
+            .log_status(port, message)
+            .map_err(|error| format!("failed to write log: {error}"))?;
+        Ok(true)
     }
 
     pub(crate) fn flush_pending_input_lines(&mut self) -> Result<bool, String> {
@@ -166,67 +154,4 @@ impl SerialDashboard {
             .render(status)
             .map_err(|error| format!("failed to render dashboard: {error}"))
     }
-
-    fn handle_event(&mut self, event: SerialEvent) -> Result<bool, String> {
-        match event {
-            SerialEvent::Data { port, bytes } => self.handle_input_bytes(&port, &bytes),
-            SerialEvent::Error { port, message } => {
-                self.dashboard
-                    .set_input_status(&port, format!("error: {message}"));
-                self.logger
-                    .log_status(&port, &message)
-                    .map_err(|error| format!("failed to write log: {error}"))?;
-                Ok(true)
-            }
-        }
-    }
-
-    fn handle_input_bytes(&mut self, port: &str, bytes: &[u8]) -> Result<bool, String> {
-        self.dashboard.record_input_bytes(port, bytes);
-
-        if self.raw_input {
-            self.dashboard.add_input(port, bytes);
-            self.logger
-                .log_input(port, bytes)
-                .map_err(|error| format!("failed to write log: {error}"))?;
-            return Ok(true);
-        }
-
-        let mut changed = false;
-        for line in self.line_buffer.push_chunk(port, bytes) {
-            self.dashboard.add_input(port, &line);
-            self.logger
-                .log_input(port, &line)
-                .map_err(|error| format!("failed to write log: {error}"))?;
-            changed = true;
-        }
-
-        Ok(changed)
-    }
-}
-
-pub(crate) fn make_serial_callback(event_tx: mpsc::Sender<SerialEvent>) -> SerialCallback {
-    Arc::new(move |event| {
-        let _ = event_tx.send(event);
-    })
-}
-
-pub(crate) fn open_serial_monitors(
-    ports: &[String],
-    baud_rate: u32,
-    callback: SerialCallback,
-) -> Result<Vec<SerialMonitor>, String> {
-    ports
-        .iter()
-        .map(|port| {
-            SerialMonitor::open(
-                &SerialConfig {
-                    port: port.clone(),
-                    baud_rate,
-                },
-                Arc::clone(&callback),
-            )
-            .map_err(|error| error.to_string())
-        })
-        .collect()
 }

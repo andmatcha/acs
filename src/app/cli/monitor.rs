@@ -1,16 +1,14 @@
 use super::common::{dedup_strings, default_baud_rate, default_log_dir, next_value, parse_u32_arg};
 use super::config;
 use super::help::{is_help_flag, print_monitor_help};
-use super::serial_dashboard::{SerialDashboard, make_serial_callback, open_serial_monitors};
 use super::signal;
 use crate::port_display::{PortDisplayConfig, parse_display_assignment};
-use crate::serial::{self, SerialEvent};
+use crate::serial;
+use crate::session::runtime::{SessionInputSpec, SessionRuntime, SessionSpec};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-const RENDER_INTERVAL: Duration = Duration::from_millis(100);
 const WAIT_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Default)]
@@ -61,49 +59,37 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
     let file_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
     let settings = build_settings(cli_options, file_config)?;
-    let mut dashboard =
-        SerialDashboard::new("acs monitor", settings.raw, "monitor", &settings.log_dir)?;
-    let log_path = dashboard.log_path().to_path_buf();
+    let inputs = settings
+        .ports
+        .iter()
+        .map(|port| SessionInputSpec {
+            id: port.clone(),
+            port: port.clone(),
+            baud_rate: settings.baud,
+            display_mode: settings.display.resolve_input(port),
+        })
+        .collect::<Vec<_>>();
+    let mut session = SessionRuntime::new(SessionSpec {
+        title: String::from("acs monitor"),
+        command_name: String::from("monitor"),
+        raw_input: settings.raw,
+        log_dir: settings.log_dir.clone(),
+        header_lines: Vec::new(),
+        inputs,
+        outputs: Vec::new(),
+    })?;
+    let log_path = session.log_path().to_path_buf();
     let log_path_display = log_path.display().to_string();
 
-    let (event_tx, event_rx) = mpsc::channel::<SerialEvent>();
-    let callback = make_serial_callback(event_tx);
-    let _monitors = open_serial_monitors(&settings.ports, settings.baud, callback)?;
-
     signal::install_handler();
-
-    dashboard.set_header_lines(vec![
+    session.set_header_lines(vec![
         format!("ports: {}", settings.ports.join(", ")),
         format!("baud: {}", settings.baud),
         format!("input mode: {}", if settings.raw { "raw" } else { "line" }),
         format!("log: {log_path_display}"),
         String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
     ]);
-    for port in &settings.ports {
-        dashboard.configure_input_port(port, settings.baud, settings.display.resolve_input(port));
-    }
-
-    dashboard.render(None)?;
-    let mut dirty = false;
-    let mut last_render = Instant::now();
-
-    while !signal::is_stop_requested() {
-        dashboard.handle_dashboard_action()?;
-        if dashboard.wait_for_serial_events(&event_rx, WAIT_INTERVAL)? {
-            dirty = true;
-        }
-        if !dashboard.is_paused() && dirty && last_render.elapsed() >= RENDER_INTERVAL {
-            dashboard.render(None)?;
-            dirty = false;
-            last_render = Instant::now();
-        }
-    }
-
-    let _ = dashboard.drain_serial_events(&event_rx)?;
-    let _ = dashboard.flush_pending_input_lines()?;
-    dashboard.render(Some("stopped"))?;
-
-    Ok(log_path)
+    session.run_loop(WAIT_INTERVAL, signal::is_stop_requested, |_, _| Ok(()))
 }
 
 fn build_settings(

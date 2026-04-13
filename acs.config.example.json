@@ -27,5 +27,76 @@
         "default": "hex+ascii"
       }
     }
+  },
+  "route": {
+    "baud": 115200,
+    "raw": true,
+    "display": {
+      "default": "hex+utf8",
+      "input": {
+        "default": "hex+utf8"
+      },
+      "output": {
+        "default": "hex"
+      }
+    },
+    "inputs": [
+      {
+        "id": "in_a",
+        "port": "/dev/ttyUSB0"
+      },
+      {
+        "id": "in_b",
+        "port": "/dev/ttyUSB1"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "out_main",
+        "port": "/dev/ttyUSB2"
+      },
+      {
+        "id": "out_sub",
+        "port": "/dev/ttyUSB3"
+      }
+    ],
+    "pipelines": [
+      {
+        "id": "merge_passthrough",
+        "inputs": ["in_a", "in_b"],
+        "filter": {
+          "module": "allow_all"
+        },
+        "transform": {
+          "module": "identity"
+        },
+        "classify": {
+          "module": "by_source"
+        },
+        "route": {
+          "module": "broadcast",
+          "outputs": ["out_main"]
+        }
+      },
+      {
+        "id": "paired_to_both",
+        "inputs": ["in_a", "in_b"],
+        "filter": {
+          "module": "allow_all"
+        },
+        "transform": {
+          "module": "join_latest",
+          "separator_hex": "2c"
+        },
+        "classify": {
+          "module": "tag_static",
+          "tags": ["paired"]
+        },
+        "route": {
+          "module": "broadcast",
+          "outputs": ["out_main", "out_sub"]
+        }
+      }
+    ]
   }
 }

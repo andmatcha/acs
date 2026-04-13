@@ -1,3 +1,7 @@
+use crate::pipeline::{
+    ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineSpec, RouterModuleConfig,
+    TagRoutingRule, TransformChainConfig, TransformModuleConfig,
+};
 use crate::port_display::{PortDisplayConfig, PortDisplayMode};
 use std::collections::BTreeMap;
 use std::fs;
@@ -10,6 +14,7 @@ pub(crate) struct AppConfig {
     pub log_dir: Option<PathBuf>,
     pub control: ControlConfig,
     pub monitor: MonitorConfig,
+    pub route: RouteConfig,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -31,6 +36,31 @@ pub(crate) struct MonitorConfig {
     pub raw: Option<bool>,
     pub display: PortDisplayConfig,
     pub log_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct RouteConfig {
+    pub inputs: Vec<RouteInputConfig>,
+    pub outputs: Vec<RouteOutputConfig>,
+    pub pipelines: PipelineSpec,
+    pub baud: Option<u32>,
+    pub raw: Option<bool>,
+    pub display: PortDisplayConfig,
+    pub log_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RouteInputConfig {
+    pub id: String,
+    pub port: String,
+    pub baud: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RouteOutputConfig {
+    pub id: String,
+    pub port: String,
+    pub baud: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,11 +86,13 @@ pub(crate) fn load_config(path: &Path) -> Result<AppConfig, String> {
     let top_level_log_dir = optional_path(root, "log_dir", base_dir)?;
     let control = parse_control_config(root.get("control"), base_dir)?;
     let monitor = parse_monitor_config(root.get("monitor"), base_dir)?;
+    let route = parse_route_config(root.get("route"), base_dir)?;
 
     Ok(AppConfig {
         log_dir: top_level_log_dir,
         control,
         monitor,
+        route,
     })
 }
 
@@ -117,6 +149,23 @@ fn parse_monitor_config(
 
     Ok(MonitorConfig {
         ports,
+        baud: optional_u32(object, "baud")?,
+        raw: optional_bool(object, "raw")?,
+        display: optional_display_config(object, "display")?,
+        log_dir: optional_path(object, "log_dir", base_dir)?,
+    })
+}
+
+fn parse_route_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<RouteConfig, String> {
+    let Some(value) = value else {
+        return Ok(RouteConfig::default());
+    };
+    let object = expect_object(value, "route")?;
+
+    Ok(RouteConfig {
+        inputs: optional_route_inputs(object, "inputs")?,
+        outputs: optional_route_outputs(object, "outputs")?,
+        pipelines: optional_pipeline_spec(object, "pipelines")?,
         baud: optional_u32(object, "baud")?,
         raw: optional_bool(object, "raw")?,
         display: optional_display_config(object, "display")?,
@@ -225,8 +274,248 @@ fn expect_object<'a>(value: &'a JsonValue, name: &str) -> Result<&'a JsonObject,
     }
 }
 
+fn expect_array<'a>(value: &'a JsonValue, name: &str) -> Result<&'a Vec<JsonValue>, String> {
+    match value {
+        JsonValue::Array(values) => Ok(values),
+        _ => Err(format!("`{name}` must be a JSON array")),
+    }
+}
+
+fn required_string(object: &JsonObject, key: &str) -> Result<String, String> {
+    optional_string(object, key)?
+        .ok_or_else(|| format!("`{key}` is required"))
+}
+
 fn type_error(key: &str, expected: &str) -> String {
     format!("`{key}` must be {expected}")
+}
+
+fn optional_route_inputs(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Vec<RouteInputConfig>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(Vec::new());
+    };
+    let values = expect_array(value, key)?;
+    let mut inputs = Vec::new();
+
+    for value in values {
+        let entry = expect_object(value, key)?;
+        inputs.push(RouteInputConfig {
+            id: required_string(entry, "id")?,
+            port: required_string(entry, "port")?,
+            baud: optional_u32(entry, "baud")?,
+        });
+    }
+
+    Ok(inputs)
+}
+
+fn optional_route_outputs(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Vec<RouteOutputConfig>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(Vec::new());
+    };
+    let values = expect_array(value, key)?;
+    let mut outputs = Vec::new();
+
+    for value in values {
+        let entry = expect_object(value, key)?;
+        outputs.push(RouteOutputConfig {
+            id: required_string(entry, "id")?,
+            port: required_string(entry, "port")?,
+            baud: optional_u32(entry, "baud")?,
+        });
+    }
+
+    Ok(outputs)
+}
+
+fn optional_pipeline_spec(object: &JsonObject, key: &str) -> Result<PipelineSpec, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(PipelineSpec::default());
+    };
+    let values = expect_array(value, key)?;
+    let mut pipelines = Vec::new();
+
+    for value in values {
+        let pipeline = expect_object(value, key)?;
+        pipelines.push(PipelineDefinition {
+            id: required_string(pipeline, "id")?,
+            inputs: optional_string_list(pipeline, "inputs")?,
+            filter: parse_filter_module(pipeline.get("filter"))?,
+            transform: parse_transform_chain(pipeline.get("transform"))?,
+            classify: parse_classify_module(pipeline.get("classify"))?,
+            router: parse_router_module(pipeline.get("route"))?,
+        });
+    }
+
+    Ok(PipelineSpec { pipelines })
+}
+
+fn parse_filter_module(value: Option<&JsonValue>) -> Result<FilterModuleConfig, String> {
+    let Some(value) = value else {
+        return Ok(FilterModuleConfig::AllowAll);
+    };
+    let object = expect_object(value, "filter")?;
+    let module = required_string(object, "module")?;
+
+    match module.as_str() {
+        "allow_all" => Ok(FilterModuleConfig::AllowAll),
+        "drop_empty" => Ok(FilterModuleConfig::DropEmpty),
+        "match_source" => Ok(FilterModuleConfig::MatchSource {
+            input_ids: optional_string_list(object, "input_ids")?,
+        }),
+        "match_prefix" => Ok(FilterModuleConfig::MatchPrefix {
+            prefix: parse_hex_bytes(&required_string(object, "prefix_hex")?)?,
+        }),
+        other => Err(format!("unsupported filter module: {other}")),
+    }
+}
+
+fn parse_transform_chain(value: Option<&JsonValue>) -> Result<TransformChainConfig, String> {
+    let Some(value) = value else {
+        return Ok(TransformChainConfig::default());
+    };
+    let object = expect_object(value, "transform")?;
+
+    if let Some(modules_value) = object.get("modules") {
+        let modules = expect_array(modules_value, "transform.modules")?
+            .iter()
+            .map(parse_transform_module)
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(TransformChainConfig { modules });
+    }
+
+    Ok(TransformChainConfig {
+        modules: vec![parse_transform_module(value)?],
+    })
+}
+
+fn parse_transform_module(value: &JsonValue) -> Result<TransformModuleConfig, String> {
+    let object = expect_object(value, "transform module")?;
+    let module = required_string(object, "module")?;
+
+    match module.as_str() {
+        "identity" => Ok(TransformModuleConfig::Identity),
+        "ds4_to_compact" => Ok(TransformModuleConfig::Ds4ToCompact),
+        "arm9_encode" => Ok(TransformModuleConfig::Arm9Encode),
+        "join_latest" => Ok(TransformModuleConfig::JoinLatest {
+            separator: parse_hex_bytes(&optional_string(object, "separator_hex")?.unwrap_or_default())?,
+            require_all: optional_bool(object, "require_all")?.unwrap_or(true),
+        }),
+        other => Err(format!("unsupported transform module: {other}")),
+    }
+}
+
+fn parse_classify_module(value: Option<&JsonValue>) -> Result<ClassifyModuleConfig, String> {
+    let Some(value) = value else {
+        return Ok(ClassifyModuleConfig::None);
+    };
+    let object = expect_object(value, "classify")?;
+    let module = required_string(object, "module")?;
+
+    match module.as_str() {
+        "none" => Ok(ClassifyModuleConfig::None),
+        "by_source" => Ok(ClassifyModuleConfig::BySource),
+        "tag_static" => Ok(ClassifyModuleConfig::TagStatic {
+            tags: optional_string_list(object, "tags")?,
+        }),
+        "match_prefix" => Ok(ClassifyModuleConfig::MatchPrefix {
+            prefix: parse_hex_bytes(&required_string(object, "prefix_hex")?)?,
+            tag: required_string(object, "tag")?,
+        }),
+        other => Err(format!("unsupported classify module: {other}")),
+    }
+}
+
+fn parse_router_module(value: Option<&JsonValue>) -> Result<RouterModuleConfig, String> {
+    let Some(value) = value else {
+        return Err(String::from("`route` module is required for every pipeline"));
+    };
+    let object = expect_object(value, "route")?;
+    let module = required_string(object, "module")?;
+
+    match module.as_str() {
+        "broadcast" => Ok(RouterModuleConfig::Broadcast {
+            outputs: optional_string_list(object, "outputs")?,
+        }),
+        "round_robin" | "alternate" => Ok(RouterModuleConfig::RoundRobin {
+            outputs: optional_string_list(object, "outputs")?,
+        }),
+        "source_map" => Ok(RouterModuleConfig::SourceMap {
+            routes: parse_output_map(object.get("routes"), "route.routes")?,
+            default_outputs: optional_string_list(object, "default_outputs")?,
+        }),
+        "tag_based" => Ok(RouterModuleConfig::TagBased {
+            routes: parse_tag_routes(object.get("routes"), "route.routes")?,
+            default_outputs: optional_string_list(object, "default_outputs")?,
+        }),
+        other => Err(format!("unsupported route module: {other}")),
+    }
+}
+
+fn parse_output_map(
+    value: Option<&JsonValue>,
+    name: &str,
+) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
+    };
+    let object = expect_object(value, name)?;
+    let mut routes = BTreeMap::new();
+
+    for (key, value) in object {
+        routes.insert(key.clone(), json_string_list(value, name)?);
+    }
+
+    Ok(routes)
+}
+
+fn parse_tag_routes(value: Option<&JsonValue>, name: &str) -> Result<Vec<TagRoutingRule>, String> {
+    let map = parse_output_map(value, name)?;
+    Ok(map
+        .into_iter()
+        .map(|(tag, outputs)| TagRoutingRule { tag, outputs })
+        .collect())
+}
+
+fn json_string_list(value: &JsonValue, key: &str) -> Result<Vec<String>, String> {
+    match value {
+        JsonValue::String(text) => Ok(vec![text.clone()]),
+        JsonValue::Array(values) => values
+            .iter()
+            .map(|value| match value {
+                JsonValue::String(text) => Ok(text.clone()),
+                _ => Err(type_error(key, "array of strings")),
+            })
+            .collect(),
+        _ => Err(type_error(key, "string or array of strings")),
+    }
+}
+
+fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
+    let compact = value
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    if compact.is_empty() {
+        return Ok(Vec::new());
+    }
+    if compact.len() % 2 != 0 {
+        return Err(format!("invalid hex byte string: {value}"));
+    }
+
+    let mut bytes = Vec::new();
+    for index in (0..compact.len()).step_by(2) {
+        let byte = u8::from_str_radix(&compact[index..index + 2], 16)
+            .map_err(|_| format!("invalid hex byte string: {value}"))?;
+        bytes.push(byte);
+    }
+    Ok(bytes)
 }
 
 struct JsonParser<'a> {
@@ -502,6 +791,30 @@ mod tests {
                 "/dev/ttyUSB1": "hex+ascii"
               }
             }
+          },
+          "route": {
+            "baud": 115200,
+            "raw": true,
+            "inputs": [
+              { "id": "in_a", "port": "/dev/ttyUSB0" },
+              { "id": "in_b", "port": "/dev/ttyUSB1" }
+            ],
+            "outputs": [
+              { "id": "out_main", "port": "/dev/ttyUSB2" }
+            ],
+            "pipelines": [
+              {
+                "id": "default",
+                "inputs": ["in_a", "in_b"],
+                "filter": { "module": "allow_all" },
+                "transform": { "module": "identity" },
+                "classify": { "module": "by_source" },
+                "route": {
+                  "module": "broadcast",
+                  "outputs": ["out_main"]
+                }
+              }
+            ]
           }
         }
         "#;

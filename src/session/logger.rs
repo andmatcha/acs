@@ -1,4 +1,4 @@
-use super::common::{
+use crate::common::{
     format_bytes_ascii, format_bytes_hex, now_display_timestamp, now_file_timestamp,
 };
 use std::fs::{self, OpenOptions};

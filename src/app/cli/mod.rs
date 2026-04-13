@@ -3,9 +3,8 @@ pub(crate) mod common;
 mod config;
 mod control;
 mod help;
-mod logger;
 mod monitor;
-mod serial_dashboard;
+mod route;
 mod signal;
 
 use std::env;
@@ -25,6 +24,7 @@ pub fn run() -> ExitCode {
         Some("ports") => commands::list_ports(),
         Some("control") => control::run(args.collect(), &bin_name),
         Some("monitor") => monitor::run(args.collect(), &bin_name),
+        Some("route") => route::run(args.collect(), &bin_name),
         Some(command) => {
             eprintln!("unknown subcommand: {command}");
             help::print_usage(&bin_name);

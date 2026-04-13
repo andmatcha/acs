@@ -6,11 +6,14 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!("Commands:");
     eprintln!("  control    Read DUALSHOCK 4 input and send serial output");
     eprintln!("  monitor    Monitor one or more serial ports");
+    eprintln!("  route      Route bytes between serial inputs and outputs");
     eprintln!("  controllers List connected DUALSHOCK 4 controllers");
     eprintln!("  ports      List available serial ports");
     eprintln!("  help       Show help for a command");
     eprintln!();
-    eprintln!("Use `{bin_name} help control` or `{bin_name} help monitor` for details.");
+    eprintln!(
+        "Use `{bin_name} help control`, `{bin_name} help monitor`, or `{bin_name} help route` for details."
+    );
 }
 
 pub(crate) fn print_help(bin_name: &str) {
@@ -19,6 +22,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("Commands:");
     println!("  control    Read DUALSHOCK 4 input and send serial output");
     println!("  monitor    Monitor one or more serial ports");
+    println!("  route      Route bytes between serial inputs and outputs");
     println!("  controllers List connected DUALSHOCK 4 controllers");
     println!("  ports      List available serial ports");
     println!("  help       Show help for a command");
@@ -27,6 +31,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format arm9");
     println!("  {bin_name} control --monitor /dev/ttyUSB1");
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
+    println!("  {bin_name} route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
     println!("  {bin_name} control --config acs.config.json");
     println!();
     println!(
@@ -46,6 +51,10 @@ pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode 
         }
         Some("monitor") => {
             print_monitor_help(bin_name);
+            ExitCode::SUCCESS
+        }
+        Some("route") => {
+            print_route_help(bin_name);
             ExitCode::SUCCESS
         }
         Some("controllers") => {
@@ -132,6 +141,33 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     );
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
     println!("  {bin_name} monitor --config acs.config.json");
+}
+
+pub(crate) fn print_route_help(bin_name: &str) {
+    println!("Usage: {bin_name} route [OPTIONS]");
+    println!();
+    println!("Routes bytes from one or more serial inputs to one or more serial outputs.");
+    println!("Routing behavior is primarily configured through `acs.config.json`.");
+    println!();
+    println!("Options:");
+    println!("  -i, --input-port <ID=PORT>  Route input port (repeatable)");
+    println!("  -o, --output-port <ID=PORT> Route output port (repeatable)");
+    println!("  -b, --baud <BAUD_RATE>      Default baud rate for CLI-specified ports");
+    println!("      --raw                   Show incoming serial data as raw chunks");
+    println!("      --display <TARGET=MODE> Display mode for a port");
+    println!("                              TARGET: PORT, input:PORT, output:PORT,");
+    println!("                                      default, input:default, output:default");
+    println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!(
+        "      --config <PATH>         Read options from a JSON file (default: ./acs.config.json if present)"
+    );
+    println!("      --log-dir <DIR>         Log directory (default: ./logs)");
+    println!("  -h, --help                  Show this help");
+    println!();
+    println!("Examples:");
+    println!("  {bin_name} route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
+    println!("  {bin_name} route -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2");
+    println!("  {bin_name} route --config acs.config.json");
 }
 
 pub(crate) fn is_help_flag(arg: &str) -> bool {

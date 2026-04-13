@@ -1,9 +1,5 @@
 use std::path::PathBuf;
 
-pub(crate) use crate::common::{
-    format_bytes_ascii, format_bytes_hex, now_display_timestamp, now_file_timestamp,
-};
-
 pub(crate) fn default_baud_rate() -> u32 {
     115_200
 }

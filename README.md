@@ -6,6 +6,7 @@
 
 - `acs control`: DUALSHOCK 4 の入力を読み取り、整形したシリアル出力を送信する
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
+- `acs route`: 1 つ以上のシリアル入力を、設定に応じて 1 つ以上のシリアル出力へ振り分ける
 - `--raw`: 改行でまとめず、生の受信チャンクをそのまま表示する
 - `--display`: ポートごとに、受信・送信それぞれの表示形式を `hex` / `ascii` / `utf8` / `hex+ascii` / `hex+utf8` から選べる
 - ログを `./logs` 以下へ自動保存する
@@ -21,12 +22,14 @@ acs control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex
 acs monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1
 acs monitor --raw --port /dev/ttyUSB0
 acs monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8
+acs route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+acs route --config acs.config.json
 acs control --config acs.config.json
 ```
 
 接続されている DUALSHOCK 4 コントローラーが 1 台だけ、または使用可能なシリアルポートが 1 つだけの場合は、`acs` が自動で選択します。
 
-`control` と `monitor` は、デフォルトでは受信データを改行単位でまとめて表示します。`--raw` を付けると、改行を待たずに受信チャンクをそのまま表示・記録します。
+`control`、`monitor`、`route` は、デフォルトでは受信データを改行単位でまとめて表示します。`--raw` を付けると、改行を待たずに受信チャンクをそのまま表示・記録します。
 
 表示形式は `--display <TARGET>=<MODE>` で指定できます。`TARGET` には `PORT`、`input:PORT`、`output:PORT`、`default`、`input:default`、`output:default` が使えます。方向を付けない `PORT` や `default` は送受信の両方に適用されます。`MODE` には `hex`、`ascii`、`utf8`、`hex+ascii`、`hex+utf8` が使えます。指定しない場合は `hex+utf8` です。
 
@@ -37,6 +40,7 @@ acs control --config acs.config.json
 ```bash
 cargo run -- control --port /dev/ttyUSB0 --baud 115200 --format arm9
 cargo run -- monitor --port /dev/ttyUSB0
+cargo run -- route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ```
 
 一度ビルドしてから実行したい場合は、次のようにします。
@@ -44,6 +48,7 @@ cargo run -- monitor --port /dev/ttyUSB0
 ```bash
 cargo build
 ./target/debug/acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
+./target/debug/acs route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ```
 
 配布用や普段使い用に最適化ビルドしたい場合は `--release` を使います。
@@ -51,6 +56,7 @@ cargo build
 ```bash
 cargo build --release
 ./target/release/acs monitor --port /dev/ttyUSB0
+./target/release/acs route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ```
 
 ## グローバルで使えるようにする方法
@@ -66,6 +72,7 @@ cargo install --path .
 ```bash
 acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
 acs monitor --port /dev/ttyUSB0
+acs route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ```
 
 `PATH` が通っていない場合は、シェル設定ファイルに追加してください。`zsh` なら例えば以下です。
@@ -120,6 +127,31 @@ cargo install --path . --force
         "/dev/ttyUSB0": "utf8"
       }
     }
+  },
+  "route": {
+    "baud": 115200,
+    "raw": true,
+    "inputs": [
+      { "id": "in_a", "port": "/dev/ttyUSB0" },
+      { "id": "in_b", "port": "/dev/ttyUSB1" }
+    ],
+    "outputs": [
+      { "id": "out_main", "port": "/dev/ttyUSB2" },
+      { "id": "out_sub", "port": "/dev/ttyUSB3" }
+    ],
+    "pipelines": [
+      {
+        "id": "merge_passthrough",
+        "inputs": ["in_a", "in_b"],
+        "filter": { "module": "allow_all" },
+        "transform": { "module": "identity" },
+        "classify": { "module": "by_source" },
+        "route": {
+          "module": "broadcast",
+          "outputs": ["out_main"]
+        }
+      }
+    ]
   }
 }
 ```
