@@ -98,7 +98,7 @@ packet 境界の扱いは経路で異なります。
 - telemetry UDP4102:
   - raw `JF` 16 byte をそのまま mirror する場合がある
 - WebSocket:
-  - binary ではなく、bridge が展開した JSON (`type="jf"`) を流す
+  - binary ではなく、bridge が展開した JSON (`type="packetjfv1"`) を流す
 
 ## Wire Format
 
@@ -303,7 +303,7 @@ chunk 境界頼みや 16 byte 固定読みだけでは壊れた stream から復
 
 ```json
 {
-  "type": "jf",
+  "type": "packetjfv1",
   "proto": 1,
   "seq": 1,
   "flags": 0,

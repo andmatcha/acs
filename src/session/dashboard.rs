@@ -68,6 +68,14 @@ impl SessionDashboard {
         self.dashboard.set_output_display_mode(port, display_mode);
     }
 
+    pub(crate) fn set_output_status(&mut self, port: &str, status: impl Into<String>) {
+        self.dashboard.set_output_status(port, status);
+    }
+
+    pub(crate) fn set_input_status(&mut self, port: &str, status: impl Into<String>) {
+        self.dashboard.set_input_status(port, status);
+    }
+
     pub(crate) fn handle_dashboard_action(&mut self) -> Result<(), String> {
         let action = self
             .dashboard
@@ -126,8 +134,7 @@ impl SessionDashboard {
     }
 
     pub(crate) fn record_input_error(&mut self, port: &str, message: &str) -> Result<bool, String> {
-        self.dashboard
-            .set_input_status(port, format!("error: {message}"));
+        self.set_input_status(port, format!("error: {message}"));
         self.logger
             .log_status(port, message)
             .map_err(|error| format!("failed to write log: {error}"))?;

@@ -1,0 +1,12 @@
+{
+  "send": {
+    "port": "",
+    "baud": 115200,
+    "format": "packetjfv1",
+    "display": {
+      "output": {
+        "default": "hex"
+      }
+    }
+  }
+}

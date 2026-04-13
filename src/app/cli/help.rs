@@ -35,7 +35,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format jf");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
     println!("  {bin_name} control --config config");
     println!();
     println!(
@@ -133,17 +133,23 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("Options:");
     println!("  -p, --port <PORT>          Serial output port");
     println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
-    println!("  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, jf)");
+    println!(
+        "  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, packetjfv1)"
+    );
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, output:PORT, default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!(
+        "      --config <PATH>        Read options from a JSON file or directory (default: ./config/, fallback: ./acs.config.json)"
+    );
     println!("      --log-dir <DIR>        Log directory (default: ./logs)");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format jf");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
     println!("  {bin_name} send --display output:default=hex");
+    println!("  {bin_name} send --config config");
 }
 
 pub(crate) fn print_monitor_help(bin_name: &str) {

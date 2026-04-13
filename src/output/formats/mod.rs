@@ -1,13 +1,13 @@
 mod crc;
-mod jf;
 mod packetacv6;
+mod packetjfv1;
 
 use crate::input::compact::CompactReport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     PacketAcV6,
-    Jf,
+    PacketJfV1,
 }
 
 struct OutputFormatDefinition {
@@ -25,10 +25,10 @@ const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[
         encode_dummy_payload: packetacv6::encode_dummy_payload,
     },
     OutputFormatDefinition {
-        format: OutputFormat::Jf,
-        names: &["jf"],
+        format: OutputFormat::PacketJfV1,
+        names: &["packetjfv1"],
         create_driver: None,
-        encode_dummy_payload: jf::encode_dummy_payload,
+        encode_dummy_payload: packetjfv1::encode_dummy_payload,
     },
 ];
 
@@ -113,25 +113,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_supports_jf() {
+    fn parse_supports_packetjfv1() {
         assert_eq!(
-            OutputFormat::parse("jf").expect("should parse"),
-            OutputFormat::Jf
+            OutputFormat::parse("packetjfv1").expect("should parse"),
+            OutputFormat::PacketJfV1
         );
         assert_eq!(
-            OutputFormat::parse("JF").expect("should parse"),
-            OutputFormat::Jf
+            OutputFormat::parse("PacketJFv1").expect("should parse"),
+            OutputFormat::PacketJfV1
         );
     }
 
     #[test]
-    fn jf_rejects_compact_encoding_driver() {
-        match OutputFormat::Jf.create_driver() {
-            Ok(_) => panic!("jf should not create a compact encoding driver"),
+    fn parse_rejects_jf() {
+        assert_eq!(
+            OutputFormat::parse("jf").expect_err("should reject"),
+            "unsupported output format: jf"
+        );
+    }
+
+    #[test]
+    fn packetjfv1_rejects_compact_encoding_driver() {
+        match OutputFormat::PacketJfV1.create_driver() {
+            Ok(_) => panic!("packetjfv1 should not create a compact encoding driver"),
             Err(error) => {
                 assert_eq!(
                     error,
-                    "output format `jf` does not support compact encoding"
+                    "output format `packetjfv1` does not support compact encoding"
                 );
             }
         }

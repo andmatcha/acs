@@ -7,11 +7,12 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const READ_BUFFER_SIZE: usize = 256;
 const READ_TIMEOUT_MILLIS: u64 = 50;
 const WRITE_TIMEOUT_MILLIS: u64 = 1_000;
+const WRITE_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 
 pub type SerialCallback = Arc<dyn Fn(SerialEvent) + Send + Sync>;
 
@@ -130,12 +131,37 @@ impl SerialWriter {
     }
 
     pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), SerialError> {
-        self.writer
-            .write_all(bytes)
-            .map_err(|source| SerialError::Write {
-                port: self.port_name.clone(),
-                source,
-            })
+        let deadline = Instant::now() + Duration::from_millis(WRITE_TIMEOUT_MILLIS);
+        let mut written = 0usize;
+
+        while written < bytes.len() {
+            match self.writer.write(&bytes[written..]) {
+                Ok(0) => {
+                    if Instant::now() >= deadline {
+                        return Err(SerialError::Write {
+                            port: self.port_name.clone(),
+                            source: io::Error::new(
+                                io::ErrorKind::WriteZero,
+                                "serial port accepted 0 bytes",
+                            ),
+                        });
+                    }
+                    thread::sleep(WRITE_RETRY_INTERVAL);
+                }
+                Ok(count) => written += count,
+                Err(error) if is_transient_write_error(&error) && Instant::now() < deadline => {
+                    thread::sleep(WRITE_RETRY_INTERVAL);
+                }
+                Err(source) => {
+                    return Err(SerialError::Write {
+                        port: self.port_name.clone(),
+                        source,
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -398,6 +424,13 @@ fn is_transient_read_error(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
+}
+
+fn is_transient_write_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
     )
 }
 

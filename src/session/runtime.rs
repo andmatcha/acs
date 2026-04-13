@@ -42,6 +42,7 @@ pub(crate) struct SessionSpec {
 
 struct SessionOutputHandle {
     port: String,
+    status_label: String,
     connection: SerialWriter,
 }
 
@@ -51,6 +52,7 @@ pub(crate) struct SessionRuntime {
     _input_monitors: Vec<SerialMonitor>,
     outputs: BTreeMap<String, SessionOutputHandle>,
     dirty: bool,
+    inputs_disconnected: bool,
     last_render: Instant,
 }
 
@@ -80,6 +82,7 @@ impl SessionRuntime {
         let mut shared_input_indexes = vec![false; spec.inputs.len()];
         let mut outputs = BTreeMap::new();
         for output in &spec.outputs {
+            let status_label = format!("baud={} format={}", output.baud_rate, output.format_name);
             let connection = if let Some((input_index, input)) =
                 spec.inputs.iter().enumerate().find(|(index, input)| {
                     !shared_input_indexes[*index]
@@ -108,6 +111,7 @@ impl SessionRuntime {
                 output.id.clone(),
                 SessionOutputHandle {
                     port: output.port.clone(),
+                    status_label,
                     connection,
                 },
             );
@@ -135,6 +139,7 @@ impl SessionRuntime {
             _input_monitors: input_monitors,
             outputs,
             dirty: false,
+            inputs_disconnected: false,
             last_render: Instant::now(),
         })
     }
@@ -147,6 +152,11 @@ impl SessionRuntime {
         self.dashboard.set_header_lines(lines);
     }
 
+    pub(crate) fn set_status(&mut self, status: impl Into<String>) {
+        self.dashboard.set_status(status);
+        self.dirty = true;
+    }
+
     pub(crate) fn write_output(&mut self, output_id: &str, bytes: &[u8]) -> Result<(), String> {
         let output = self
             .outputs
@@ -157,6 +167,34 @@ impl SessionRuntime {
             .write_bytes(bytes)
             .map_err(|error| error.to_string())?;
         self.dashboard.record_output(&output.port, bytes)?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub(crate) fn set_output_error(
+        &mut self,
+        output_id: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        let output = self
+            .outputs
+            .get(output_id)
+            .ok_or_else(|| format!("unknown output id: {output_id}"))?;
+        self.dashboard.set_output_status(
+            &output.port,
+            format!("{} error={message}", output.status_label),
+        );
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub(crate) fn clear_output_error(&mut self, output_id: &str) -> Result<(), String> {
+        let output = self
+            .outputs
+            .get(output_id)
+            .ok_or_else(|| format!("unknown output id: {output_id}"))?;
+        self.dashboard
+            .set_output_status(&output.port, output.status_label.clone());
         self.dirty = true;
         Ok(())
     }
@@ -222,7 +260,13 @@ impl SessionRuntime {
             Ok(event) => self.handle_event(event, on_frame)?,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(String::from("session input channel disconnected"));
+                if !self.inputs_disconnected {
+                    self.dashboard.set_status("input disconnected");
+                    self.dirty = true;
+                    self.inputs_disconnected = true;
+                }
+                thread::sleep(wait_interval);
+                return Ok(());
             }
         }
 

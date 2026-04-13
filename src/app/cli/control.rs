@@ -141,10 +141,15 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         signal::is_stop_requested,
         |_, _| Ok(()),
         |session| {
-            if let Some(report) = controller
-                .read_next_report(CONTROLLER_POLL_MILLIS)
-                .map_err(|error| format!("failed to read controller input: {error}"))?
-            {
+            let maybe_report = match controller.read_next_report(CONTROLLER_POLL_MILLIS) {
+                Ok(report) => report,
+                Err(error) => {
+                    session.set_status(format!("controller read error: {error}"));
+                    return Ok(());
+                }
+            };
+
+            if let Some(report) = maybe_report {
                 let frame = IngressFrame {
                     input_id: controller_input_id.clone(),
                     bytes: report,
@@ -153,11 +158,20 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
                 match engine.process_frame(&frame) {
                     Ok(dispatches) => {
                         for dispatch in dispatches {
-                            session.write_output(&dispatch.output_id, &dispatch.bytes)?;
+                            match session.write_output(&dispatch.output_id, &dispatch.bytes) {
+                                Ok(()) => {
+                                    session.clear_output_error(&dispatch.output_id)?;
+                                }
+                                Err(error) => {
+                                    session.set_output_error(&dispatch.output_id, &error)?;
+                                }
+                            }
                         }
                     }
                     Err(error) if error.starts_with("failed to convert DS4 report:") => {}
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        session.set_status(format!("pipeline error: {error}"));
+                    }
                 }
             }
             Ok(())

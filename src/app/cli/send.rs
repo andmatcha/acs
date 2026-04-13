@@ -1,4 +1,5 @@
 use super::common::{default_baud_rate, default_log_dir, next_value, parse_u32_arg};
+use super::config;
 use super::help::{is_help_flag, print_send_help};
 use super::signal;
 use crate::output::OutputFormat;
@@ -17,6 +18,7 @@ struct SendCliOptions {
     baud: Option<u32>,
     format: Option<String>,
     display: PortDisplayConfig,
+    config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
 }
 
@@ -71,7 +73,8 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String> {
-    let settings = build_settings(cli_options)?;
+    let file_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
+    let settings = build_settings(cli_options, file_config)?;
     let payload = settings.format.encode_dummy_payload()?;
     let output_id = String::from("main");
     let mut session = SessionRuntime::new(SessionSpec {
@@ -91,6 +94,8 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     let log_path = session.log_path().to_path_buf();
     let log_path_display = log_path.display().to_string();
     let mut sent_count = 0u64;
+    let mut last_error = None;
+    let mut output_has_error = false;
 
     session.set_header_lines(vec![
         format!(
@@ -109,11 +114,30 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
         signal::is_stop_requested,
         |_, _| Ok(()),
         |session| {
-            session.write_output(&output_id, &payload)?;
-            sent_count = sent_count.saturating_add(1);
+            match session.write_output(&output_id, &payload) {
+                Ok(()) => {
+                    if output_has_error {
+                        session.clear_output_error(&output_id)?;
+                        output_has_error = false;
+                    }
+                    sent_count = sent_count.saturating_add(1);
+                    last_error = None;
+                }
+                Err(error) => {
+                    session.set_output_error(&output_id, &error)?;
+                    output_has_error = true;
+                    last_error = Some(error);
+                }
+            }
             Ok(())
         },
     )?;
+
+    if sent_count == 0 {
+        if let Some(error) = last_error {
+            return Err(error);
+        }
+    }
 
     Ok(SendRunResult {
         settings,
@@ -123,21 +147,34 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     })
 }
 
-fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
-    let port =
-        serial::resolve_port(cli_options.port.as_deref()).map_err(|error| error.to_string())?;
-    let baud = cli_options.baud.unwrap_or_else(default_baud_rate);
+fn build_settings(
+    cli_options: SendCliOptions,
+    file_config: config::AppConfig,
+) -> Result<SendSettings, String> {
+    let raw_port = resolve_requested_port(cli_options.port, file_config.send.port);
+    let port = serial::resolve_port(raw_port.as_deref()).map_err(|error| error.to_string())?;
+    let baud = cli_options
+        .baud
+        .or(file_config.send.baud)
+        .unwrap_or_else(default_baud_rate);
     let format_name = cli_options
         .format
+        .or(file_config.send.format)
         .unwrap_or_else(|| String::from("packetacv6"));
     let format = OutputFormat::parse(&format_name)?;
-    let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
+    let mut display = file_config.send.display;
+    display.merge_from(cli_options.display);
+    let log_dir = cli_options
+        .log_dir
+        .or(file_config.send.log_dir)
+        .or(file_config.log_dir)
+        .unwrap_or_else(default_log_dir);
 
     Ok(SendSettings {
         port,
         baud,
         format,
-        display: cli_options.display,
+        display,
         log_dir,
     })
 }
@@ -163,6 +200,9 @@ fn parse_send_args(args: Vec<String>) -> Result<SendCliOptions, String> {
                     assignment.mode,
                 );
             }
+            "--config" => {
+                options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
+            }
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
@@ -173,9 +213,20 @@ fn parse_send_args(args: Vec<String>) -> Result<SendCliOptions, String> {
     Ok(options)
 }
 
+fn resolve_requested_port(cli_port: Option<String>, config_port: Option<String>) -> Option<String> {
+    normalize_requested_port(cli_port).or_else(|| normalize_requested_port(config_port))
+}
+
+fn normalize_requested_port(port: Option<String>) -> Option<String> {
+    port.and_then(|port| {
+        let trimmed = port.trim();
+        (!trimmed.is_empty()).then_some(trimmed.to_owned())
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_send_args;
+    use super::{parse_send_args, resolve_requested_port};
     use crate::port_display::PortDisplayMode;
     use std::path::PathBuf;
 
@@ -201,6 +252,8 @@ mod tests {
         let options = parse_send_args(vec![
             String::from("--display"),
             String::from("output:default=hex"),
+            String::from("--config"),
+            String::from("config"),
             String::from("--log-dir"),
             String::from("tmp/send-logs"),
         ])
@@ -210,6 +263,22 @@ mod tests {
             options.display.resolve_output("/dev/ttyUSB0"),
             PortDisplayMode::Hex
         );
+        assert_eq!(options.config_path, Some(PathBuf::from("config")));
         assert_eq!(options.log_dir, Some(PathBuf::from("tmp/send-logs")));
+    }
+
+    #[test]
+    fn requested_port_falls_back_to_config_when_cli_port_is_empty() {
+        assert_eq!(
+            resolve_requested_port(Some(String::from("")), Some(String::from("/dev/ttyUSB0"))),
+            Some(String::from("/dev/ttyUSB0"))
+        );
+        assert_eq!(
+            resolve_requested_port(
+                Some(String::from("   ")),
+                Some(String::from("/dev/ttyUSB0"))
+            ),
+            Some(String::from("/dev/ttyUSB0"))
+        );
     }
 }

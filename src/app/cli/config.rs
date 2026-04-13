@@ -16,6 +16,7 @@ pub(crate) const DEFAULT_CONFIG_DIR_NAME: &str = "config";
 pub(crate) struct AppConfig {
     pub log_dir: Option<PathBuf>,
     pub control: ControlConfig,
+    pub send: SendConfig,
     pub monitor: MonitorConfig,
     pub route: RouteConfig,
 }
@@ -37,6 +38,15 @@ pub(crate) struct MonitorConfig {
     pub ports: Vec<String>,
     pub baud: Option<u32>,
     pub raw: Option<bool>,
+    pub display: PortDisplayConfig,
+    pub log_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SendConfig {
+    pub port: Option<String>,
+    pub baud: Option<u32>,
+    pub format: Option<String>,
     pub display: PortDisplayConfig,
     pub log_dir: Option<PathBuf>,
 }
@@ -91,6 +101,7 @@ impl AppConfig {
     fn merge_from(&mut self, other: AppConfig) {
         merge_option(&mut self.log_dir, other.log_dir);
         self.control.merge_from(other.control);
+        self.send.merge_from(other.send);
         self.monitor.merge_from(other.monitor);
         self.route.merge_from(other.route);
     }
@@ -114,6 +125,16 @@ impl MonitorConfig {
         extend_unique_strings(&mut self.ports, &other.ports);
         merge_option(&mut self.baud, other.baud);
         merge_option(&mut self.raw, other.raw);
+        self.display.merge_from(other.display);
+        merge_option(&mut self.log_dir, other.log_dir);
+    }
+}
+
+impl SendConfig {
+    fn merge_from(&mut self, other: SendConfig) {
+        merge_option(&mut self.port, other.port);
+        merge_option(&mut self.baud, other.baud);
+        merge_option(&mut self.format, other.format);
         self.display.merge_from(other.display);
         merge_option(&mut self.log_dir, other.log_dir);
     }
@@ -200,6 +221,8 @@ fn load_config_file(path: &Path) -> Result<AppConfig, String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let control = parse_control_config(root.get("control"), base_dir)
         .map_err(|error| format!("{}: {error}", path.display()))?;
+    let send = parse_send_config(root.get("send"), base_dir)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
     let monitor = parse_monitor_config(root.get("monitor"), base_dir)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let route = parse_route_config(root.get("route"), base_dir)
@@ -208,6 +231,7 @@ fn load_config_file(path: &Path) -> Result<AppConfig, String> {
     Ok(AppConfig {
         log_dir: top_level_log_dir,
         control,
+        send,
         monitor,
         route,
     })
@@ -320,6 +344,21 @@ fn parse_monitor_config(
         ports,
         baud: optional_u32(object, "baud")?,
         raw: optional_bool(object, "raw")?,
+        display: optional_display_config(object, "display")?,
+        log_dir: optional_path(object, "log_dir", base_dir)?,
+    })
+}
+
+fn parse_send_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<SendConfig, String> {
+    let Some(value) = value else {
+        return Ok(SendConfig::default());
+    };
+    let object = expect_object(value, "send")?;
+
+    Ok(SendConfig {
+        port: optional_string(object, "port")?,
+        baud: optional_u32(object, "baud")?,
+        format: optional_string(object, "format")?,
         display: optional_display_config(object, "display")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
@@ -1013,6 +1052,16 @@ mod tests {
             },
             "monitor_ports": ["/dev/ttyUSB1"]
           },
+          "send": {
+            "port": "/dev/ttyUSB2",
+            "baud": 115200,
+            "format": "packetjfv1",
+            "display": {
+              "output": {
+                "default": "hex"
+              }
+            }
+          },
           "monitor": {
             "ports": ["/dev/ttyUSB0", "/dev/ttyUSB1"],
             "baud": 115200,
@@ -1064,6 +1113,9 @@ mod tests {
             r#"
             {
               "log_dir": "logs",
+              "send": {
+                "format": "packetjfv1"
+              },
               "monitor": {
                 "ports": ["/dev/ttyUSB0"]
               }
@@ -1122,6 +1174,7 @@ mod tests {
         let config = load_config(&temp_dir).unwrap();
 
         assert_eq!(config.log_dir, Some(temp_dir.join("logs")));
+        assert_eq!(config.send.format, Some(String::from("packetjfv1")));
         assert_eq!(config.monitor.ports, vec![String::from("/dev/ttyUSB0")]);
         assert_eq!(config.route.baud, Some(115200));
         assert_eq!(config.route.inputs.len(), 2);

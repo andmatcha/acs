@@ -26,7 +26,8 @@ acs monitor --raw --port /dev/ttyUSB0
 acs monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8
 acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 acs send --port /dev/ttyUSB0 --format PacketACv6
-acs send --port /dev/ttyUSB0 --format jf
+acs send --port /dev/ttyUSB0 --format PacketJFv1
+acs send --config config
 acs route --list-templates
 acs route --config config
 acs control --config config
@@ -151,6 +152,16 @@ acs route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/tty
       }
     },
     "monitor_ports": ["/dev/ttyUSB1"]
+  },
+  "send": {
+    "port": "/dev/ttyUSB0",
+    "baud": 115200,
+    "format": "packetacv6",
+    "display": {
+      "output": {
+        "default": "hex"
+      }
+    }
   },
   "monitor": {
     "ports": ["/dev/ttyUSB0", "/dev/ttyUSB1"],
