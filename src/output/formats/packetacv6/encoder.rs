@@ -3,6 +3,7 @@ use super::definition::{
     PACKET_ACV6_PAYLOAD_LEN, PacketAcV6Profile,
 };
 use crate::input::compact::CompactReport;
+use crate::output::formats::crc::crc16_ccitt_false;
 
 const CONTROL_BYTE_KBD_PP: u8 = 1 << 0;
 const CONTROL_BYTE_KBD_EN: u8 = 1 << 1;
@@ -275,24 +276,6 @@ fn write_u16_le(packet: &mut [u8], cursor: &mut usize, value: u16) {
 
 fn write_i16_le(packet: &mut [u8], cursor: &mut usize, value: i16) {
     write_bytes(packet, cursor, &value.to_le_bytes());
-}
-
-fn crc16_ccitt_false(data: &[u8]) -> u16 {
-    let mut crc = 0xFFFFu16;
-
-    for &byte in data {
-        crc ^= u16::from(byte) << 8;
-
-        for _ in 0..8 {
-            if (crc & 0x8000) != 0 {
-                crc = (crc << 1) ^ 0x1021;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-
-    crc
 }
 
 struct CompactState<'a> {

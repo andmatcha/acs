@@ -85,7 +85,7 @@ fn build_transform(
         TransformModuleConfig::Ds4ToCompact => Ok(Box::new(Ds4ToCompactTransform)),
         TransformModuleConfig::OutputEncode { format } => Ok(Box::new(OutputEncodeTransform {
             format: *format,
-            driver: format.create_driver(),
+            driver: format.create_driver()?,
         })),
         TransformModuleConfig::JoinLatest {
             separator,

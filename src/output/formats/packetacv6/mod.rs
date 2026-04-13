@@ -11,6 +11,11 @@ pub(crate) fn create_driver() -> Box<dyn OutputDriver> {
     Box::new(PacketAcV6OutputDriver::new())
 }
 
+pub(crate) fn encode_dummy_payload() -> Result<Vec<u8>, String> {
+    let mut driver = create_driver();
+    driver.encode(&[0; 8])
+}
+
 struct PacketAcV6OutputDriver {
     encoder: PacketAcV6PacketEncoder,
     sound_player: ModeSoundPlayer,

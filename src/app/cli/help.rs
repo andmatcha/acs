@@ -35,6 +35,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format jf");
     println!("  {bin_name} control --config config");
     println!();
     println!(
@@ -131,12 +132,12 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("Options:");
     println!("  -p, --port <PORT>          Serial output port");
     println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
-    println!("  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6)");
+    println!("  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, jf)");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format jf");
 }
 
 pub(crate) fn print_monitor_help(bin_name: &str) {

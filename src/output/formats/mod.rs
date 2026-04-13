@@ -1,3 +1,5 @@
+mod crc;
+mod jf;
 mod packetacv6;
 
 use crate::input::compact::CompactReport;
@@ -5,19 +7,30 @@ use crate::input::compact::CompactReport;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     PacketAcV6,
+    Jf,
 }
 
 struct OutputFormatDefinition {
     format: OutputFormat,
     names: &'static [&'static str],
-    create_driver: fn() -> Box<dyn OutputDriver>,
+    create_driver: Option<fn() -> Box<dyn OutputDriver>>,
+    encode_dummy_payload: fn() -> Result<Vec<u8>, String>,
 }
 
-const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[OutputFormatDefinition {
-    format: OutputFormat::PacketAcV6,
-    names: &["packetacv6"],
-    create_driver: packetacv6::create_driver,
-}];
+const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[
+    OutputFormatDefinition {
+        format: OutputFormat::PacketAcV6,
+        names: &["packetacv6"],
+        create_driver: Some(packetacv6::create_driver),
+        encode_dummy_payload: packetacv6::encode_dummy_payload,
+    },
+    OutputFormatDefinition {
+        format: OutputFormat::Jf,
+        names: &["jf"],
+        create_driver: None,
+        encode_dummy_payload: jf::encode_dummy_payload,
+    },
+];
 
 impl OutputFormat {
     pub fn parse(value: &str) -> Result<Self, String> {
@@ -37,21 +50,26 @@ impl OutputFormat {
         find_definition(self).names[0]
     }
 
-    pub fn create_driver(self) -> Box<dyn OutputDriver> {
-        (find_definition(self).create_driver)()
+    pub fn create_driver(self) -> Result<Box<dyn OutputDriver>, String> {
+        find_definition(self)
+            .create_driver
+            .map(|create_driver| create_driver())
+            .ok_or_else(|| {
+                format!(
+                    "output format `{}` does not support compact encoding",
+                    self.as_str()
+                )
+            })
     }
 
     pub fn encode_dummy_payload(self) -> Result<Vec<u8>, String> {
-        let mut driver = self.create_driver();
-        driver.encode(&DEFAULT_DUMMY_COMPACT_REPORT)
+        (find_definition(self).encode_dummy_payload)()
     }
 }
 
 pub trait OutputDriver {
     fn encode(&mut self, compact_report: &CompactReport) -> Result<Vec<u8>, String>;
 }
-
-const DEFAULT_DUMMY_COMPACT_REPORT: CompactReport = [0; 8];
 
 fn find_definition(format: OutputFormat) -> &'static OutputFormatDefinition {
     OUTPUT_FORMATS
@@ -92,5 +110,30 @@ mod tests {
 
         assert_eq!(payload.len(), 39);
         assert_eq!(&payload[..2], b"AC");
+    }
+
+    #[test]
+    fn parse_supports_jf() {
+        assert_eq!(
+            OutputFormat::parse("jf").expect("should parse"),
+            OutputFormat::Jf
+        );
+        assert_eq!(
+            OutputFormat::parse("JF").expect("should parse"),
+            OutputFormat::Jf
+        );
+    }
+
+    #[test]
+    fn jf_rejects_compact_encoding_driver() {
+        match OutputFormat::Jf.create_driver() {
+            Ok(_) => panic!("jf should not create a compact encoding driver"),
+            Err(error) => {
+                assert_eq!(
+                    error,
+                    "output format `jf` does not support compact encoding"
+                );
+            }
+        }
     }
 }
