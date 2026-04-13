@@ -3,6 +3,7 @@ use crate::common::{
 };
 use crate::port_display::PortDisplayMode;
 use std::collections::{BTreeMap, VecDeque};
+use std::env;
 use std::io::{self, Stdin, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -132,6 +133,7 @@ impl TextDashboard {
     pub fn render(&mut self, status: Option<&str>) -> io::Result<()> {
         let mut screen = String::new();
         let now = Instant::now();
+        let terminal_width = terminal_width();
         screen.push_str(&self.title);
         screen.push('\n');
 
@@ -164,9 +166,7 @@ impl TextDashboard {
             }
             heading.push_str("  ");
             heading.push_str(&section.rate_label());
-            screen.push_str(REVERSE);
-            screen.push_str(&heading);
-            screen.push_str(RESET);
+            screen.push_str(&format_heading_line(&heading, terminal_width));
             screen.push('\n');
 
             if section.entries.is_empty() {
@@ -394,4 +394,91 @@ fn format_utilization(bytes_per_second: f64, baud_rate: u32) -> String {
     };
 
     format!("{utilization:.0}%")
+}
+
+fn format_heading_line(text: &str, terminal_width: Option<usize>) -> String {
+    let visible_width = text.chars().count();
+    let padded_width = terminal_width.unwrap_or(visible_width).max(visible_width);
+    let padding = padded_width.saturating_sub(visible_width);
+
+    let mut line = String::with_capacity(text.len() + padding + REVERSE.len() + RESET.len());
+    line.push_str(REVERSE);
+    line.push_str(text);
+    for _ in 0..padding {
+        line.push(' ');
+    }
+    line.push_str(RESET);
+    line
+}
+
+fn terminal_width() -> Option<usize> {
+    if let Ok(columns) = env::var("COLUMNS")
+        && let Ok(width) = columns.parse::<usize>()
+        && width > 0
+    {
+        return Some(width);
+    }
+
+    terminal_width_from_ioctl()
+}
+
+#[cfg(unix)]
+fn terminal_width_from_ioctl() -> Option<usize> {
+    use std::ffi::c_int;
+    use std::ffi::c_ulong;
+    use std::mem::MaybeUninit;
+
+    #[repr(C)]
+    struct WinSize {
+        ws_row: u16,
+        ws_col: u16,
+        ws_xpixel: u16,
+        ws_ypixel: u16,
+    }
+
+    unsafe extern "C" {
+        fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
+    }
+
+    #[cfg(target_os = "macos")]
+    const TIOCGWINSZ: c_ulong = 0x4008_7468;
+    #[cfg(not(target_os = "macos"))]
+    const TIOCGWINSZ: c_ulong = 0x5413;
+
+    let stdout = io::stdout();
+    let fd = stdout.as_raw_fd();
+    let mut winsize = MaybeUninit::<WinSize>::uninit();
+    let result = unsafe { ioctl(fd, TIOCGWINSZ, winsize.as_mut_ptr()) };
+    if result != 0 {
+        return None;
+    }
+
+    let winsize = unsafe { winsize.assume_init() };
+    if winsize.ws_col == 0 {
+        return None;
+    }
+
+    Some(usize::from(winsize.ws_col))
+}
+
+#[cfg(not(unix))]
+fn terminal_width_from_ioctl() -> Option<usize> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RESET, REVERSE, format_heading_line};
+
+    #[test]
+    fn format_heading_line_pads_to_terminal_width() {
+        let line = format_heading_line("[input] tty  baud=115200", Some(30));
+        assert_eq!(line, format!("{REVERSE}[input] tty  baud=115200      {RESET}"));
+    }
+
+    #[test]
+    fn format_heading_line_keeps_long_text() {
+        let line = format_heading_line("[input] tty", Some(4));
+        assert_eq!(line, format!("{REVERSE}[input] tty{RESET}"));
+    }
 }
