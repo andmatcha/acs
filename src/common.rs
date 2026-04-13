@@ -125,6 +125,9 @@ mod tests {
 
     #[test]
     fn format_bytes_utf8_preserves_utf8_text_and_escapes_newlines() {
-        assert_eq!(format_bytes_utf8("こんにちは\n".as_bytes()), "\"こんにちは\\n\"");
+        assert_eq!(
+            format_bytes_utf8("こんにちは\n".as_bytes()),
+            "\"こんにちは\\n\""
+        );
     }
 }

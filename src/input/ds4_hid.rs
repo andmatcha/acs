@@ -75,10 +75,7 @@ impl Ds4Controller {
         &self.info
     }
 
-    pub fn read_next_report(
-        &mut self,
-        timeout_millis: i32,
-    ) -> Result<Option<Vec<u8>>, Ds4Error> {
+    pub fn read_next_report(&mut self, timeout_millis: i32) -> Result<Option<Vec<u8>>, Ds4Error> {
         read_next_report_with_timeout(&self.device, timeout_millis)
     }
 }

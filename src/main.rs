@@ -3,8 +3,8 @@ mod common;
 mod input;
 mod output;
 mod port_display;
-mod ui;
 mod serial;
+mod ui;
 
 use std::process::ExitCode;
 

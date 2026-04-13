@@ -29,7 +29,9 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
     println!("  {bin_name} control --config acs.config.json");
     println!();
-    println!("When exactly one controller or one serial port is available, it is selected automatically.");
+    println!(
+        "When exactly one controller or one serial port is available, it is selected automatically."
+    );
 }
 
 pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode {
@@ -72,7 +74,9 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("Usage: {bin_name} control [OPTIONS]");
     println!();
     println!("Reads a DUALSHOCK 4 controller and writes formatted bytes to a serial port.");
-    println!("The output port is also monitored as input, and extra ports can be added with `--monitor`.");
+    println!(
+        "The output port is also monitored as input, and extra ports can be added with `--monitor`."
+    );
     println!();
     println!("Options:");
     println!("  -p, --port <PORT>          Serial output port");
@@ -123,7 +127,9 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!("Examples:");
     println!("  {bin_name} monitor --port /dev/ttyUSB0");
     println!("  {bin_name} monitor --raw --port /dev/ttyUSB0");
-    println!("  {bin_name} monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8");
+    println!(
+        "  {bin_name} monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8"
+    );
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
     println!("  {bin_name} monitor --config acs.config.json");
 }

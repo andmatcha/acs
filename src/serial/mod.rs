@@ -1,4 +1,6 @@
-use serialport::{ClearBuffer, Error as SerialPortLibError, SerialPort, SerialPortInfo, SerialPortType, new};
+use serialport::{
+    ClearBuffer, Error as SerialPortLibError, SerialPort, SerialPortInfo, SerialPortType, new,
+};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -337,11 +339,17 @@ mod tests {
             buffer.push_chunk("/dev/ttyUSB0", b"0 00 00\r\nCA"),
             vec![b"0 00 00\r\n".to_vec()]
         );
-        assert!(buffer.push_chunk("/dev/ttyUSB0", b"N TX 0x1FF: ").is_empty());
+        assert!(
+            buffer
+                .push_chunk("/dev/ttyUSB0", b"N TX 0x1FF: ")
+                .is_empty()
+        );
         assert!(buffer.push_chunk("/dev/ttyUSB0", b"00 00 ").is_empty());
-        assert!(buffer
-            .push_chunk("/dev/ttyUSB0", b"00 00 00 00 00 00")
-            .is_empty());
+        assert!(
+            buffer
+                .push_chunk("/dev/ttyUSB0", b"00 00 00 00 00 00")
+                .is_empty()
+        );
         assert_eq!(
             buffer.push_chunk("/dev/ttyUSB0", b"\r\nCAN TX 0x2"),
             vec![b"CAN TX 0x1FF: 00 00 00 00 00 00 00 00\r\n".to_vec()]

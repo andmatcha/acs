@@ -22,6 +22,20 @@ pub(crate) fn dedup_strings(values: Vec<String>) -> Vec<String> {
     unique
 }
 
+pub(crate) fn next_value(
+    iter: &mut impl Iterator<Item = String>,
+    option: &str,
+) -> Result<String, String> {
+    iter.next()
+        .ok_or_else(|| format!("missing value for {option}"))
+}
+
+pub(crate) fn parse_u32_arg(option: &str, value: &str) -> Result<u32, String> {
+    value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid value for {option}: {value}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::dedup_strings;

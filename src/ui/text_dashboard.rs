@@ -123,7 +123,8 @@ impl TextDashboard {
     }
 
     pub fn add_output(&mut self, port: &str, bytes: &[u8]) {
-        self.section_mut(SectionKind::Output, port).push_entry(bytes);
+        self.section_mut(SectionKind::Output, port)
+            .push_entry(bytes);
     }
 
     pub fn add_input(&mut self, port: &str, bytes: &[u8]) {
@@ -473,7 +474,10 @@ mod tests {
     #[test]
     fn format_heading_line_pads_to_terminal_width() {
         let line = format_heading_line("[input] tty  baud=115200", Some(30));
-        assert_eq!(line, format!("{REVERSE}[input] tty  baud=115200      {RESET}"));
+        assert_eq!(
+            line,
+            format!("{REVERSE}[input] tty  baud=115200      {RESET}")
+        );
     }
 
     #[test]

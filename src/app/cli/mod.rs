@@ -5,6 +5,7 @@ mod control;
 mod help;
 mod logger;
 mod monitor;
+mod serial_dashboard;
 mod signal;
 
 use std::env;

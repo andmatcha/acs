@@ -79,7 +79,10 @@ fn find_default_config_path() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-fn parse_control_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<ControlConfig, String> {
+fn parse_control_config(
+    value: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<ControlConfig, String> {
     let Some(value) = value else {
         return Ok(ControlConfig::default());
     };
@@ -97,13 +100,18 @@ fn parse_control_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<Co
     })
 }
 
-fn parse_monitor_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<MonitorConfig, String> {
+fn parse_monitor_config(
+    value: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<MonitorConfig, String> {
     let Some(value) = value else {
         return Ok(MonitorConfig::default());
     };
     let object = expect_object(value, "monitor")?;
     let mut ports = optional_string_list(object, "ports")?;
-    if ports.is_empty() && let Some(port) = optional_string(object, "port")? {
+    if ports.is_empty()
+        && let Some(port) = optional_string(object, "port")?
+    {
         ports.push(port);
     }
 
@@ -236,7 +244,9 @@ impl<'a> JsonParser<'a> {
         let value = self.parse_value()?;
         self.consume_whitespace();
         if self.peek_char().is_some() {
-            return Err(String::from("unexpected trailing characters in config file"));
+            return Err(String::from(
+                "unexpected trailing characters in config file",
+            ));
         }
         Ok(value)
     }

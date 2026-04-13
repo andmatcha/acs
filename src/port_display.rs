@@ -123,13 +123,9 @@ pub struct PortDisplayAssignment {
 }
 
 pub fn parse_display_assignment(value: &str) -> Result<PortDisplayAssignment, String> {
-    let (target, mode) = value
-        .split_once('=')
-        .ok_or_else(|| {
-            String::from(
-                "display must be in the form <PORT>=<hex|ascii|utf8|hex+ascii|hex+utf8>",
-            )
-        })?;
+    let (target, mode) = value.split_once('=').ok_or_else(|| {
+        String::from("display must be in the form <PORT>=<hex|ascii|utf8|hex+ascii|hex+utf8>")
+    })?;
 
     if target.is_empty() {
         return Err(String::from("display target must not be empty"));

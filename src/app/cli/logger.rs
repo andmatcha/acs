@@ -1,4 +1,6 @@
-use super::common::{format_bytes_ascii, format_bytes_hex, now_display_timestamp, now_file_timestamp};
+use super::common::{
+    format_bytes_ascii, format_bytes_hex, now_display_timestamp, now_file_timestamp,
+};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -11,11 +13,7 @@ pub(crate) struct CommandLogger {
 impl CommandLogger {
     pub(crate) fn create(command_name: &str, log_dir: &Path) -> io::Result<Self> {
         fs::create_dir_all(log_dir)?;
-        let path = log_dir.join(format!(
-            "{}_{}.log",
-            now_file_timestamp(),
-            command_name
-        ));
+        let path = log_dir.join(format!("{}_{}.log", now_file_timestamp(), command_name));
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             path,
