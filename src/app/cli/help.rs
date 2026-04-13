@@ -7,7 +7,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!("  control    Read DUALSHOCK 4 input and send serial output");
     eprintln!("  monitor    Monitor one or more serial ports");
     eprintln!("  route      Route bytes between serial inputs and outputs");
-    eprintln!("  send       Send one dummy payload to a serial port");
+    eprintln!("  send       Repeatedly send dummy payloads to a serial port");
     eprintln!("  controllers List connected DUALSHOCK 4 controllers");
     eprintln!("  ports      List available serial ports");
     eprintln!("  help       Show help for a command");
@@ -24,7 +24,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  control    Read DUALSHOCK 4 input and send serial output");
     println!("  monitor    Monitor one or more serial ports");
     println!("  route      Route bytes between serial inputs and outputs");
-    println!("  send       Send one dummy payload to a serial port");
+    println!("  send       Repeatedly send dummy payloads to a serial port");
     println!("  controllers List connected DUALSHOCK 4 controllers");
     println!("  ports      List available serial ports");
     println!("  help       Show help for a command");
@@ -125,7 +125,8 @@ pub(crate) fn print_control_help(bin_name: &str) {
 pub(crate) fn print_send_help(bin_name: &str) {
     println!("Usage: {bin_name} send [OPTIONS]");
     println!();
-    println!("Sends one dummy payload in the selected format to a serial port.");
+    println!("Repeatedly sends dummy payloads in the selected format to a serial port.");
+    println!("Stops on Ctrl-C. The send interval matches `control` (20 ms).");
     println!();
     println!("Options:");
     println!("  -p, --port <PORT>          Serial output port");

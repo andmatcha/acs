@@ -1,9 +1,14 @@
 use super::common::{default_baud_rate, next_value, parse_u32_arg};
 use super::help::{is_help_flag, print_send_help};
+use super::signal;
 use crate::common::format_bytes_hex;
 use crate::output::OutputFormat;
 use crate::serial::{self, SerialConfig, SerialWriter};
 use std::process::ExitCode;
+use std::thread;
+use std::time::Duration;
+
+const SEND_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Default)]
 struct SendCliOptions {
@@ -34,9 +39,10 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     };
 
     match run_with_options(cli_options) {
-        Ok((settings, payload)) => {
+        Ok((settings, payload, sent_count)) => {
             println!(
-                "sent {} bytes to {} @ {} baud, format={}",
+                "sent {} packets ({} bytes each) to {} @ {} baud, format={}",
+                sent_count,
                 payload.len(),
                 settings.port,
                 settings.baud,
@@ -52,7 +58,7 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     }
 }
 
-fn run_with_options(cli_options: SendCliOptions) -> Result<(SendSettings, Vec<u8>), String> {
+fn run_with_options(cli_options: SendCliOptions) -> Result<(SendSettings, Vec<u8>, u64), String> {
     let settings = build_settings(cli_options)?;
     let payload = settings.format.encode_dummy_payload()?;
 
@@ -61,11 +67,18 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<(SendSettings, Vec<u8
         baud_rate: settings.baud,
     })
     .map_err(|error| error.to_string())?;
-    writer
-        .write_bytes(&payload)
-        .map_err(|error| error.to_string())?;
+    let mut sent_count = 0u64;
 
-    Ok((settings, payload))
+    signal::install_handler();
+    while !signal::is_stop_requested() {
+        writer
+            .write_bytes(&payload)
+            .map_err(|error| error.to_string())?;
+        sent_count = sent_count.saturating_add(1);
+        thread::sleep(SEND_INTERVAL);
+    }
+
+    Ok((settings, payload, sent_count))
 }
 
 fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
