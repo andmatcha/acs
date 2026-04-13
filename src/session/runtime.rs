@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const RENDER_INTERVAL: Duration = Duration::from_millis(100);
@@ -212,6 +213,11 @@ impl SessionRuntime {
     where
         F: FnMut(&IngressFrame, &mut SessionRuntime) -> Result<(), String>,
     {
+        if self._input_monitors.is_empty() {
+            thread::sleep(wait_interval);
+            return Ok(());
+        }
+
         match self.event_rx.recv_timeout(wait_interval) {
             Ok(event) => self.handle_event(event, on_frame)?,
             Err(mpsc::RecvTimeoutError::Timeout) => {}

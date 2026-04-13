@@ -127,17 +127,23 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("Usage: {bin_name} send [OPTIONS]");
     println!();
     println!("Repeatedly sends dummy payloads in the selected format to a serial port.");
-    println!("Stops on Ctrl-C. The send interval matches `control` (20 ms).");
+    println!("Sent packets are displayed live like `monitor`. Stops on Ctrl-C.");
+    println!("The send interval matches `control` (20 ms).");
     println!();
     println!("Options:");
     println!("  -p, --port <PORT>          Serial output port");
     println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
     println!("  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, jf)");
+    println!("      --display <TARGET=MODE> Display mode for a port");
+    println!("                              TARGET: PORT, output:PORT, default, output:default");
+    println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("      --log-dir <DIR>        Log directory (default: ./logs)");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format jf");
+    println!("  {bin_name} send --display output:default=hex");
 }
 
 pub(crate) fn print_monitor_help(bin_name: &str) {
