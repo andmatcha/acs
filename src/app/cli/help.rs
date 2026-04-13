@@ -80,14 +80,23 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("  -c, --controller <ID>      Controller index or HID path");
     println!("  -f, --format <FORMAT>      Output format (currently: arm9)");
     println!("      --raw                  Show incoming serial data as raw chunks");
+    println!("      --display <TARGET=MODE> Display mode for a port");
+    println!("                              TARGET: PORT, input:PORT, output:PORT,");
+    println!("                                      default, input:default, output:default");
+    println!("                             MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("      --monitor <PORT>       Additional serial port to monitor");
-    println!("      --config <PATH>        Read options from a JSON file");
+    println!(
+        "      --config <PATH>        Read options from a JSON file (default: ./acs.config.json if present)"
+    );
     println!("      --log-dir <DIR>        Log directory (default: ./logs)");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format arm9");
     println!("  {bin_name} control --raw --monitor /dev/ttyUSB1");
+    println!(
+        "  {bin_name} control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex"
+    );
     println!("  {bin_name} control --controller 0 --monitor /dev/ttyUSB1");
     println!("  {bin_name} control --config acs.config.json");
 }
@@ -101,13 +110,20 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!("  -p, --port <PORT>          Serial port to monitor (repeatable)");
     println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
     println!("      --raw                  Show incoming serial data as raw chunks");
-    println!("      --config <PATH>        Read options from a JSON file");
+    println!("      --display <TARGET=MODE> Display mode for a port");
+    println!("                              TARGET: PORT, input:PORT, output:PORT,");
+    println!("                                      default, input:default, output:default");
+    println!("                             MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!(
+        "      --config <PATH>        Read options from a JSON file (default: ./acs.config.json if present)"
+    );
     println!("      --log-dir <DIR>        Log directory (default: ./logs)");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!("  {bin_name} monitor --port /dev/ttyUSB0");
     println!("  {bin_name} monitor --raw --port /dev/ttyUSB0");
+    println!("  {bin_name} monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8");
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
     println!("  {bin_name} monitor --config acs.config.json");
 }

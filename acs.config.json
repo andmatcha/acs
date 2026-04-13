@@ -6,15 +6,25 @@
     "controller": "0",
     "format": "arm9",
     "raw": false,
-    "monitor_ports": [
-      ""
-    ]
+    "display": {
+      "input": {
+        "default": "ascii"
+      },
+      "output": {
+        "default": "hex"
+      }
+    },
+    "monitor_ports": []
   },
   "monitor": {
-    "ports": [
-      ""
-    ],
+    "ports": [],
     "baud": 115200,
-    "raw": false
+    "raw": false,
+    "display": {
+      "default": "hex+utf8",
+      "input": {
+        "default": "utf8"
+      }
+    }
   }
 }

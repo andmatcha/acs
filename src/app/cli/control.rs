@@ -6,6 +6,7 @@ use super::signal;
 use crate::input::compact;
 use crate::input::ds4_hid::Ds4Controller;
 use crate::output::OutputFormat;
+use crate::port_display::{PortDisplayConfig, parse_display_assignment};
 use crate::serial::{
     self, SerialCallback, SerialConfig, SerialConnection, SerialEvent, SerialLineBuffer,
     SerialMonitor,
@@ -27,6 +28,7 @@ struct ControlCliOptions {
     controller: Option<String>,
     format: Option<String>,
     raw: bool,
+    display: PortDisplayConfig,
     monitor_ports: Vec<String>,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
@@ -38,6 +40,7 @@ struct ControlSettings {
     controller: Option<String>,
     format: OutputFormat,
     raw: bool,
+    display: PortDisplayConfig,
     monitor_ports: Vec<String>,
     log_dir: PathBuf,
 }
@@ -70,7 +73,7 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
-    let file_config = load_config_if_needed(cli_options.config_path.as_deref())?;
+    let file_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
     let settings = build_settings(cli_options, file_config)?;
 
     let mut controller = Ds4Controller::open(settings.controller.as_deref())
@@ -126,9 +129,15 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         &settings.port,
         format!("baud={} format={}", settings.baud, driver.format_name()),
     );
+    dashboard.set_output_baud_rate(&settings.port, settings.baud);
+    dashboard.set_output_display_mode(&settings.port, settings.display.resolve_output(&settings.port));
     dashboard.set_input_status(&settings.port, format!("baud={}", settings.baud));
+    dashboard.set_input_baud_rate(&settings.port, settings.baud);
+    dashboard.set_input_display_mode(&settings.port, settings.display.resolve_input(&settings.port));
     for port in &extra_monitor_ports {
         dashboard.set_input_status(port, format!("baud={}", settings.baud));
+        dashboard.set_input_baud_rate(port, settings.baud);
+        dashboard.set_input_display_mode(port, settings.display.resolve_input(port));
     }
 
     dashboard
@@ -165,6 +174,7 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             if let Ok(compact_report) = compact::convert_input_report(&report) {
                 let bytes = driver.encode(&compact_report)?;
                 output.write_bytes(&bytes).map_err(|error| error.to_string())?;
+                dashboard.record_output_bytes(output.port_name(), &bytes);
                 dashboard.add_output(output.port_name(), &bytes);
                 logger
                     .log_output(output.port_name(), &bytes)
@@ -200,14 +210,6 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
 
     Ok(logger.path().to_path_buf())
 }
-
-fn load_config_if_needed(path: Option<&std::path::Path>) -> Result<config::AppConfig, String> {
-    match path {
-        Some(path) => config::load_config(path),
-        None => Ok(config::AppConfig::default()),
-    }
-}
-
 fn build_settings(
     cli_options: ControlCliOptions,
     file_config: config::AppConfig,
@@ -225,6 +227,8 @@ fn build_settings(
         .unwrap_or_else(|| String::from("arm9"));
     let format = OutputFormat::parse(&format_name)?;
     let raw = cli_options.raw || file_config.control.raw.unwrap_or(false);
+    let mut display = file_config.control.display;
+    display.merge_from(cli_options.display);
     let monitor_ports = if cli_options.monitor_ports.is_empty() {
         file_config.control.monitor_ports
     } else {
@@ -248,6 +252,7 @@ fn build_settings(
         controller,
         format,
         raw,
+        display,
         monitor_ports,
         log_dir,
     })
@@ -319,6 +324,7 @@ fn handle_input_bytes(
     raw_input: bool,
 ) -> Result<bool, String> {
     if raw_input {
+        dashboard.record_input_bytes(port, bytes);
         dashboard.add_input(port, bytes);
         logger
             .log_input(port, bytes)
@@ -326,6 +332,7 @@ fn handle_input_bytes(
         return Ok(true);
     }
 
+    dashboard.record_input_bytes(port, bytes);
     let mut changed = false;
     for line in line_buffer.push_chunk(port, bytes) {
         dashboard.add_input(port, &line);
@@ -397,6 +404,13 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
             }
             "--format" | "-f" => options.format = Some(next_value(&mut iter, "--format")?),
             "--raw" => options.raw = true,
+            "--display" => {
+                let value = next_value(&mut iter, "--display")?;
+                let assignment = parse_display_assignment(&value)?;
+                options
+                    .display
+                    .set_for_stream(assignment.stream, assignment.target, assignment.mode);
+            }
             "--monitor" | "-m" => {
                 options
                     .monitor_ports

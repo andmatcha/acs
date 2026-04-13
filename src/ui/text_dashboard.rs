@@ -1,10 +1,15 @@
-use crate::common::{format_bytes_ascii, format_bytes_hex, now_display_timestamp};
+use crate::common::{
+    format_bytes_ascii, format_bytes_hex, format_bytes_utf8, now_display_timestamp,
+};
+use crate::port_display::PortDisplayMode;
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Stdin, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
+use std::time::{Duration, Instant};
 
 const HISTORY_LIMIT: usize = 10;
+const RATE_WINDOW: Duration = Duration::from_secs(1);
 const RESET: &str = "\x1b[0m";
 const REVERSE: &str = "\x1b[7m";
 const ENTER_ALTERNATE_SCREEN: &str = "\x1b[?1049h";
@@ -24,13 +29,22 @@ struct Section {
     kind: SectionKind,
     port: String,
     status: String,
+    baud_rate: Option<u32>,
+    display_mode: PortDisplayMode,
     entries: VecDeque<Entry>,
+    rate_samples: VecDeque<RateSample>,
 }
 
 struct Entry {
     timestamp: String,
     hex: String,
     ascii: String,
+    utf8: String,
+}
+
+struct RateSample {
+    at: Instant,
+    byte_len: usize,
 }
 
 pub struct TextDashboard {
@@ -81,16 +95,43 @@ impl TextDashboard {
         self.section_mut(SectionKind::Input, port).status = status.into();
     }
 
+    pub fn set_output_baud_rate(&mut self, port: &str, baud_rate: u32) {
+        self.section_mut(SectionKind::Output, port).baud_rate = Some(baud_rate);
+    }
+
+    pub fn set_input_baud_rate(&mut self, port: &str, baud_rate: u32) {
+        self.section_mut(SectionKind::Input, port).baud_rate = Some(baud_rate);
+    }
+
+    pub fn set_output_display_mode(&mut self, port: &str, display_mode: PortDisplayMode) {
+        self.section_mut(SectionKind::Output, port).display_mode = display_mode;
+    }
+
+    pub fn set_input_display_mode(&mut self, port: &str, display_mode: PortDisplayMode) {
+        self.section_mut(SectionKind::Input, port).display_mode = display_mode;
+    }
+
+    pub fn record_output_bytes(&mut self, port: &str, bytes: &[u8]) {
+        self.section_mut(SectionKind::Output, port)
+            .record_rate_sample(bytes.len());
+    }
+
+    pub fn record_input_bytes(&mut self, port: &str, bytes: &[u8]) {
+        self.section_mut(SectionKind::Input, port)
+            .record_rate_sample(bytes.len());
+    }
+
     pub fn add_output(&mut self, port: &str, bytes: &[u8]) {
-        push_entry(self.section_mut(SectionKind::Output, port), bytes);
+        self.section_mut(SectionKind::Output, port).push_entry(bytes);
     }
 
     pub fn add_input(&mut self, port: &str, bytes: &[u8]) {
-        push_entry(self.section_mut(SectionKind::Input, port), bytes);
+        self.section_mut(SectionKind::Input, port).push_entry(bytes);
     }
 
     pub fn render(&mut self, status: Option<&str>) -> io::Result<()> {
         let mut screen = String::new();
+        let now = Instant::now();
         screen.push_str(&self.title);
         screen.push('\n');
 
@@ -107,7 +148,8 @@ impl TextDashboard {
 
         screen.push('\n');
 
-        for section in self.sections.values() {
+        for section in self.sections.values_mut() {
+            section.prune_rate_samples(now);
             let mut heading = String::new();
             heading.push('[');
             heading.push_str(match section.kind {
@@ -120,6 +162,8 @@ impl TextDashboard {
                 heading.push_str("  ");
                 heading.push_str(&section.status);
             }
+            heading.push_str("  ");
+            heading.push_str(&section.rate_label());
             screen.push_str(REVERSE);
             screen.push_str(&heading);
             screen.push_str(RESET);
@@ -131,9 +175,27 @@ impl TextDashboard {
                 for entry in &section.entries {
                     screen.push_str(&entry.timestamp);
                     screen.push_str(" | ");
-                    screen.push_str(&entry.hex);
-                    screen.push_str(" | ");
-                    screen.push_str(&entry.ascii);
+                    match section.display_mode {
+                        PortDisplayMode::Hex => {
+                            screen.push_str(&entry.hex);
+                        }
+                        PortDisplayMode::Ascii => {
+                            screen.push_str(&entry.ascii);
+                        }
+                        PortDisplayMode::Utf8 => {
+                            screen.push_str(&entry.utf8);
+                        }
+                        PortDisplayMode::HexAscii => {
+                            screen.push_str(&entry.hex);
+                            screen.push_str(" | ");
+                            screen.push_str(&entry.ascii);
+                        }
+                        PortDisplayMode::HexUtf8 => {
+                            screen.push_str(&entry.hex);
+                            screen.push_str(" | ");
+                            screen.push_str(&entry.utf8);
+                        }
+                    }
                     screen.push('\n');
                 }
             }
@@ -163,7 +225,10 @@ impl TextDashboard {
                 kind,
                 port: String::from(port),
                 status: String::new(),
+                baud_rate: None,
+                display_mode: PortDisplayMode::HexUtf8,
                 entries: VecDeque::new(),
+                rate_samples: VecDeque::new(),
             })
     }
 }
@@ -253,12 +318,80 @@ fn disable_terminal_input_echo(termios: &mut libc::termios) {
     termios.c_cc[libc::VTIME] = 0;
 }
 
-fn push_entry(section: &mut Section, bytes: &[u8]) {
-    // 新しいデータを先頭へ積み、各ポート直近 10 件だけを残す。
-    section.entries.push_front(Entry {
-        timestamp: now_display_timestamp(),
-        hex: format_bytes_hex(bytes),
-        ascii: format_bytes_ascii(bytes),
-    });
-    section.entries.truncate(HISTORY_LIMIT);
+impl Section {
+    fn push_entry(&mut self, bytes: &[u8]) {
+        // 新しいデータを先頭へ積み、各ポート直近 10 件だけを残す。
+        self.entries.push_front(Entry {
+            timestamp: now_display_timestamp(),
+            hex: format_bytes_hex(bytes),
+            ascii: format_bytes_ascii(bytes),
+            utf8: format_bytes_utf8(bytes),
+        });
+        self.entries.truncate(HISTORY_LIMIT);
+    }
+
+    fn record_rate_sample(&mut self, byte_len: usize) {
+        self.rate_samples.push_back(RateSample {
+            at: Instant::now(),
+            byte_len,
+        });
+    }
+
+    fn prune_rate_samples(&mut self, now: Instant) {
+        while let Some(sample) = self.rate_samples.front() {
+            if now.duration_since(sample.at) <= RATE_WINDOW {
+                break;
+            }
+            self.rate_samples.pop_front();
+        }
+    }
+
+    fn rate_label(&self) -> String {
+        let bytes_per_second = self
+            .rate_samples
+            .iter()
+            .map(|sample| sample.byte_len)
+            .sum::<usize>() as f64
+            / RATE_WINDOW.as_secs_f64();
+        let name = match self.kind {
+            SectionKind::Output => "tx",
+            SectionKind::Input => "rx",
+        };
+        match self.baud_rate {
+            Some(baud_rate) => format!(
+                "{name}={} ({})",
+                format_rate(bytes_per_second),
+                format_utilization(bytes_per_second, baud_rate)
+            ),
+            None => format!("{name}={}", format_rate(bytes_per_second)),
+        }
+    }
+}
+
+fn format_rate(bytes_per_second: f64) -> String {
+    if bytes_per_second >= 1024.0 * 1024.0 {
+        return format!("{:.1} MiB/s", bytes_per_second / (1024.0 * 1024.0));
+    }
+
+    if bytes_per_second >= 1024.0 {
+        return format!("{:.1} KiB/s", bytes_per_second / 1024.0);
+    }
+
+    format!("{bytes_per_second:.0} B/s")
+}
+
+fn format_utilization(bytes_per_second: f64, baud_rate: u32) -> String {
+    if baud_rate == 0 {
+        return String::from("n/a");
+    }
+
+    // 一般的な 8N1 を前提に、1 byte = 10 bit として使用率を見積もる。
+    let theoretical_bytes_per_second = baud_rate as f64 / 10.0;
+    let utilization = if theoretical_bytes_per_second > 0.0 {
+        (bytes_per_second / theoretical_bytes_per_second) * 100.0
+    } else {
+        0.0
+    };
+
+    format!("{utilization:.0}%")
 }

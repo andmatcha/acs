@@ -3,6 +3,7 @@ use super::config;
 use super::help::{is_help_flag, print_monitor_help};
 use super::logger::CommandLogger;
 use super::signal;
+use crate::port_display::{PortDisplayConfig, parse_display_assignment};
 use crate::serial::{
     self, SerialCallback, SerialConfig, SerialEvent, SerialLineBuffer, SerialMonitor,
 };
@@ -21,6 +22,7 @@ struct MonitorCliOptions {
     ports: Vec<String>,
     baud: Option<u32>,
     raw: bool,
+    display: PortDisplayConfig,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
 }
@@ -29,6 +31,7 @@ struct MonitorSettings {
     ports: Vec<String>,
     baud: u32,
     raw: bool,
+    display: PortDisplayConfig,
     log_dir: PathBuf,
 }
 
@@ -60,10 +63,7 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
-    let file_config = match cli_options.config_path.as_deref() {
-        Some(path) => config::load_config(path)?,
-        None => config::AppConfig::default(),
-    };
+    let file_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
     let settings = build_settings(cli_options, file_config)?;
     let mut logger = CommandLogger::create("monitor", &settings.log_dir)
         .map_err(|error| format!("failed to create log file: {error}"))?;
@@ -88,6 +88,8 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
     ]);
     for port in &settings.ports {
         dashboard.set_input_status(port, format!("baud={}", settings.baud));
+        dashboard.set_input_baud_rate(port, settings.baud);
+        dashboard.set_input_display_mode(port, settings.display.resolve_input(port));
     }
 
     dashboard
@@ -160,6 +162,8 @@ fn build_settings(
         .or(file_config.monitor.baud)
         .unwrap_or_else(default_baud_rate);
     let raw = cli_options.raw || file_config.monitor.raw.unwrap_or(false);
+    let mut display = file_config.monitor.display;
+    display.merge_from(cli_options.display);
     let log_dir = cli_options
         .log_dir
         .or(file_config.monitor.log_dir)
@@ -170,6 +174,7 @@ fn build_settings(
         ports,
         baud,
         raw,
+        display,
         log_dir,
     })
 }
@@ -277,6 +282,7 @@ fn handle_input_bytes(
     raw_input: bool,
 ) -> Result<bool, String> {
     if raw_input {
+        dashboard.record_input_bytes(port, bytes);
         dashboard.add_input(port, bytes);
         logger
             .log_input(port, bytes)
@@ -284,6 +290,7 @@ fn handle_input_bytes(
         return Ok(true);
     }
 
+    dashboard.record_input_bytes(port, bytes);
     let mut changed = false;
     for line in line_buffer.push_chunk(port, bytes) {
         dashboard.add_input(port, &line);
@@ -351,6 +358,13 @@ fn parse_monitor_args(args: Vec<String>) -> Result<MonitorCliOptions, String> {
                 options.baud = Some(parse_u32_arg("--baud", &value)?);
             }
             "--raw" => options.raw = true,
+            "--display" => {
+                let value = next_value(&mut iter, "--display")?;
+                let assignment = parse_display_assignment(&value)?;
+                options
+                    .display
+                    .set_for_stream(assignment.stream, assignment.target, assignment.mode);
+            }
             "--config" => options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?)),
             "--log-dir" => options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?)),
             other => return Err(format!("unknown option for monitor: {other}")),

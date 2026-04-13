@@ -7,8 +7,9 @@
 - `acs control`: DUALSHOCK 4 の入力を読み取り、整形したシリアル出力を送信する
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
 - `--raw`: 改行でまとめず、生の受信チャンクをそのまま表示する
+- `--display`: ポートごとに、受信・送信それぞれの表示形式を `hex` / `ascii` / `utf8` / `hex+ascii` / `hex+utf8` から選べる
 - ログを `./logs` 以下へ自動保存する
-- `--config` による JSON 設定ファイルの読み込みに対応する
+- `--config` による JSON 設定ファイルの読み込みに対応し、指定がなければカレントディレクトリの `acs.config.json` を自動で読む
 
 ## コマンド例
 
@@ -16,14 +17,18 @@
 acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
 acs control --monitor /dev/ttyUSB1
 acs control --raw --monitor /dev/ttyUSB1
+acs control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex
 acs monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1
 acs monitor --raw --port /dev/ttyUSB0
+acs monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8
 acs control --config acs.config.json
 ```
 
 接続されている DUALSHOCK 4 コントローラーが 1 台だけ、または使用可能なシリアルポートが 1 つだけの場合は、`acs` が自動で選択します。
 
 `control` と `monitor` は、デフォルトでは受信データを改行単位でまとめて表示します。`--raw` を付けると、改行を待たずに受信チャンクをそのまま表示・記録します。
+
+表示形式は `--display <TARGET>=<MODE>` で指定できます。`TARGET` には `PORT`、`input:PORT`、`output:PORT`、`default`、`input:default`、`output:default` が使えます。方向を付けない `PORT` や `default` は送受信の両方に適用されます。`MODE` には `hex`、`ascii`、`utf8`、`hex+ascii`、`hex+utf8` が使えます。指定しない場合は `hex+utf8` です。
 
 ## このディレクトリ内で実行する方法
 
@@ -78,6 +83,8 @@ cargo install --path . --force
 
 ## 設定ファイル
 
+`--config` を省略した場合は、カレントディレクトリにある `acs.config.json` を自動で読み込みます。明示的に別の設定ファイルを使いたい場合だけ `--config` を指定してください。
+
 設定例は [acs.config.json](acs.config.json) を参照してください。
 
 ```json
@@ -89,12 +96,30 @@ cargo install --path . --force
     "controller": "0",
     "format": "arm9",
     "raw": false,
+    "display": {
+      "default": "hex+utf8",
+      "input": {
+        "default": "utf8",
+        "/dev/ttyUSB0": "utf8"
+      },
+      "output": {
+        "default": "hex",
+        "/dev/ttyUSB0": "hex"
+      }
+    },
     "monitor_ports": ["/dev/ttyUSB1"]
   },
   "monitor": {
     "ports": ["/dev/ttyUSB0", "/dev/ttyUSB1"],
     "baud": 115200,
-    "raw": false
+    "raw": false,
+    "display": {
+      "default": "hex+utf8",
+      "input": {
+        "default": "hex+utf8",
+        "/dev/ttyUSB0": "utf8"
+      }
+    }
   }
 }
 ```

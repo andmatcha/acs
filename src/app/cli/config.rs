@@ -1,6 +1,9 @@
+use crate::port_display::{PortDisplayConfig, PortDisplayMode};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+pub(crate) const DEFAULT_CONFIG_FILE_NAME: &str = "acs.config.json";
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct AppConfig {
@@ -16,6 +19,7 @@ pub(crate) struct ControlConfig {
     pub controller: Option<String>,
     pub format: Option<String>,
     pub raw: Option<bool>,
+    pub display: PortDisplayConfig,
     pub monitor_ports: Vec<String>,
     pub log_dir: Option<PathBuf>,
 }
@@ -25,6 +29,7 @@ pub(crate) struct MonitorConfig {
     pub ports: Vec<String>,
     pub baud: Option<u32>,
     pub raw: Option<bool>,
+    pub display: PortDisplayConfig,
     pub log_dir: Option<PathBuf>,
 }
 
@@ -59,6 +64,21 @@ pub(crate) fn load_config(path: &Path) -> Result<AppConfig, String> {
     })
 }
 
+pub(crate) fn load_config_or_default(explicit_path: Option<&Path>) -> Result<AppConfig, String> {
+    match explicit_path {
+        Some(path) => load_config(path),
+        None => match find_default_config_path() {
+            Some(path) => load_config(&path),
+            None => Ok(AppConfig::default()),
+        },
+    }
+}
+
+fn find_default_config_path() -> Option<PathBuf> {
+    let path = std::env::current_dir().ok()?.join(DEFAULT_CONFIG_FILE_NAME);
+    path.is_file().then_some(path)
+}
+
 fn parse_control_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<ControlConfig, String> {
     let Some(value) = value else {
         return Ok(ControlConfig::default());
@@ -71,6 +91,7 @@ fn parse_control_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<Co
         controller: optional_string(object, "controller")?,
         format: optional_string(object, "format")?,
         raw: optional_bool(object, "raw")?,
+        display: optional_display_config(object, "display")?,
         monitor_ports: optional_string_list(object, "monitor_ports")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
@@ -90,6 +111,7 @@ fn parse_monitor_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<Mo
         ports,
         baud: optional_u32(object, "baud")?,
         raw: optional_bool(object, "raw")?,
+        display: optional_display_config(object, "display")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -149,6 +171,43 @@ fn optional_path(
         return Ok(Some(path));
     }
     Ok(Some(base_dir.join(path)))
+}
+
+fn optional_display_config(object: &JsonObject, key: &str) -> Result<PortDisplayConfig, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(PortDisplayConfig::default());
+    };
+    let JsonValue::Object(entries) = value else {
+        return Err(type_error(key, "object"));
+    };
+
+    let mut config = PortDisplayConfig::default();
+    for (target, value) in entries {
+        match (target.as_str(), value) {
+            ("input" | "rx", JsonValue::Object(scope)) => {
+                for (scope_target, scope_value) in scope {
+                    let JsonValue::String(mode) = scope_value else {
+                        return Err(format!("`{key}.{target}.{scope_target}` must be string"));
+                    };
+                    config.set_input(scope_target.clone(), PortDisplayMode::parse(mode)?);
+                }
+            }
+            ("output" | "tx", JsonValue::Object(scope)) => {
+                for (scope_target, scope_value) in scope {
+                    let JsonValue::String(mode) = scope_value else {
+                        return Err(format!("`{key}.{target}.{scope_target}` must be string"));
+                    };
+                    config.set_output(scope_target.clone(), PortDisplayMode::parse(mode)?);
+                }
+            }
+            (_, JsonValue::String(mode)) => {
+                config.set_both(target.clone(), PortDisplayMode::parse(mode)?);
+            }
+            _ => return Err(format!("`{key}.{target}` must be string or object")),
+        }
+    }
+
+    Ok(config)
 }
 
 fn expect_object<'a>(value: &'a JsonValue, name: &str) -> Result<&'a JsonObject, String> {
@@ -409,12 +468,30 @@ mod tests {
             "controller": "0",
             "format": "arm9",
             "raw": false,
+            "display": {
+              "default": "hex+utf8",
+              "input": {
+                "default": "utf8",
+                "/dev/ttyUSB0": "utf8"
+              },
+              "output": {
+                "default": "hex",
+                "/dev/ttyUSB0": "hex"
+              }
+            },
             "monitor_ports": ["/dev/ttyUSB1"]
           },
           "monitor": {
             "ports": ["/dev/ttyUSB0", "/dev/ttyUSB1"],
             "baud": 115200,
-            "raw": true
+            "raw": true,
+            "display": {
+              "default": "hex+utf8",
+              "input": {
+                "default": "hex",
+                "/dev/ttyUSB1": "hex+ascii"
+              }
+            }
           }
         }
         "#;

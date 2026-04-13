@@ -33,6 +33,29 @@ pub(crate) fn format_bytes_ascii(bytes: &[u8]) -> String {
     format!("\"{escaped}\"")
 }
 
+pub(crate) fn format_bytes_utf8(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::from("\"\"");
+    }
+
+    let mut escaped = String::new();
+    for ch in String::from_utf8_lossy(bytes).chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\r' => escaped.push_str("\\r"),
+            '\n' => escaped.push_str("\\n"),
+            '\t' => escaped.push_str("\\t"),
+            other if other.is_control() => {
+                escaped.push_str(&format!("\\u{{{:X}}}", other as u32));
+            }
+            other => escaped.push(other),
+        }
+    }
+
+    format!("\"{escaped}\"")
+}
+
 #[cfg(unix)]
 fn local_timestamp(format: &str) -> String {
     use std::ffi::CStr;
@@ -88,7 +111,7 @@ fn unix_fallback() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_bytes_ascii, format_bytes_hex};
+    use super::{format_bytes_ascii, format_bytes_hex, format_bytes_utf8};
 
     #[test]
     fn format_bytes_hex_handles_empty_input() {
@@ -98,5 +121,10 @@ mod tests {
     #[test]
     fn format_bytes_ascii_escapes_control_bytes() {
         assert_eq!(format_bytes_ascii(b"OK\r\n"), "\"OK\\r\\n\"");
+    }
+
+    #[test]
+    fn format_bytes_utf8_preserves_utf8_text_and_escapes_newlines() {
+        assert_eq!(format_bytes_utf8("こんにちは\n".as_bytes()), "\"こんにちは\\n\"");
     }
 }
