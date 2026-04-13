@@ -1,9 +1,7 @@
 #[derive(Debug, Clone)]
 pub(crate) struct IngressFrame {
     pub input_id: String,
-    pub port: String,
     pub bytes: Vec<u8>,
-    pub sequence: u64,
 }
 
 #[derive(Debug, Clone)]

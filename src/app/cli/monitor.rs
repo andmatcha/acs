@@ -74,7 +74,6 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
         command_name: String::from("monitor"),
         raw_input: settings.raw,
         log_dir: settings.log_dir.clone(),
-        header_lines: Vec::new(),
         inputs,
         outputs: Vec::new(),
     })?;

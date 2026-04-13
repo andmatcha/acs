@@ -1,4 +1,7 @@
-use super::common::{default_baud_rate, default_log_dir, next_value, parse_u32_arg};
+use super::common::{
+    default_baud_rate, default_log_dir, next_value, parse_u32_arg,
+};
+use crate::common::extend_unique_strings;
 use super::config;
 use super::help::{is_help_flag, print_route_help};
 use super::signal;
@@ -130,13 +133,12 @@ fn build_settings(
     Ok(RouteSettings {
         session: SessionSpec {
             title: String::from("acs route"),
-            command_name: String::from("route"),
-            raw_input: raw,
-            log_dir,
-            header_lines: Vec::new(),
-            inputs,
-            outputs,
-        },
+        command_name: String::from("route"),
+        raw_input: raw,
+        log_dir,
+        inputs,
+        outputs,
+    },
         pipeline,
     })
 }
@@ -301,7 +303,7 @@ fn router_output_ids(router: &RouterModuleConfig) -> Vec<String> {
         } => {
             let mut outputs = default_outputs.clone();
             for route_outputs in routes.values() {
-                extend_unique(&mut outputs, route_outputs);
+                extend_unique_strings(&mut outputs, route_outputs);
             }
             outputs
         }
@@ -311,7 +313,7 @@ fn router_output_ids(router: &RouterModuleConfig) -> Vec<String> {
         } => {
             let mut outputs = default_outputs.clone();
             for rule in routes {
-                extend_unique(&mut outputs, &rule.outputs);
+                extend_unique_strings(&mut outputs, &rule.outputs);
             }
             outputs
         }
@@ -321,17 +323,9 @@ fn router_output_ids(router: &RouterModuleConfig) -> Vec<String> {
 fn collect_pipeline_outputs(pipeline: &PipelineSpec) -> Vec<String> {
     let mut outputs = Vec::new();
     for definition in &pipeline.pipelines {
-        extend_unique(&mut outputs, &router_output_ids(&definition.router));
+        extend_unique_strings(&mut outputs, &router_output_ids(&definition.router));
     }
     outputs
-}
-
-fn extend_unique(target: &mut Vec<String>, candidates: &[String]) {
-    for candidate in candidates {
-        if !target.iter().any(|existing| existing == candidate) {
-            target.push(candidate.clone());
-        }
-    }
 }
 
 fn parse_route_args(args: Vec<String>) -> Result<RouteCliOptions, String> {

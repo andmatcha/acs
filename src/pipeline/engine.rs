@@ -10,7 +10,6 @@ pub(crate) struct PipelineEngine {
 }
 
 struct PipelineInstance {
-    id: String,
     inputs: Vec<String>,
     filter: Box<dyn FrameFilter>,
     transforms: Vec<Box<dyn MessageTransform>>,
@@ -41,7 +40,6 @@ impl PipelineEngine {
             .iter()
             .map(|definition| {
                 Ok(PipelineInstance {
-                    id: definition.id.clone(),
                     inputs: definition.inputs.clone(),
                     filter: build_filter(&definition.filter),
                     transforms: build_transform_chain(&definition.transform, &definition.inputs)?,
@@ -65,7 +63,7 @@ impl PipelineEngine {
                 continue;
             }
 
-            let mut messages = vec![RouteMessage::from_frame(&pipeline.id, frame)];
+            let mut messages = vec![RouteMessage::from_frame(frame)];
             for transform in &mut pipeline.transforms {
                 let mut next_messages = Vec::new();
                 for message in messages {
@@ -127,9 +125,7 @@ mod tests {
         let dispatches = engine
             .process_frame(&IngressFrame {
                 input_id: String::from("in_a"),
-                port: String::from("/dev/ttyUSB0"),
                 bytes: b"abc".to_vec(),
-                sequence: 1,
             })
             .unwrap();
 

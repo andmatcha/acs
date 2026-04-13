@@ -78,8 +78,6 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to open controller: {error}"))?;
     let controller_info = controller.info().clone();
     let controller_input_id = String::from("ds4_main");
-    let controller_input_port = controller_info.path.clone();
-    let mut controller_sequence = 0u64;
     let mut engine = PipelineEngine::new(&build_control_pipeline_spec(
         &controller_input_id,
         settings.format,
@@ -106,7 +104,6 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         command_name: String::from("control"),
         raw_input: settings.raw,
         log_dir: settings.log_dir.clone(),
-        header_lines: Vec::new(),
         inputs,
         outputs: vec![SessionOutputSpec {
             id: String::from("main"),
@@ -150,11 +147,8 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             {
                 let frame = IngressFrame {
                     input_id: controller_input_id.clone(),
-                    port: controller_input_port.clone(),
                     bytes: report,
-                    sequence: controller_sequence,
                 };
-                controller_sequence = controller_sequence.wrapping_add(1);
 
                 match engine.process_frame(&frame) {
                     Ok(dispatches) => {

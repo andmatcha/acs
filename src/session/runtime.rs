@@ -33,7 +33,6 @@ pub(crate) struct SessionSpec {
     pub command_name: String,
     pub raw_input: bool,
     pub log_dir: PathBuf,
-    pub header_lines: Vec<String>,
     pub inputs: Vec<SessionInputSpec>,
     pub outputs: Vec<SessionOutputSpec>,
 }
@@ -48,7 +47,6 @@ pub(crate) struct SessionRuntime {
     event_rx: Receiver<SessionEvent>,
     _input_monitors: Vec<SerialMonitor>,
     outputs: BTreeMap<String, SessionOutputHandle>,
-    next_sequence: u64,
     dirty: bool,
     last_render: Instant,
 }
@@ -61,7 +59,6 @@ impl SessionRuntime {
             &spec.command_name,
             &spec.log_dir,
         )?;
-        dashboard.set_header_lines(spec.header_lines);
 
         let (event_tx, event_rx) = mpsc::channel::<SessionEvent>();
         let input_monitors = spec
@@ -74,7 +71,7 @@ impl SessionRuntime {
                         port: input.port.clone(),
                         baud_rate: input.baud_rate,
                     },
-                    make_session_callback(event_tx.clone(), &input.id, &input.port),
+                    make_session_callback(event_tx.clone(), &input.id),
                 )
                 .map_err(|error| error.to_string())
             })
@@ -107,7 +104,6 @@ impl SessionRuntime {
             event_rx,
             _input_monitors: input_monitors,
             outputs,
-            next_sequence: 0,
             dirty: false,
             last_render: Instant::now(),
         })
@@ -220,11 +216,8 @@ impl SessionRuntime {
 
                 let frame = IngressFrame {
                     input_id,
-                    port,
                     bytes,
-                    sequence: self.next_sequence,
                 };
-                self.next_sequence = self.next_sequence.wrapping_add(1);
                 on_frame(&frame, self)?;
             }
             SessionEvent::InputError {
@@ -253,7 +246,7 @@ impl SessionRuntime {
     }
 }
 
-fn make_session_callback(event_tx: mpsc::Sender<SessionEvent>, input_id: &str, _: &str) -> SerialCallback {
+fn make_session_callback(event_tx: mpsc::Sender<SessionEvent>, input_id: &str) -> SerialCallback {
     let input_id = input_id.to_owned();
     Arc::new(move |event| match event {
         SerialEvent::Data { port, bytes } => {

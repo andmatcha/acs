@@ -1,3 +1,4 @@
+use crate::common::extend_unique_strings;
 use crate::input::compact;
 use crate::output::OutputFormat;
 use crate::pipeline::config::{
@@ -322,22 +323,14 @@ impl MessageRouter for TagBasedRouter {
         let mut outputs = Vec::new();
         for rule in &self.routes {
             if message.tags.iter().any(|tag| tag == &rule.tag) {
-                extend_unique(&mut outputs, &rule.outputs);
+                extend_unique_strings(&mut outputs, &rule.outputs);
             }
         }
 
         if outputs.is_empty() {
-            extend_unique(&mut outputs, &self.default_outputs);
+            extend_unique_strings(&mut outputs, &self.default_outputs);
         }
 
         Ok(outputs)
-    }
-}
-
-fn extend_unique(target: &mut Vec<String>, candidates: &[String]) {
-    for candidate in candidates {
-        if !target.iter().any(|existing| existing == candidate) {
-            target.push(candidate.clone());
-        }
     }
 }

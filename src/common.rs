@@ -56,6 +56,14 @@ pub(crate) fn format_bytes_utf8(bytes: &[u8]) -> String {
     format!("\"{escaped}\"")
 }
 
+pub(crate) fn extend_unique_strings(target: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        if !target.iter().any(|existing| existing == value) {
+            target.push(value.clone());
+        }
+    }
+}
+
 #[cfg(unix)]
 fn local_timestamp(format: &str) -> String {
     use std::ffi::CStr;
@@ -111,7 +119,7 @@ fn unix_fallback() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_bytes_ascii, format_bytes_hex, format_bytes_utf8};
+    use super::{extend_unique_strings, format_bytes_ascii, format_bytes_hex, format_bytes_utf8};
 
     #[test]
     fn format_bytes_hex_handles_empty_input() {
@@ -129,5 +137,12 @@ mod tests {
             format_bytes_utf8("こんにちは\n".as_bytes()),
             "\"こんにちは\\n\""
         );
+    }
+
+    #[test]
+    fn extend_unique_strings_appends_only_new_values() {
+        let mut values = vec![String::from("A"), String::from("B")];
+        extend_unique_strings(&mut values, &[String::from("B"), String::from("C")]);
+        assert_eq!(values, vec!["A", "B", "C"]);
     }
 }
