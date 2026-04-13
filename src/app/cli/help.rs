@@ -96,6 +96,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!();
     println!("Options:");
     println!("  -p, --port <PORT>          Serial output port");
+    println!("                              Omit to auto-select a single USB serial or ST-LINK");
     println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
     println!("  -c, --controller <ID>      Controller index or HID path");
     println!("  -f, --format <FORMAT>      Output format (currently: arm9, packetacv6)");

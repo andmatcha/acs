@@ -226,20 +226,100 @@ pub fn resolve_port(port_name: Option<&str>) -> Result<String, SerialError> {
 }
 
 fn auto_select_port(ports: &[SerialPortInfo]) -> Result<String, SerialError> {
-    let usb_ports = ports
-        .iter()
-        .filter(|port| matches!(port.port_type, SerialPortType::UsbPort(_)))
-        .collect::<Vec<_>>();
-
-    match usb_ports.as_slice() {
-        [port] => Ok(port.port_name.clone()),
-        [] => match ports {
-            [] => Err(SerialError::NoSerialPortFound),
-            [port] => Ok(port.port_name.clone()),
-            many => Err(SerialError::MultiplePortsFound(many.len())),
-        },
+    let preferred_ports = grouped_ports(
+        ports
+            .iter()
+            .filter(|port| is_preferred_auto_select_port(port)),
+    );
+    match preferred_ports.as_slice() {
+        [group] => Ok(select_group_port(group)),
+        [] => fallback_auto_select_port(ports),
         many => Err(SerialError::MultiplePortsFound(many.len())),
     }
+}
+
+fn fallback_auto_select_port(ports: &[SerialPortInfo]) -> Result<String, SerialError> {
+    let usb_ports = grouped_ports(
+        ports
+            .iter()
+            .filter(|port| matches!(port.port_type, SerialPortType::UsbPort(_))),
+    );
+
+    match usb_ports.as_slice() {
+        [group] => Ok(select_group_port(group)),
+        [] => {
+            let all_ports = grouped_ports(ports.iter());
+            match all_ports.as_slice() {
+                [] => Err(SerialError::NoSerialPortFound),
+                [group] => Ok(select_group_port(group)),
+                many => Err(SerialError::MultiplePortsFound(many.len())),
+            }
+        }
+        many => Err(SerialError::MultiplePortsFound(many.len())),
+    }
+}
+
+fn grouped_ports<'a>(
+    ports: impl IntoIterator<Item = &'a SerialPortInfo>,
+) -> Vec<Vec<&'a SerialPortInfo>> {
+    let mut groups = BTreeMap::<String, Vec<&'a SerialPortInfo>>::new();
+
+    for port in ports {
+        groups
+            .entry(auto_select_group_key(&port.port_name))
+            .or_default()
+            .push(port);
+    }
+
+    groups.into_values().collect()
+}
+
+fn auto_select_group_key(port_name: &str) -> String {
+    if let Some(suffix) = port_name.strip_prefix("/dev/tty.") {
+        return format!("/dev/serial.{suffix}");
+    }
+    if let Some(suffix) = port_name.strip_prefix("/dev/cu.") {
+        return format!("/dev/serial.{suffix}");
+    }
+    port_name.to_owned()
+}
+
+fn select_group_port(group: &[&SerialPortInfo]) -> String {
+    group
+        .iter()
+        .copied()
+        .filter(|port| is_dialout_port_name(&port.port_name))
+        .min_by_key(|port| port.port_name.as_str())
+        .or_else(|| {
+            group
+                .iter()
+                .copied()
+                .min_by_key(|port| port.port_name.as_str())
+        })
+        .expect("group must not be empty")
+        .port_name
+        .clone()
+}
+
+fn is_dialout_port_name(port_name: &str) -> bool {
+    port_name.starts_with("/dev/cu.")
+}
+
+fn is_preferred_auto_select_port(port: &SerialPortInfo) -> bool {
+    matches!(port.port_type, SerialPortType::UsbPort(_))
+        || port_name_looks_like_usb_serial(&port.port_name)
+}
+
+fn port_name_looks_like_usb_serial(port_name: &str) -> bool {
+    let port_name = port_name.to_ascii_lowercase();
+    port_name.contains("ttyusb")
+        || port_name.contains("ttyacm")
+        || port_name.contains("usbserial")
+        || port_name.contains("usbmodem")
+        || port_name.contains("/dev/tty.usb")
+        || port_name.contains("/dev/cu.usb")
+        || port_name.contains("st-link")
+        || port_name.contains("stlink")
 }
 
 fn open_port(config: &SerialConfig) -> Result<Box<dyn SerialPort>, SerialError> {
@@ -333,7 +413,8 @@ fn take_complete_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::SerialLineBuffer;
+    use super::{SerialLineBuffer, auto_select_port};
+    use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
 
     #[test]
     fn line_buffer_reassembles_text_split_across_chunks() {
@@ -363,5 +444,59 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].port, "/dev/ttyUSB0");
         assert_eq!(pending[0].bytes, b"CAN TX 0x2".to_vec());
+    }
+
+    #[test]
+    fn auto_select_port_prefers_single_usb_serial_device_even_with_tty_cu_aliases() {
+        let ports = vec![
+            port(
+                "/dev/tty.Bluetooth-Incoming-Port",
+                SerialPortType::BluetoothPort,
+            ),
+            port("/dev/tty.usbmodem1103", SerialPortType::Unknown),
+            port("/dev/cu.usbmodem1103", SerialPortType::Unknown),
+        ];
+
+        assert_eq!(auto_select_port(&ports).unwrap(), "/dev/cu.usbmodem1103");
+    }
+
+    #[test]
+    fn auto_select_port_supports_single_st_link_named_port() {
+        let ports = vec![
+            port(
+                "/dev/tty.Bluetooth-Incoming-Port",
+                SerialPortType::BluetoothPort,
+            ),
+            port("/dev/cu.ST-LINK", SerialPortType::Unknown),
+        ];
+
+        assert_eq!(auto_select_port(&ports).unwrap(), "/dev/cu.ST-LINK");
+    }
+
+    #[test]
+    fn auto_select_port_prefers_single_usb_port_when_other_ports_exist() {
+        let ports = vec![
+            port("/dev/ttyS0", SerialPortType::PciPort),
+            port("/dev/ttyUSB0", usb_port_type("USB Serial")),
+        ];
+
+        assert_eq!(auto_select_port(&ports).unwrap(), "/dev/ttyUSB0");
+    }
+
+    fn port(port_name: &str, port_type: SerialPortType) -> SerialPortInfo {
+        SerialPortInfo {
+            port_name: port_name.to_owned(),
+            port_type,
+        }
+    }
+
+    fn usb_port_type(product: &str) -> SerialPortType {
+        SerialPortType::UsbPort(UsbPortInfo {
+            vid: 0x0483,
+            pid: 0x5740,
+            serial_number: Some(String::from("serial-1")),
+            manufacturer: Some(String::from("STMicroelectronics")),
+            product: Some(product.to_owned()),
+        })
     }
 }

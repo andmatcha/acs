@@ -197,7 +197,7 @@ fn build_settings(
     cli_options: ControlCliOptions,
     file_config: config::AppConfig,
 ) -> Result<ControlSettings, String> {
-    let raw_port = cli_options.port.or(file_config.control.port);
+    let raw_port = resolve_requested_port(cli_options.port, file_config.control.port);
     let port = serial::resolve_port(raw_port.as_deref()).map_err(|error| error.to_string())?;
     let baud = cli_options
         .baud
@@ -241,6 +241,17 @@ fn build_settings(
     })
 }
 
+fn resolve_requested_port(cli_port: Option<String>, config_port: Option<String>) -> Option<String> {
+    normalize_requested_port(cli_port).or_else(|| normalize_requested_port(config_port))
+}
+
+fn normalize_requested_port(port: Option<String>) -> Option<String> {
+    port.and_then(|port| {
+        let trimmed = port.trim();
+        (!trimmed.is_empty()).then_some(trimmed.to_owned())
+    })
+}
+
 fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
     let mut options = ControlCliOptions::default();
     let mut iter = args.into_iter();
@@ -280,4 +291,33 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
     }
 
     Ok(options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_requested_port;
+
+    #[test]
+    fn requested_port_falls_back_to_config_when_cli_port_is_empty() {
+        assert_eq!(
+            resolve_requested_port(Some(String::from("")), Some(String::from("/dev/ttyUSB0"))),
+            Some(String::from("/dev/ttyUSB0"))
+        );
+        assert_eq!(
+            resolve_requested_port(
+                Some(String::from("   ")),
+                Some(String::from("/dev/ttyUSB0"))
+            ),
+            Some(String::from("/dev/ttyUSB0"))
+        );
+    }
+
+    #[test]
+    fn requested_port_treats_empty_config_port_as_unspecified() {
+        assert_eq!(resolve_requested_port(None, Some(String::from(""))), None);
+        assert_eq!(
+            resolve_requested_port(None, Some(String::from("   "))),
+            None
+        );
+    }
 }
