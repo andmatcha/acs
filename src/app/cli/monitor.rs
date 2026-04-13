@@ -45,7 +45,7 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 
     match run_with_options(cli_options) {
         Ok(log_path) => {
-            println!("\nlog saved to {}", log_path.display());
+            println!("log saved to {}", log_path.display());
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -70,7 +70,8 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
 
     signal::install_handler();
 
-    let mut dashboard = TextDashboard::new("acs monitor");
+    let mut dashboard = TextDashboard::new("acs monitor")
+        .map_err(|error| format!("failed to initialize dashboard: {error}"))?;
     dashboard.set_header_lines(vec![
         format!("ports: {}", settings.ports.join(", ")),
         format!("baud: {}", settings.baud),

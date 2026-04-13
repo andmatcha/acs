@@ -3,6 +3,14 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Write};
 
 const HISTORY_LIMIT: usize = 10;
+const RESET: &str = "\x1b[0m";
+const REVERSE: &str = "\x1b[7m";
+const ENTER_ALTERNATE_SCREEN: &str = "\x1b[?1049h";
+const LEAVE_ALTERNATE_SCREEN: &str = "\x1b[?1049l";
+const CLEAR_SCREEN: &str = "\x1b[2J";
+const HOME_CURSOR: &str = "\x1b[H";
+const HIDE_CURSOR: &str = "\x1b[?25l";
+const SHOW_CURSOR: &str = "\x1b[?25h";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SectionKind {
@@ -27,15 +35,25 @@ pub struct TextDashboard {
     title: String,
     header_lines: Vec<String>,
     sections: BTreeMap<(SectionKind, String), Section>,
+    stdout: io::Stdout,
 }
 
 impl TextDashboard {
-    pub fn new(title: impl Into<String>) -> Self {
-        Self {
+    pub fn new(title: impl Into<String>) -> io::Result<Self> {
+        let mut stdout = io::stdout();
+        // 代替スクリーンを使うと、終了後に元のターミナル表示へ自然に戻せる。
+        write!(
+            stdout,
+            "{ENTER_ALTERNATE_SCREEN}{CLEAR_SCREEN}{HOME_CURSOR}{HIDE_CURSOR}"
+        )?;
+        stdout.flush()?;
+
+        Ok(Self {
             title: title.into(),
             header_lines: Vec::new(),
             sections: BTreeMap::new(),
-        }
+            stdout,
+        })
     }
 
     pub fn set_header_lines(&mut self, lines: Vec<String>) {
@@ -58,7 +76,7 @@ impl TextDashboard {
         push_entry(self.section_mut(SectionKind::Input, port), bytes);
     }
 
-    pub fn render(&self, status: Option<&str>) -> io::Result<()> {
+    pub fn render(&mut self, status: Option<&str>) -> io::Result<()> {
         let mut screen = String::new();
         screen.push_str(&self.title);
         screen.push('\n');
@@ -77,17 +95,21 @@ impl TextDashboard {
         screen.push('\n');
 
         for section in self.sections.values() {
-            screen.push('[');
-            screen.push_str(match section.kind {
+            let mut heading = String::new();
+            heading.push('[');
+            heading.push_str(match section.kind {
                 SectionKind::Output => "output",
                 SectionKind::Input => "input",
             });
-            screen.push_str("] ");
-            screen.push_str(&section.port);
+            heading.push_str("] ");
+            heading.push_str(&section.port);
             if !section.status.is_empty() {
-                screen.push_str("  ");
-                screen.push_str(&section.status);
+                heading.push_str("  ");
+                heading.push_str(&section.status);
             }
+            screen.push_str(REVERSE);
+            screen.push_str(&heading);
+            screen.push_str(RESET);
             screen.push('\n');
 
             if section.entries.is_empty() {
@@ -106,9 +128,8 @@ impl TextDashboard {
             screen.push('\n');
         }
 
-        let mut stdout = io::stdout();
-        write!(stdout, "\x1b[2J\x1b[H{screen}")?;
-        stdout.flush()
+        write!(self.stdout, "{CLEAR_SCREEN}{HOME_CURSOR}{screen}")?;
+        self.stdout.flush()
     }
 
     fn section_mut(&mut self, kind: SectionKind, port: &str) -> &mut Section {
@@ -120,6 +141,13 @@ impl TextDashboard {
                 status: String::new(),
                 entries: VecDeque::new(),
             })
+    }
+}
+
+impl Drop for TextDashboard {
+    fn drop(&mut self) {
+        let _ = write!(self.stdout, "{SHOW_CURSOR}{LEAVE_ALTERNATE_SCREEN}");
+        let _ = self.stdout.flush();
     }
 }
 
