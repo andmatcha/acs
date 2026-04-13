@@ -73,8 +73,8 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String> {
-    let file_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
-    let settings = build_settings(cli_options, file_config)?;
+    let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
+    let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
     let payload = settings.format.encode_dummy_payload()?;
     let output_id = String::from("main");
     let mut session = SessionRuntime::new(SessionSpec {
@@ -150,6 +150,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
 fn build_settings(
     cli_options: SendCliOptions,
     file_config: config::AppConfig,
+    config_lookup: &super::paths::ConfigLookup,
 ) -> Result<SendSettings, String> {
     let raw_port = resolve_requested_port(cli_options.port, file_config.send.port);
     let port = serial::resolve_port(raw_port.as_deref()).map_err(|error| error.to_string())?;
@@ -168,7 +169,7 @@ fn build_settings(
         .log_dir
         .or(file_config.send.log_dir)
         .or(file_config.log_dir)
-        .unwrap_or_else(default_log_dir);
+        .unwrap_or_else(|| default_log_dir(config_lookup));
 
     Ok(SendSettings {
         port,

@@ -1,3 +1,4 @@
+use super::paths::{self, ConfigLookup};
 use crate::common::extend_unique_strings;
 use crate::output::OutputFormat;
 use crate::pipeline::{
@@ -9,8 +10,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(crate) const DEFAULT_CONFIG_FILE_NAME: &str = "acs.config.json";
-pub(crate) const DEFAULT_CONFIG_DIR_NAME: &str = "config";
+pub(crate) use super::paths::LOCAL_CONFIG_DIR_NAME as DEFAULT_CONFIG_DIR_NAME;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct AppConfig {
@@ -96,6 +96,12 @@ enum JsonValue {
 }
 
 type JsonObject = BTreeMap<String, JsonValue>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedConfig {
+    pub config: AppConfig,
+    pub lookup: ConfigLookup,
+}
 
 impl AppConfig {
     fn merge_from(&mut self, other: AppConfig) {
@@ -283,25 +289,18 @@ fn collect_config_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), Str
     Ok(())
 }
 
-pub(crate) fn load_config_or_default(explicit_path: Option<&Path>) -> Result<AppConfig, String> {
-    match explicit_path {
-        Some(path) => load_config(path),
-        None => match find_default_config_path() {
-            Some(path) => load_config(&path),
-            None => Ok(AppConfig::default()),
-        },
-    }
-}
+pub(crate) fn load_config_or_default(explicit_path: Option<&Path>) -> Result<LoadedConfig, String> {
+    let lookup = match explicit_path {
+        Some(path) => ConfigLookup::Explicit(path.to_path_buf()),
+        None => paths::find_default_config_lookup(),
+    };
 
-fn find_default_config_path() -> Option<PathBuf> {
-    let current_dir = std::env::current_dir().ok()?;
-    let config_dir = current_dir.join(DEFAULT_CONFIG_DIR_NAME);
-    if config_dir.is_dir() {
-        return Some(config_dir);
-    }
+    let config = match lookup.path() {
+        Some(path) => load_config(path)?,
+        None => AppConfig::default(),
+    };
 
-    let config_file = current_dir.join(DEFAULT_CONFIG_FILE_NAME);
-    config_file.is_file().then_some(config_file)
+    Ok(LoadedConfig { config, lookup })
 }
 
 fn parse_control_config(

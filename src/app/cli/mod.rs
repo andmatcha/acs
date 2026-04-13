@@ -4,6 +4,7 @@ mod config;
 mod control;
 mod help;
 mod monitor;
+mod paths;
 mod route;
 mod send;
 mod signal;

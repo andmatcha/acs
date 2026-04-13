@@ -1,3 +1,4 @@
+use super::paths;
 use std::process::ExitCode;
 
 pub(crate) fn print_usage(bin_name: &str) {
@@ -107,10 +108,15 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("                                      default, input:default, output:default");
     println!("                             MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("      --monitor <PORT>       Additional serial port to monitor");
+    println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
-        "      --config <PATH>        Read options from a JSON file or directory (default: ./config/, fallback: ./acs.config.json)"
+        "                              Defaults: {}",
+        paths::default_config_help()
     );
-    println!("      --log-dir <DIR>        Log directory (default: ./logs)");
+    println!(
+        "      --log-dir <DIR>        Log directory (default: {})",
+        paths::default_log_help()
+    );
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
@@ -139,10 +145,15 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, output:PORT, default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
-        "      --config <PATH>        Read options from a JSON file or directory (default: ./config/, fallback: ./acs.config.json)"
+        "                              Defaults: {}",
+        paths::default_config_help()
     );
-    println!("      --log-dir <DIR>        Log directory (default: ./logs)");
+    println!(
+        "      --log-dir <DIR>        Log directory (default: {})",
+        paths::default_log_help()
+    );
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
@@ -165,10 +176,15 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                             MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
-        "      --config <PATH>        Read options from a JSON file or directory (default: ./config/, fallback: ./acs.config.json)"
+        "                              Defaults: {}",
+        paths::default_config_help()
     );
-    println!("      --log-dir <DIR>        Log directory (default: ./logs)");
+    println!(
+        "      --log-dir <DIR>        Log directory (default: {})",
+        paths::default_log_help()
+    );
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
@@ -200,10 +216,15 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("      --config <PATH>         Read options from a JSON file or directory");
     println!(
-        "      --config <PATH>         Read options from a JSON file or directory (default: ./config/, fallback: ./acs.config.json)"
+        "                               Defaults: {}",
+        paths::default_config_help()
     );
-    println!("      --log-dir <DIR>         Log directory (default: ./logs)");
+    println!(
+        "      --log-dir <DIR>         Log directory (default: {})",
+        paths::default_log_help()
+    );
     println!("  -h, --help                  Show this help");
     println!();
     println!("Built-in templates:");

@@ -71,8 +71,8 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
-    let file_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
-    let settings = build_settings(cli_options, file_config)?;
+    let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
+    let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
 
     let mut controller = Ds4Controller::open(settings.controller.as_deref())
         .map_err(|error| format!("failed to open controller: {error}"))?;
@@ -208,6 +208,7 @@ fn control_transform_modules(format: OutputFormat) -> Vec<TransformModuleConfig>
 fn build_settings(
     cli_options: ControlCliOptions,
     file_config: config::AppConfig,
+    config_lookup: &super::paths::ConfigLookup,
 ) -> Result<ControlSettings, String> {
     let raw_port = resolve_requested_port(cli_options.port, file_config.control.port);
     let port = serial::resolve_port(raw_port.as_deref()).map_err(|error| error.to_string())?;
@@ -239,7 +240,7 @@ fn build_settings(
         .log_dir
         .or(file_config.control.log_dir)
         .or(file_config.log_dir)
-        .unwrap_or_else(default_log_dir);
+        .unwrap_or_else(|| default_log_dir(config_lookup));
 
     Ok(ControlSettings {
         port,

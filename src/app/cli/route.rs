@@ -87,8 +87,8 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: RouteCliOptions) -> Result<PathBuf, String> {
-    let file_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
-    let settings = build_settings(cli_options, file_config)?;
+    let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
+    let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
     let mut engine = PipelineEngine::new(&settings.pipeline)?;
     let mut session = SessionRuntime::new(settings.session)?;
 
@@ -140,6 +140,7 @@ fn run_with_options(cli_options: RouteCliOptions) -> Result<PathBuf, String> {
 fn build_settings(
     cli_options: RouteCliOptions,
     file_config: config::AppConfig,
+    config_lookup: &super::paths::ConfigLookup,
 ) -> Result<RouteSettings, String> {
     let route_config = file_config.route;
     let template_name = cli_options
@@ -174,7 +175,7 @@ fn build_settings(
         .log_dir
         .or(route_config.log_dir)
         .or(file_config.log_dir)
-        .unwrap_or_else(default_log_dir);
+        .unwrap_or_else(|| default_log_dir(config_lookup));
 
     Ok(RouteSettings {
         session: SessionSpec {
@@ -385,8 +386,8 @@ fn print_available_templates(
     config_path: Option<&std::path::Path>,
     bin_name: &str,
 ) -> Result<(), String> {
-    let file_config = config::load_config_or_default(config_path)?;
-    let templates = collect_available_templates(&file_config.route);
+    let loaded_config = config::load_config_or_default(config_path)?;
+    let templates = collect_available_templates(&loaded_config.config.route);
 
     println!("Available route templates:");
     for template in templates.values() {

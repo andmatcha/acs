@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+use super::paths::{ConfigLookup, default_log_dir as default_log_dir_for_lookup};
 
 pub(crate) fn default_baud_rate() -> u32 {
     115_200
 }
 
-pub(crate) fn default_log_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("logs")
+pub(crate) fn default_log_dir(lookup: &ConfigLookup) -> std::path::PathBuf {
+    default_log_dir_for_lookup(lookup)
 }
 
 pub(crate) fn dedup_strings(values: Vec<String>) -> Vec<String> {
