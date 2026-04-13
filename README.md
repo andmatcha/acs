@@ -7,6 +7,7 @@
 - `acs control`: DUALSHOCK 4 の入力を読み取り、整形したシリアル出力を送信する
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
 - `acs route`: 1 つ以上のシリアル入力を、設定に応じて 1 つ以上のシリアル出力へ振り分ける
+- `acs send`: 指定形式のダミーデータを 1 回シリアルポートへ送信する
 - `--raw`: 改行でまとめず、生の受信チャンクをそのまま表示する
 - `--display`: ポートごとに、受信・送信それぞれの表示形式を `hex` / `ascii` / `utf8` / `hex+ascii` / `hex+utf8` から選べる
 - ログを `./logs` 以下へ自動保存する
@@ -24,6 +25,7 @@ acs monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1
 acs monitor --raw --port /dev/ttyUSB0
 acs monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8
 acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+acs send --port /dev/ttyUSB0 --format PacketACv6
 acs route --list-templates
 acs route --config config
 acs control --config config
@@ -43,6 +45,7 @@ acs control --config config
 cargo run -- control --port /dev/ttyUSB0 --baud 115200 --format arm9
 cargo run -- monitor --port /dev/ttyUSB0
 cargo run -- route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+cargo run -- send --port /dev/ttyUSB0 --format PacketACv6
 ```
 
 一度ビルドしてから実行したい場合は、次のようにします。
@@ -51,6 +54,7 @@ cargo run -- route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 cargo build
 ./target/debug/acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
 ./target/debug/acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+./target/debug/acs send --port /dev/ttyUSB0 --format PacketACv6
 ```
 
 配布用や普段使い用に最適化ビルドしたい場合は `--release` を使います。
@@ -59,6 +63,7 @@ cargo build
 cargo build --release
 ./target/release/acs monitor --port /dev/ttyUSB0
 ./target/release/acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+./target/release/acs send --port /dev/ttyUSB0 --format PacketACv6
 ```
 
 ## グローバルで使えるようにする方法
@@ -75,6 +80,7 @@ cargo install --path .
 acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
 acs monitor --port /dev/ttyUSB0
 acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+acs send --port /dev/ttyUSB0 --format PacketACv6
 ```
 
 `PATH` が通っていない場合は、シェル設定ファイルに追加してください。`zsh` なら例えば以下です。

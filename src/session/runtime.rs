@@ -1,5 +1,7 @@
 use crate::port_display::PortDisplayMode;
-use crate::serial::{SerialCallback, SerialConfig, SerialEvent, SerialMonitor, SerialWriter};
+use crate::serial::{
+    SerialCallback, SerialConfig, SerialEvent, SerialMonitor, SerialWriter, open_monitor_and_writer,
+};
 use crate::session::dashboard::SessionDashboard;
 use crate::session::event::{IngressFrame, SessionEvent};
 use std::collections::BTreeMap;
@@ -60,24 +62,9 @@ impl SessionRuntime {
             &spec.log_dir,
         )?;
 
-        let (event_tx, event_rx) = mpsc::channel::<SessionEvent>();
-        let input_monitors = spec
-            .inputs
-            .iter()
-            .map(|input| {
-                dashboard.configure_input_port(&input.port, input.baud_rate, input.display_mode);
-                SerialMonitor::open(
-                    &SerialConfig {
-                        port: input.port.clone(),
-                        baud_rate: input.baud_rate,
-                    },
-                    make_session_callback(event_tx.clone(), &input.id),
-                )
-                .map_err(|error| error.to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut outputs = BTreeMap::new();
+        for input in &spec.inputs {
+            dashboard.configure_input_port(&input.port, input.baud_rate, input.display_mode);
+        }
         for output in &spec.outputs {
             dashboard.configure_output_port(
                 &output.port,
@@ -85,11 +72,37 @@ impl SessionRuntime {
                 &output.format_name,
                 output.display_mode,
             );
-            let connection = SerialWriter::open(&SerialConfig {
-                port: output.port.clone(),
-                baud_rate: output.baud_rate,
-            })
-            .map_err(|error| error.to_string())?;
+        }
+
+        let (event_tx, event_rx) = mpsc::channel::<SessionEvent>();
+        let mut input_monitors = Vec::new();
+        let mut shared_input_indexes = vec![false; spec.inputs.len()];
+        let mut outputs = BTreeMap::new();
+        for output in &spec.outputs {
+            let connection = if let Some((input_index, input)) =
+                spec.inputs.iter().enumerate().find(|(index, input)| {
+                    !shared_input_indexes[*index]
+                        && input.port == output.port
+                        && input.baud_rate == output.baud_rate
+                }) {
+                let (monitor, writer) = open_monitor_and_writer(
+                    &SerialConfig {
+                        port: output.port.clone(),
+                        baud_rate: output.baud_rate,
+                    },
+                    make_session_callback(event_tx.clone(), &input.id),
+                )
+                .map_err(|error| error.to_string())?;
+                input_monitors.push(monitor);
+                shared_input_indexes[input_index] = true;
+                writer
+            } else {
+                SerialWriter::open(&SerialConfig {
+                    port: output.port.clone(),
+                    baud_rate: output.baud_rate,
+                })
+                .map_err(|error| error.to_string())?
+            };
             outputs.insert(
                 output.id.clone(),
                 SessionOutputHandle {
@@ -97,6 +110,22 @@ impl SessionRuntime {
                     connection,
                 },
             );
+        }
+
+        for (index, input) in spec.inputs.iter().enumerate() {
+            if shared_input_indexes[index] {
+                continue;
+            }
+
+            let monitor = SerialMonitor::open(
+                &SerialConfig {
+                    port: input.port.clone(),
+                    baud_rate: input.baud_rate,
+                },
+                make_session_callback(event_tx.clone(), &input.id),
+            )
+            .map_err(|error| error.to_string())?;
+            input_monitors.push(monitor);
         }
 
         Ok(Self {

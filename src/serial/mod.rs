@@ -74,6 +74,10 @@ pub enum SerialError {
         port: String,
         source: SerialPortLibError,
     },
+    Clone {
+        port: String,
+        source: SerialPortLibError,
+    },
     Write {
         port: String,
         source: io::Error,
@@ -90,6 +94,9 @@ impl fmt::Display for SerialError {
             Self::Open { port, source } => write!(f, "failed to open {port}: {source}"),
             Self::Configure { port, source } => {
                 write!(f, "failed to configure {port}: {source}")
+            }
+            Self::Clone { port, source } => {
+                write!(f, "failed to clone handle for {port}: {source}")
             }
             Self::Write { port, source } => write!(f, "failed to write to {port}: {source}"),
             Self::NoSerialPortFound => {
@@ -115,10 +122,11 @@ pub struct SerialWriter {
 impl SerialWriter {
     pub fn open(config: &SerialConfig) -> Result<Self, SerialError> {
         let writer = open_port(config)?;
-        Ok(Self {
-            port_name: config.port.clone(),
-            writer,
-        })
+        Ok(Self::from_port(config.port.clone(), writer))
+    }
+
+    fn from_port(port_name: String, writer: Box<dyn SerialPort>) -> Self {
+        Self { port_name, writer }
     }
 
     pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), SerialError> {
@@ -182,6 +190,23 @@ impl Drop for SerialMonitor {
             let _ = reader_thread.join();
         }
     }
+}
+
+pub fn open_monitor_and_writer(
+    config: &SerialConfig,
+    callback: SerialCallback,
+) -> Result<(SerialMonitor, SerialWriter), SerialError> {
+    let reader = open_port(config)?;
+    let writer = reader.try_clone().map_err(|source| SerialError::Clone {
+        port: config.port.clone(),
+        source,
+    })?;
+    let monitor = SerialMonitor::from_reader(reader, config.port.clone(), callback)?;
+
+    Ok((
+        monitor,
+        SerialWriter::from_port(config.port.clone(), writer),
+    ))
 }
 
 pub fn available_ports() -> Result<Vec<SerialPortInfo>, SerialError> {

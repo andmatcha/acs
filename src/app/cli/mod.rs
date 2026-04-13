@@ -5,6 +5,7 @@ mod control;
 mod help;
 mod monitor;
 mod route;
+mod send;
 mod signal;
 
 use std::env;
@@ -25,6 +26,7 @@ pub fn run() -> ExitCode {
         Some("control") => control::run(args.collect(), &bin_name),
         Some("monitor") => monitor::run(args.collect(), &bin_name),
         Some("route") => route::run(args.collect(), &bin_name),
+        Some("send") => send::run(args.collect(), &bin_name),
         Some(command) => {
             eprintln!("unknown subcommand: {command}");
             help::print_usage(&bin_name);
