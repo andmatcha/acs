@@ -1,6 +1,6 @@
-# arm9 コントローラー入力と AC v6 / CAN 対応
+# PacketACv6 コントローラー入力と AC v6 / CAN 対応
 
-`arm9` Manual モードで、DS4 の入力がどの AC v6 field と `kodenchan` direct CAN の ID / Data byte に載るかを一覧化したメモです。
+`PacketACv6` Manual モードで、DS4 の入力がどの AC v6 field と `kodenchan` direct CAN の ID / Data byte に載るかを一覧化したメモです。
 
 電流値の表にあるデフォルト値と入力後の値は AC v6 の raw `current` 値です。`kodenchan` 側では `motor_command = (current - 255) * 64` に変換され、CAN data へ high byte first で載ります。raw `255` は CAN command `0` です。
 
@@ -37,5 +37,5 @@
 
 ## 根拠
 
-- [ARM9_ACV6_PACKET_AND_CAN.md](ARM9_ACV6_PACKET_AND_CAN.md)
-- [encoder.rs](../src/output/formats/arm9/encoder.rs)
+- [PACKET_ACV6_PACKET_AND_CAN.md](PACKET_ACV6_PACKET_AND_CAN.md)
+- [encoder.rs](../src/output/formats/packetacv6/encoder.rs)

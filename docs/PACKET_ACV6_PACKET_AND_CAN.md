@@ -1,18 +1,18 @@
-# `arm9` AC v6 パケット仕様と CAN 変換
+# `PacketACv6` パケット仕様と CAN 変換
 
 ## 対象
 
-この文書は、現行の `src/output/formats/arm9/encoder.rs` が生成する Manual 向け `AC v6` パケットと、その後段で使う CAN 変換を整理したものです。
+この文書は、現行の `src/output/formats/packetacv6/encoder.rs` が生成する Manual 向け `AC v6` パケットと、その後段で使う CAN 変換を整理したものです。
 
 このリポジトリが直接生成するのは `AC v6` パケットまでであり、CAN 変換の節は Manual モードで downstream 側がどのフィールドを CAN に載せるかをまとめています。
 
 ## 全体フロー
 
 ```text
-DS4 HID -> compact -> arm9 ManualPacketEncoder -> AC v6 packet -> CAN
+DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet -> CAN
 ```
 
-現行実装の `arm9` 出力は Manual モード専用で、生成されるパケット長は 39 byte である。
+現行実装の `packetacv6` 出力は Manual モード専用で、生成されるパケット長は 39 byte である。
 
 ## `compact` から Manual 制御状態への対応
 
@@ -193,4 +193,4 @@ motor_command = (current - 255) * 64
 
 ## 根拠
 
-- `src/output/formats/arm9/encoder.rs`
+- `src/output/formats/packetacv6/encoder.rs`

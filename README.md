@@ -17,7 +17,7 @@
 ## コマンド例
 
 ```bash
-acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
+acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 acs control --monitor /dev/ttyUSB1
 acs control --raw --monitor /dev/ttyUSB1
 acs control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex
@@ -42,7 +42,7 @@ acs control --config config
 このリポジトリのディレクトリ内では、まず `cargo run` でそのまま実行できます。
 
 ```bash
-cargo run -- control --port /dev/ttyUSB0 --baud 115200 --format arm9
+cargo run -- control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 cargo run -- monitor --port /dev/ttyUSB0
 cargo run -- route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 cargo run -- send --port /dev/ttyUSB0 --format PacketACv6
@@ -52,7 +52,7 @@ cargo run -- send --port /dev/ttyUSB0 --format PacketACv6
 
 ```bash
 cargo build
-./target/debug/acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
+./target/debug/acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 ./target/debug/acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ./target/debug/acs send --port /dev/ttyUSB0 --format PacketACv6
 ```
@@ -77,7 +77,7 @@ cargo install --path .
 これで通常は `~/.cargo/bin/acs` にインストールされます。`~/.cargo/bin` が `PATH` に入っていれば、どのディレクトリからでも次のように実行できます。
 
 ```bash
-acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
+acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 acs monitor --port /dev/ttyUSB0
 acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 acs send --port /dev/ttyUSB0 --format PacketACv6
@@ -136,7 +136,7 @@ acs route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/tty
     "port": "/dev/ttyUSB0",
     "baud": 115200,
     "controller": "0",
-    "format": "arm9",
+    "format": "packetacv6",
     "raw": false,
     "display": {
       "default": "hex+utf8",

@@ -1,10 +1,10 @@
-mod arm9;
+mod packetacv6;
 
 use crate::input::compact::CompactReport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
-    Arm9,
+    PacketAcV6,
 }
 
 struct OutputFormatDefinition {
@@ -14,9 +14,9 @@ struct OutputFormatDefinition {
 }
 
 const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[OutputFormatDefinition {
-    format: OutputFormat::Arm9,
-    names: &["arm9", "packetacv6"],
-    create_driver: arm9::create_driver,
+    format: OutputFormat::PacketAcV6,
+    names: &["packetacv6"],
+    create_driver: packetacv6::create_driver,
 }];
 
 impl OutputFormat {
@@ -65,10 +65,10 @@ mod tests {
     use super::OutputFormat;
 
     #[test]
-    fn parse_supports_arm9() {
+    fn parse_rejects_arm9() {
         assert_eq!(
-            OutputFormat::parse("arm9").expect("should parse"),
-            OutputFormat::Arm9
+            OutputFormat::parse("arm9").expect_err("should reject"),
+            "unsupported output format: arm9"
         );
     }
 
@@ -76,17 +76,17 @@ mod tests {
     fn parse_supports_packetacv6_alias() {
         assert_eq!(
             OutputFormat::parse("packetacv6").expect("should parse"),
-            OutputFormat::Arm9
+            OutputFormat::PacketAcV6
         );
         assert_eq!(
             OutputFormat::parse("PacketACv6").expect("should parse"),
-            OutputFormat::Arm9
+            OutputFormat::PacketAcV6
         );
     }
 
     #[test]
-    fn arm9_dummy_payload_has_ac_header() {
-        let payload = OutputFormat::Arm9
+    fn packetacv6_dummy_payload_has_ac_header() {
+        let payload = OutputFormat::PacketAcV6
             .encode_dummy_payload()
             .expect("should encode");
 

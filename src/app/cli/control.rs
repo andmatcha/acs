@@ -186,9 +186,9 @@ fn build_control_pipeline_spec(controller_input_id: &str, format: OutputFormat) 
 
 fn control_transform_modules(format: OutputFormat) -> Vec<TransformModuleConfig> {
     match format {
-        OutputFormat::Arm9 => vec![
+        OutputFormat::PacketAcV6 => vec![
             TransformModuleConfig::Ds4ToCompact,
-            TransformModuleConfig::Arm9Encode,
+            TransformModuleConfig::PacketAcV6Encode,
         ],
     }
 }
@@ -207,7 +207,7 @@ fn build_settings(
     let format_name = cli_options
         .format
         .or(file_config.control.format)
-        .unwrap_or_else(|| String::from("arm9"));
+        .unwrap_or_else(|| String::from("packetacv6"));
     let format = OutputFormat::parse(&format_name)?;
     let raw = cli_options.raw || file_config.control.raw.unwrap_or(false);
     let mut display = file_config.control.display;

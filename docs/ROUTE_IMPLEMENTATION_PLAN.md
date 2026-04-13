@@ -241,7 +241,7 @@ trait RouterModule {
   - 複数入力の最新値を保持し、そろったら結合して出力
 - `concat`
   - 到着した bytes を指定順で連結
-- `arm9_encode`
+- `packetacv6_encode`
   - 既存 `output::formats` に近い変換を route 用に再利用できる形へ移す
 
 ### 5. 分類と振り分けを分離する
@@ -327,7 +327,7 @@ struct PipelineSpec { /* pipelines, modules, routing ... */ }
 ### 5. module registry は 1 か所に集約する
 
 `control` だけが知る transform、`route` だけが知る transform、という registry 分断は避ける。
-`ds4_to_compact` や `arm9_encode` も pipeline registry に登録し、使うかどうかだけを command spec で切り替える。
+`ds4_to_compact` や `packetacv6_encode` も pipeline registry に登録し、使うかどうかだけを command spec で切り替える。
 
 ### 6. 既存コードの移行時は「先に共通化、後で置換」の順にする
 
@@ -435,7 +435,7 @@ acs route \
 - `identity`
 - `concat`
 - `join_latest`
-- `arm9_encode`
+- `packetacv6_encode`
 
 ### classify
 
@@ -465,7 +465,7 @@ acs route \
 
 ### 変換して出力
 
-- `transform = arm9_encode` など
+- `transform = packetacv6_encode` など
 
 ### 複数入力を来た順に 1 出力
 
@@ -553,7 +553,7 @@ acs route \
 
 - `Ds4InputAdapter`
 - `ds4_to_compact`
-- `arm9_encode`
+- `packetacv6_encode`
 - `control` 固有 config の正規化
 - `control --monitor` を observer input として整理
 
@@ -592,7 +592,7 @@ acs route \
 - `join_latest`
 - `by_source + source_map`
 - 同一入力を複数 pipeline に流したときの独立性
-- `control` の `ds4_to_compact -> arm9_encode` 連鎖
+- `control` の `ds4_to_compact -> packetacv6_encode` 連鎖
 
 ## 既存実装に合わせた注意点
 
@@ -649,7 +649,7 @@ acs route \
   - `input::compact::convert_input_report`
 - `出力変換`
   - `output::formats::OutputDriver`
-  - 現状は `arm9`
+  - 現状は `packetacv6`
 - `出力配送`
   - `SerialConnection::write_bytes`
 - `監視/UI`
@@ -665,14 +665,14 @@ acs route \
 - `SerialMonitor`
 - `SerialDashboard`
 - logging 周辺
-- `output::formats::arm9`
+- `output::formats::packetacv6`
   - route の transform module として移植しやすい
 - `input::compact::convert_input_report`
   - route の transform module として移植しやすい
 
 特に `control` の中核処理は本質的に
 
-`DS4 report -> compact report -> arm9 packet -> serial output`
+`DS4 report -> compact report -> PacketACv6 packet -> serial output`
 
 なので、これは route/pipeline の「入力 adapter + transform chain + broadcast router」の 1 例として表現できる。
 
@@ -713,7 +713,7 @@ trait InputAdapter {
 `control` を素直に表現すると、変換は 1 段ではなく少なくとも 2 段ある。
 
 - `ds4_report_to_compact`
-- `compact_to_arm9_packet`
+- `compact_to_packetacv6_packet`
 
 このため、実装上は「transform ステージ 1 個」でも、その中に module 配列を持てる形が望ましい。
 
@@ -724,7 +724,7 @@ trait InputAdapter {
   "transform": {
     "modules": [
       { "module": "ds4_to_compact" },
-      { "module": "arm9_encode" }
+      { "module": "packetacv6_encode" }
     ]
   }
 }
@@ -788,7 +788,7 @@ trait InputAdapter {
       "transform": {
         "modules": [
           { "module": "ds4_to_compact" },
-          { "module": "arm9_encode" }
+          { "module": "packetacv6_encode" }
         ]
       },
       "classify": { "module": "none" },

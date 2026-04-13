@@ -4,7 +4,7 @@
     "port": "",
     "baud": 115200,
     "controller": "0",
-    "format": "arm9",
+    "format": "packetacv6",
     "raw": false,
     "display": {
       "default": "hex+ascii",

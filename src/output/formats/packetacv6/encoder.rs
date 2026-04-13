@@ -1,11 +1,8 @@
+use super::definition::{
+    PACKET_ACV6_DEFINITION, PACKET_ACV6_MANUAL_MODE_VALUE, PACKET_ACV6_PACKET_LEN,
+    PACKET_ACV6_PAYLOAD_LEN, PacketAcV6Profile,
+};
 use crate::input::compact::CompactReport;
-
-const MANUAL_MODE_VALUE: u8 = 1;
-const MANUAL_PACKET_LEN: usize = 39;
-const PAYLOAD_LEN: usize = 37;
-const TRIGGER_THRESHOLD: u8 = 205;
-const STICK_LOW_THRESHOLD: u8 = 25;
-const STICK_HIGH_THRESHOLD: u8 = 230;
 
 const CONTROL_BYTE_KBD_PP: u8 = 1 << 0;
 const CONTROL_BYTE_KBD_EN: u8 = 1 << 1;
@@ -18,87 +15,62 @@ const CONTROL_BYTE_KBD_START: u8 = 1 << 7;
 const CONTROL_BYTE_MANUAL_UNUSED_BITS: u8 =
     CONTROL_BYTE_KBD_PP | CONTROL_BYTE_KBD_EN | CONTROL_BYTE_KBD_YAMAN | CONTROL_BYTE_KBD_START;
 
-const DEFAULT_HEADER: [u8; 2] = *b"AC";
-const DEFAULT_NEUTRAL_CURRENT: u16 = 255;
-
-pub type ManualPacket = [u8; MANUAL_PACKET_LEN];
+pub type PacketAcV6Packet = [u8; PACKET_ACV6_PACKET_LEN];
 
 #[derive(Debug, Clone, Copy)]
-pub struct Arm9PacketUpdate {
-    pub packet: ManualPacket,
-    pub profile: ManualProfile,
+pub struct PacketAcV6PacketUpdate {
+    pub packet: PacketAcV6Packet,
+    pub profile: PacketAcV6Profile,
     pub profile_changed: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManualProfile {
-    Normal,
-    Power,
-    Sensitive,
-}
-
 #[derive(Debug, Clone, Copy)]
-pub struct ManualPacketEncoder {
+pub struct PacketAcV6PacketEncoder {
     seq: u8,
     enable: bool,
-    profile: ManualProfile,
+    profile: PacketAcV6Profile,
     previous_options_pressed: bool,
     previous_share_pressed: bool,
     header: [u8; 2],
     neutral_current: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ManualConstants {
-    base_horizon_positive: u16,
-    base_horizon_negative: u16,
-    base_roll_positive: u16,
-    base_roll_negative: u16,
-    pitch1_down: u16,
-    pitch1_up: u16,
-    pitch2_down: u16,
-    pitch2_up: u16,
-    pitch3_up: u16,
-    pitch3_down: u16,
-    roll_positive: u16,
-    roll_negative: u16,
-    gripper_close: u16,
-    gripper_open: u16,
-}
-
-impl Default for ManualPacketEncoder {
+impl Default for PacketAcV6PacketEncoder {
     fn default() -> Self {
         Self {
             seq: 0,
             enable: false,
-            profile: ManualProfile::Normal,
+            profile: PacketAcV6Profile::Normal,
             previous_options_pressed: false,
             previous_share_pressed: false,
-            header: DEFAULT_HEADER,
-            neutral_current: DEFAULT_NEUTRAL_CURRENT,
+            header: PACKET_ACV6_DEFINITION.header,
+            neutral_current: PACKET_ACV6_DEFINITION.neutral_current,
         }
     }
 }
 
-impl ManualPacketEncoder {
+impl PacketAcV6PacketEncoder {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn encode_compact_report_update(&mut self, compact: &CompactReport) -> Arm9PacketUpdate {
+    pub fn encode_compact_report_update(
+        &mut self,
+        compact: &CompactReport,
+    ) -> PacketAcV6PacketUpdate {
         let state = CompactState::new(compact);
 
         self.update_enable_toggle(state.options_pressed());
         let profile_changed = self.update_profile_toggle(state.share_pressed());
 
-        let control_byte = build_manual_control_byte(
+        let control_byte = build_packetacv6_control_byte(
             state.r3_pressed(),
             state.l3_pressed(),
             state.up_pressed(),
             state.down_pressed(),
         );
 
-        let constants = self.profile.constants();
+        let constants = self.profile.definition();
         let mut currents = [
             calc_current(
                 state.r2_pressed(),
@@ -157,20 +129,26 @@ impl ManualPacketEncoder {
 
         self.seq = self.seq.wrapping_add(1);
 
-        Arm9PacketUpdate {
-            packet: build_manual_packet(self.header, self.seq, self.enable, currents, control_byte),
+        PacketAcV6PacketUpdate {
+            packet: build_packetacv6_packet(
+                self.header,
+                self.seq,
+                self.enable,
+                currents,
+                control_byte,
+            ),
             profile: self.profile,
             profile_changed,
         }
     }
 
     #[cfg(test)]
-    pub fn encode_compact_report(&mut self, compact: &CompactReport) -> ManualPacket {
+    pub fn encode_compact_report(&mut self, compact: &CompactReport) -> PacketAcV6Packet {
         self.encode_compact_report_update(compact).packet
     }
 
     #[cfg(test)]
-    fn profile(&self) -> ManualProfile {
+    fn profile(&self) -> PacketAcV6Profile {
         self.profile
     }
 
@@ -192,78 +170,7 @@ impl ManualPacketEncoder {
     }
 }
 
-impl ManualProfile {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Normal => "normal",
-            Self::Power => "power",
-            Self::Sensitive => "sensitive",
-        }
-    }
-
-    fn next(self) -> Self {
-        match self {
-            Self::Normal => Self::Power,
-            Self::Power => Self::Sensitive,
-            Self::Sensitive => Self::Normal,
-        }
-    }
-
-    fn constants(self) -> ManualConstants {
-        match self {
-            Self::Normal => ManualConstants {
-                base_horizon_positive: 155,
-                base_horizon_negative: 355,
-                base_roll_positive: 315,
-                base_roll_negative: 205,
-                pitch1_down: 230,
-                pitch1_up: 280,
-                pitch2_down: 225,
-                pitch2_up: 275,
-                pitch3_up: 210,
-                pitch3_down: 400,
-                roll_positive: 190,
-                roll_negative: 310,
-                gripper_close: 155,
-                gripper_open: 285,
-            },
-            Self::Power => ManualConstants {
-                base_horizon_positive: 100,
-                base_horizon_negative: 400,
-                base_roll_positive: 511,
-                base_roll_negative: 1,
-                pitch1_down: 170,
-                pitch1_up: 340,
-                pitch2_down: 175,
-                pitch2_up: 325,
-                pitch3_up: 160,
-                pitch3_down: 450,
-                roll_positive: 80,
-                roll_negative: 430,
-                gripper_close: 105,
-                gripper_open: 335,
-            },
-            Self::Sensitive => ManualConstants {
-                base_horizon_positive: 180,
-                base_horizon_negative: 330,
-                base_roll_positive: 295,
-                base_roll_negative: 225,
-                pitch1_down: 230,
-                pitch1_up: 260,
-                pitch2_down: 215,
-                pitch2_up: 280,
-                pitch3_up: 225,
-                pitch3_down: 290,
-                roll_positive: 210,
-                roll_negative: 300,
-                gripper_close: 240,
-                gripper_open: 270,
-            },
-        }
-    }
-}
-
-fn build_manual_control_byte(
+fn build_packetacv6_control_byte(
     init_pressed: bool,
     home_pressed: bool,
     nyokki_push_pressed: bool,
@@ -305,14 +212,14 @@ fn calc_current(
     }
 }
 
-fn build_manual_packet(
+fn build_packetacv6_packet(
     header: [u8; 2],
     seq: u8,
     enable: bool,
     currents: [u16; 7],
     control_byte: u8,
-) -> ManualPacket {
-    let mut packet = [0u8; MANUAL_PACKET_LEN];
+) -> PacketAcV6Packet {
+    let mut packet = [0u8; PACKET_ACV6_PACKET_LEN];
     let mut cursor = 0usize;
 
     write_bytes(&mut packet, &mut cursor, &header);
@@ -320,7 +227,7 @@ fn build_manual_packet(
     packet[cursor] = seq;
     cursor += 1;
 
-    let mut flags = (MANUAL_MODE_VALUE & 0x03) << 4;
+    let mut flags = (PACKET_ACV6_MANUAL_MODE_VALUE & 0x03) << 4;
     if enable {
         flags |= 0x01;
     }
@@ -346,12 +253,12 @@ fn build_manual_packet(
     write_u16_le(&mut packet, &mut cursor, 0);
     write_u16_le(&mut packet, &mut cursor, 0);
 
-    debug_assert_eq!(cursor, PAYLOAD_LEN);
+    debug_assert_eq!(cursor, PACKET_ACV6_PAYLOAD_LEN);
 
-    let crc = crc16_ccitt_false(&packet[..PAYLOAD_LEN]);
+    let crc = crc16_ccitt_false(&packet[..PACKET_ACV6_PAYLOAD_LEN]);
     write_u16_le(&mut packet, &mut cursor, crc);
 
-    debug_assert_eq!(cursor, MANUAL_PACKET_LEN);
+    debug_assert_eq!(cursor, PACKET_ACV6_PACKET_LEN);
 
     packet
 }
@@ -466,37 +373,37 @@ impl<'a> CompactState<'a> {
     }
 
     fn left_stick_down(&self) -> bool {
-        self.analog(3) >= STICK_HIGH_THRESHOLD
+        self.analog(3) >= PACKET_ACV6_DEFINITION.thresholds.stick_high
     }
 
     fn left_stick_up(&self) -> bool {
-        self.analog(3) <= STICK_LOW_THRESHOLD
+        self.analog(3) <= PACKET_ACV6_DEFINITION.thresholds.stick_low
     }
 
     fn right_stick_down(&self) -> bool {
-        self.analog(5) >= STICK_HIGH_THRESHOLD
+        self.analog(5) >= PACKET_ACV6_DEFINITION.thresholds.stick_high
     }
 
     fn right_stick_up(&self) -> bool {
-        self.analog(5) <= STICK_LOW_THRESHOLD
+        self.analog(5) <= PACKET_ACV6_DEFINITION.thresholds.stick_low
     }
 
     fn l2_pressed(&self) -> bool {
-        self.analog(6) >= TRIGGER_THRESHOLD
+        self.analog(6) >= PACKET_ACV6_DEFINITION.thresholds.trigger
     }
 
     fn r2_pressed(&self) -> bool {
-        self.analog(7) >= TRIGGER_THRESHOLD
+        self.analog(7) >= PACKET_ACV6_DEFINITION.thresholds.trigger
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ManualPacketEncoder, ManualProfile, crc16_ccitt_false};
+    use super::{PacketAcV6PacketEncoder, PacketAcV6Profile, crc16_ccitt_false};
 
     #[test]
     fn disabled_packet_keeps_manual_mode_and_neutral_currents() {
-        let mut encoder = ManualPacketEncoder::new();
+        let mut encoder = PacketAcV6PacketEncoder::new();
         let packet = encoder.encode_compact_report(&[0; 8]);
 
         assert_eq!(&packet[0..2], b"AC");
@@ -512,7 +419,7 @@ mod tests {
 
     #[test]
     fn options_toggle_enables_manual_currents() {
-        let mut encoder = ManualPacketEncoder::new();
+        let mut encoder = PacketAcV6PacketEncoder::new();
         let packet = encoder.encode_compact_report(&[0, 1 << 3, 0, 128, 0, 128, 0, 255]);
 
         assert_eq!(packet[3], 0x11);
@@ -526,7 +433,7 @@ mod tests {
 
     #[test]
     fn share_rising_edge_cycles_profiles() {
-        let mut encoder = ManualPacketEncoder::new();
+        let mut encoder = PacketAcV6PacketEncoder::new();
 
         encoder.encode_compact_report(&[0, 1 << 3, 0, 128, 0, 128, 0, 0]);
 
@@ -534,7 +441,7 @@ mod tests {
         assert_eq!(read_u16_le(&normal, 4), 155);
 
         let power = encoder.encode_compact_report(&[0, 1 << 2, 0, 128, 0, 128, 0, 255]);
-        assert_eq!(encoder.profile(), ManualProfile::Power);
+        assert_eq!(encoder.profile(), PacketAcV6Profile::Power);
         assert_eq!(read_u16_le(&power, 4), 100);
 
         let power_held = encoder.encode_compact_report(&[0, 1 << 2, 0, 128, 0, 128, 0, 255]);
@@ -542,13 +449,13 @@ mod tests {
 
         encoder.encode_compact_report(&[0, 0, 0, 128, 0, 128, 0, 255]);
         let sensitive = encoder.encode_compact_report(&[0, 1 << 2, 0, 128, 0, 128, 0, 255]);
-        assert_eq!(encoder.profile(), ManualProfile::Sensitive);
+        assert_eq!(encoder.profile(), PacketAcV6Profile::Sensitive);
         assert_eq!(read_u16_le(&sensitive, 4), 180);
     }
 
     #[test]
     fn control_byte_uses_latest_manual_bits() {
-        let mut encoder = ManualPacketEncoder::new();
+        let mut encoder = PacketAcV6PacketEncoder::new();
         let packet =
             encoder.encode_compact_report(&[1 << 0, (1 << 4) | (1 << 5), 0, 128, 0, 128, 0, 0]);
 

@@ -620,7 +620,7 @@ fn parse_transform_module(value: &JsonValue) -> Result<TransformModuleConfig, St
     match module.as_str() {
         "identity" => Ok(TransformModuleConfig::Identity),
         "ds4_to_compact" => Ok(TransformModuleConfig::Ds4ToCompact),
-        "arm9_encode" => Ok(TransformModuleConfig::Arm9Encode),
+        "packetacv6_encode" => Ok(TransformModuleConfig::PacketAcV6Encode),
         "join_latest" => Ok(TransformModuleConfig::JoinLatest {
             separator: parse_hex_bytes(
                 &optional_string(object, "separator_hex")?.unwrap_or_default(),
@@ -990,7 +990,7 @@ mod tests {
             "port": "/dev/ttyUSB0",
             "baud": 115200,
             "controller": "0",
-            "format": "arm9",
+            "format": "packetacv6",
             "raw": false,
             "display": {
               "default": "hex+utf8",
@@ -1128,6 +1128,46 @@ mod tests {
                 .and_then(|template| template.description.as_deref()),
             Some("merge bytes to main output")
         );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_rejects_legacy_arm9_transform_module_name() {
+        let temp_dir = make_temp_dir("acs_config_reject_arm9_transform");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "route": {
+                "inputs": [
+                  { "id": "in_a", "port": "/dev/ttyUSB0" }
+                ],
+                "outputs": [
+                  { "id": "out_main", "port": "/dev/ttyUSB1" }
+                ],
+                "pipelines": [
+                  {
+                    "id": "legacy_transform",
+                    "inputs": ["in_a"],
+                    "transform": {
+                      "module": "arm9_encode"
+                    },
+                    "route": {
+                      "module": "broadcast",
+                      "outputs": ["out_main"]
+                    }
+                  }
+                ]
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let error = load_config(&config_path).expect_err("legacy transform should fail");
+        assert!(error.contains("unsupported transform module: arm9_encode"));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

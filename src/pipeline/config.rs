@@ -32,7 +32,7 @@ pub(crate) struct TransformChainConfig {
 pub(crate) enum TransformModuleConfig {
     Identity,
     Ds4ToCompact,
-    Arm9Encode,
+    PacketAcV6Encode,
     JoinLatest {
         separator: Vec<u8>,
         require_all: bool,

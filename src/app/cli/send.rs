@@ -85,7 +85,9 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
     let port =
         serial::resolve_port(cli_options.port.as_deref()).map_err(|error| error.to_string())?;
     let baud = cli_options.baud.unwrap_or_else(default_baud_rate);
-    let format_name = cli_options.format.unwrap_or_else(|| String::from("arm9"));
+    let format_name = cli_options
+        .format
+        .unwrap_or_else(|| String::from("packetacv6"));
     let format = OutputFormat::parse(&format_name)?;
 
     Ok(SendSettings { port, baud, format })

@@ -83,8 +83,8 @@ fn build_transform(
     match config {
         TransformModuleConfig::Identity => Ok(Box::new(IdentityTransform)),
         TransformModuleConfig::Ds4ToCompact => Ok(Box::new(Ds4ToCompactTransform)),
-        TransformModuleConfig::Arm9Encode => Ok(Box::new(Arm9EncodeTransform {
-            driver: OutputFormat::Arm9.create_driver(),
+        TransformModuleConfig::PacketAcV6Encode => Ok(Box::new(PacketAcV6EncodeTransform {
+            driver: OutputFormat::PacketAcV6.create_driver(),
         })),
         TransformModuleConfig::JoinLatest {
             separator,
@@ -153,17 +153,17 @@ impl MessageTransform for Ds4ToCompactTransform {
     }
 }
 
-struct Arm9EncodeTransform {
+struct PacketAcV6EncodeTransform {
     driver: Box<dyn crate::output::formats::OutputDriver>,
 }
 
-impl MessageTransform for Arm9EncodeTransform {
+impl MessageTransform for PacketAcV6EncodeTransform {
     fn transform(&mut self, mut message: RouteMessage) -> Result<Vec<RouteMessage>, String> {
         let compact_report: [u8; 8] = message
             .payload
             .as_slice()
             .try_into()
-            .map_err(|_| String::from("arm9_encode expects an 8-byte compact report"))?;
+            .map_err(|_| String::from("packetacv6_encode expects an 8-byte compact report"))?;
         message.payload = self.driver.encode(&compact_report)?;
         Ok(vec![message])
     }

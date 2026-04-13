@@ -1,30 +1,31 @@
+mod definition;
 mod encoder;
 mod sound;
 
 use crate::input::compact::CompactReport;
 use crate::output::formats::OutputDriver;
-use encoder::ManualPacketEncoder;
+use encoder::PacketAcV6PacketEncoder;
 use sound::ModeSoundPlayer;
 
 pub(crate) fn create_driver() -> Box<dyn OutputDriver> {
-    Box::new(Arm9OutputDriver::new())
+    Box::new(PacketAcV6OutputDriver::new())
 }
 
-struct Arm9OutputDriver {
-    encoder: ManualPacketEncoder,
+struct PacketAcV6OutputDriver {
+    encoder: PacketAcV6PacketEncoder,
     sound_player: ModeSoundPlayer,
 }
 
-impl Arm9OutputDriver {
+impl PacketAcV6OutputDriver {
     fn new() -> Self {
         Self {
-            encoder: ManualPacketEncoder::new(),
+            encoder: PacketAcV6PacketEncoder::new(),
             sound_player: ModeSoundPlayer::new(),
         }
     }
 }
 
-impl OutputDriver for Arm9OutputDriver {
+impl OutputDriver for PacketAcV6OutputDriver {
     fn encode(&mut self, compact_report: &CompactReport) -> Result<Vec<u8>, String> {
         let update = self.encoder.encode_compact_report_update(compact_report);
         if update.profile_changed {

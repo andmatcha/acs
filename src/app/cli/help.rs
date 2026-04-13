@@ -30,7 +30,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  help       Show help for a command");
     println!();
     println!("Examples:");
-    println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format arm9");
+    println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6");
     println!("  {bin_name} control --monitor /dev/ttyUSB1");
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
@@ -99,7 +99,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("                              Omit to auto-select a single USB serial or ST-LINK");
     println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
     println!("  -c, --controller <ID>      Controller index or HID path");
-    println!("  -f, --format <FORMAT>      Output format (currently: arm9, packetacv6)");
+    println!("  -f, --format <FORMAT>      Output format (currently: packetacv6)");
     println!("      --raw                  Show incoming serial data as raw chunks");
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
@@ -113,7 +113,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
-    println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format arm9");
+    println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6");
     println!("  {bin_name} control --raw --monitor /dev/ttyUSB1");
     println!(
         "  {bin_name} control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex"
@@ -131,11 +131,11 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("Options:");
     println!("  -p, --port <PORT>          Serial output port");
     println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
-    println!("  -f, --format <FORMAT>      Dummy payload format (currently: arm9, packetacv6)");
+    println!("  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6)");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format arm9");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
 }
 
