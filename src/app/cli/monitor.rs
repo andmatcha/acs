@@ -4,7 +4,7 @@ use super::help::{is_help_flag, print_monitor_help};
 use super::logger::CommandLogger;
 use super::signal;
 use crate::serial::{self, SerialCallback, SerialConfig, SerialEvent, SerialMonitor};
-use crate::ui::text_dashboard::TextDashboard;
+use crate::ui::text_dashboard::{TextDashboard, TextDashboardAction};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -76,7 +76,7 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
         format!("ports: {}", settings.ports.join(", ")),
         format!("baud: {}", settings.baud),
         format!("log: {}", logger.path().display()),
-        String::from("Ctrl-C で終了"),
+        String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
     ]);
     for port in &settings.ports {
         dashboard.set_input_status(port, format!("baud={}", settings.baud));
@@ -87,12 +87,16 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to render dashboard: {error}"))?;
     let mut dirty = false;
     let mut last_render = Instant::now();
+    let mut paused = false;
 
     while !signal::is_stop_requested() {
+        if handle_dashboard_action(&mut dashboard, &mut paused)? {
+            dirty = true;
+        }
         if wait_for_serial_events(&event_rx, &mut dashboard, &mut logger)? {
             dirty = true;
         }
-        if dirty && last_render.elapsed() >= RENDER_INTERVAL {
+        if !paused && dirty && last_render.elapsed() >= RENDER_INTERVAL {
             dashboard
                 .render(None)
                 .map_err(|error| format!("failed to render dashboard: {error}"))?;
@@ -229,6 +233,31 @@ fn handle_event(
                 .map_err(|error| format!("failed to write log: {error}"))?;
             Ok(true)
         }
+    }
+}
+
+fn handle_dashboard_action(
+    dashboard: &mut TextDashboard,
+    paused: &mut bool,
+) -> Result<bool, String> {
+    let action = dashboard
+        .poll_action()
+        .map_err(|error| format!("failed to read keyboard input: {error}"))?;
+
+    match action {
+        Some(TextDashboardAction::TogglePause) => {
+            *paused = !*paused;
+            let status = if *paused {
+                "paused (space: resume)"
+            } else {
+                "resumed"
+            };
+            dashboard
+                .render(Some(status))
+                .map_err(|error| format!("failed to render dashboard: {error}"))?;
+            Ok(false)
+        }
+        None => Ok(false),
     }
 }
 

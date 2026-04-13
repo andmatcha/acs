@@ -7,7 +7,7 @@ use crate::input::compact;
 use crate::input::ds4_hid::Ds4Controller;
 use crate::output::OutputFormat;
 use crate::serial::{self, SerialCallback, SerialConfig, SerialConnection, SerialEvent, SerialMonitor};
-use crate::ui::text_dashboard::TextDashboard;
+use crate::ui::text_dashboard::{TextDashboard, TextDashboardAction};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -111,7 +111,7 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             driver.format_name()
         ),
         format!("log: {}", logger.path().display()),
-        String::from("Ctrl-C で終了"),
+        String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
     ]);
     dashboard.set_output_status(
         &settings.port,
@@ -127,8 +127,13 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to render dashboard: {error}"))?;
     let mut dirty = false;
     let mut last_render = Instant::now();
+    let mut paused = false;
 
     loop {
+        if handle_dashboard_action(&mut dashboard, &mut paused)? {
+            dirty = true;
+        }
+
         if drain_serial_events(&event_rx, &mut dashboard, &mut logger)? {
             dirty = true;
         }
@@ -152,7 +157,7 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             }
         }
 
-        if dirty && last_render.elapsed() >= RENDER_INTERVAL {
+        if !paused && dirty && last_render.elapsed() >= RENDER_INTERVAL {
             dashboard
                 .render(None)
                 .map_err(|error| format!("failed to render dashboard: {error}"))?;
@@ -276,6 +281,31 @@ fn drain_serial_events(
     }
 
     Ok(changed)
+}
+
+fn handle_dashboard_action(
+    dashboard: &mut TextDashboard,
+    paused: &mut bool,
+) -> Result<bool, String> {
+    let action = dashboard
+        .poll_action()
+        .map_err(|error| format!("failed to read keyboard input: {error}"))?;
+
+    match action {
+        Some(TextDashboardAction::TogglePause) => {
+            *paused = !*paused;
+            let status = if *paused {
+                "paused (space: resume)"
+            } else {
+                "resumed"
+            };
+            dashboard
+                .render(Some(status))
+                .map_err(|error| format!("failed to render dashboard: {error}"))?;
+            Ok(false)
+        }
+        None => Ok(false),
+    }
 }
 
 fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {

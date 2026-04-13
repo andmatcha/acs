@@ -1,6 +1,8 @@
 use crate::common::{format_bytes_ascii, format_bytes_hex, now_display_timestamp};
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{self, Write};
+use std::io::{self, Stdin, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 const HISTORY_LIMIT: usize = 10;
 const RESET: &str = "\x1b[0m";
@@ -36,11 +38,20 @@ pub struct TextDashboard {
     header_lines: Vec<String>,
     sections: BTreeMap<(SectionKind, String), Section>,
     stdout: io::Stdout,
+    #[cfg(unix)]
+    terminal_input_guard: Option<TerminalInputGuard>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextDashboardAction {
+    TogglePause,
 }
 
 impl TextDashboard {
     pub fn new(title: impl Into<String>) -> io::Result<Self> {
         let mut stdout = io::stdout();
+        #[cfg(unix)]
+        let terminal_input_guard = TerminalInputGuard::new()?;
         // 代替スクリーンを使うと、終了後に元のターミナル表示へ自然に戻せる。
         write!(
             stdout,
@@ -53,6 +64,8 @@ impl TextDashboard {
             header_lines: Vec::new(),
             sections: BTreeMap::new(),
             stdout,
+            #[cfg(unix)]
+            terminal_input_guard,
         })
     }
 
@@ -132,6 +145,17 @@ impl TextDashboard {
         self.stdout.flush()
     }
 
+    pub fn poll_action(&mut self) -> io::Result<Option<TextDashboardAction>> {
+        #[cfg(unix)]
+        {
+            if let Some(guard) = self.terminal_input_guard.as_mut() {
+                return guard.poll_action();
+            }
+        }
+
+        Ok(None)
+    }
+
     fn section_mut(&mut self, kind: SectionKind, port: &str) -> &mut Section {
         self.sections
             .entry((kind, String::from(port)))
@@ -149,6 +173,84 @@ impl Drop for TextDashboard {
         let _ = write!(self.stdout, "{SHOW_CURSOR}{LEAVE_ALTERNATE_SCREEN}");
         let _ = self.stdout.flush();
     }
+}
+
+#[cfg(unix)]
+struct TerminalInputGuard {
+    stdin: Stdin,
+    original_termios: libc::termios,
+}
+
+#[cfg(unix)]
+impl TerminalInputGuard {
+    fn new() -> io::Result<Option<Self>> {
+        let stdin = io::stdin();
+        let fd = stdin.as_raw_fd();
+        let is_tty = unsafe { libc::isatty(fd) } == 1;
+        if !is_tty {
+            return Ok(None);
+        }
+
+        let mut termios = unsafe { std::mem::zeroed::<libc::termios>() };
+        let get_result = unsafe { libc::tcgetattr(fd, &mut termios) };
+        if get_result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let original_termios = termios;
+        disable_terminal_input_echo(&mut termios);
+
+        let set_result = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &termios) };
+        if set_result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(Some(Self {
+            stdin,
+            original_termios,
+        }))
+    }
+
+    fn poll_action(&mut self) -> io::Result<Option<TextDashboardAction>> {
+        let fd = self.stdin.as_raw_fd();
+        let mut buffer = [0u8; 32];
+        let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+        if count < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if count == 0 {
+            return Ok(None);
+        }
+
+        let mut action = None;
+        for byte in &buffer[..count as usize] {
+            if *byte == b' ' {
+                action = Some(TextDashboardAction::TogglePause);
+            }
+        }
+
+        Ok(action)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalInputGuard {
+    fn drop(&mut self) {
+        let _ = unsafe {
+            libc::tcsetattr(
+                self.stdin.as_raw_fd(),
+                libc::TCSANOW,
+                &self.original_termios,
+            )
+        };
+    }
+}
+
+#[cfg(unix)]
+fn disable_terminal_input_echo(termios: &mut libc::termios) {
+    termios.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON);
+    termios.c_cc[libc::VMIN] = 0;
+    termios.c_cc[libc::VTIME] = 0;
 }
 
 fn push_entry(section: &mut Section, bytes: &[u8]) {
