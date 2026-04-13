@@ -40,9 +40,9 @@ pub(crate) fn build_classifier(config: &ClassifyModuleConfig) -> Box<dyn Message
     match config {
         ClassifyModuleConfig::None => Box::new(NoopClassifier),
         ClassifyModuleConfig::BySource => Box::new(BySourceClassifier),
-        ClassifyModuleConfig::TagStatic { tags } => Box::new(StaticTagClassifier {
-            tags: tags.clone(),
-        }),
+        ClassifyModuleConfig::TagStatic { tags } => {
+            Box::new(StaticTagClassifier { tags: tags.clone() })
+        }
         ClassifyModuleConfig::MatchPrefix { prefix, tag } => Box::new(MatchPrefixClassifier {
             prefix: prefix.clone(),
             tag: tag.clone(),

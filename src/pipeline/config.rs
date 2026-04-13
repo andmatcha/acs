@@ -33,7 +33,10 @@ pub(crate) enum TransformModuleConfig {
     Identity,
     Ds4ToCompact,
     Arm9Encode,
-    JoinLatest { separator: Vec<u8>, require_all: bool },
+    JoinLatest {
+        separator: Vec<u8>,
+        require_all: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -46,8 +49,12 @@ pub(crate) enum ClassifyModuleConfig {
 
 #[derive(Debug, Clone)]
 pub(crate) enum RouterModuleConfig {
-    Broadcast { outputs: Vec<String> },
-    RoundRobin { outputs: Vec<String> },
+    Broadcast {
+        outputs: Vec<String>,
+    },
+    RoundRobin {
+        outputs: Vec<String>,
+    },
     SourceMap {
         routes: BTreeMap<String, Vec<String>>,
         default_outputs: Vec<String>,

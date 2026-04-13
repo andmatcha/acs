@@ -1,3 +1,4 @@
+use crate::common::extend_unique_strings;
 use crate::pipeline::{
     ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineSpec, RouterModuleConfig,
     TagRoutingRule, TransformChainConfig, TransformModuleConfig,
@@ -8,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_CONFIG_FILE_NAME: &str = "acs.config.json";
+pub(crate) const DEFAULT_CONFIG_DIR_NAME: &str = "config";
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct AppConfig {
@@ -43,10 +45,19 @@ pub(crate) struct RouteConfig {
     pub inputs: Vec<RouteInputConfig>,
     pub outputs: Vec<RouteOutputConfig>,
     pub pipelines: PipelineSpec,
+    pub template: Option<String>,
+    pub templates: BTreeMap<String, RouteTemplateConfig>,
     pub baud: Option<u32>,
     pub raw: Option<bool>,
     pub display: PortDisplayConfig,
     pub log_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RouteTemplateConfig {
+    pub id: String,
+    pub description: Option<String>,
+    pub pipelines: PipelineSpec,
 }
 
 #[derive(Debug, Clone)]
@@ -75,18 +86,123 @@ enum JsonValue {
 
 type JsonObject = BTreeMap<String, JsonValue>;
 
+impl AppConfig {
+    fn merge_from(&mut self, other: AppConfig) {
+        merge_option(&mut self.log_dir, other.log_dir);
+        self.control.merge_from(other.control);
+        self.monitor.merge_from(other.monitor);
+        self.route.merge_from(other.route);
+    }
+}
+
+impl ControlConfig {
+    fn merge_from(&mut self, other: ControlConfig) {
+        merge_option(&mut self.port, other.port);
+        merge_option(&mut self.baud, other.baud);
+        merge_option(&mut self.controller, other.controller);
+        merge_option(&mut self.format, other.format);
+        merge_option(&mut self.raw, other.raw);
+        self.display.merge_from(other.display);
+        extend_unique_strings(&mut self.monitor_ports, &other.monitor_ports);
+        merge_option(&mut self.log_dir, other.log_dir);
+    }
+}
+
+impl MonitorConfig {
+    fn merge_from(&mut self, other: MonitorConfig) {
+        extend_unique_strings(&mut self.ports, &other.ports);
+        merge_option(&mut self.baud, other.baud);
+        merge_option(&mut self.raw, other.raw);
+        self.display.merge_from(other.display);
+        merge_option(&mut self.log_dir, other.log_dir);
+    }
+}
+
+impl RouteConfig {
+    fn merge_from(&mut self, other: RouteConfig) {
+        merge_route_inputs(&mut self.inputs, other.inputs);
+        merge_route_outputs(&mut self.outputs, other.outputs);
+        self.pipelines.merge_from(other.pipelines);
+        merge_option(&mut self.template, other.template);
+        for template in other.templates.into_values() {
+            self.templates.insert(template.id.clone(), template);
+        }
+        merge_option(&mut self.baud, other.baud);
+        merge_option(&mut self.raw, other.raw);
+        self.display.merge_from(other.display);
+        merge_option(&mut self.log_dir, other.log_dir);
+    }
+}
+
+impl PipelineSpec {
+    fn merge_from(&mut self, other: PipelineSpec) {
+        for pipeline in other.pipelines {
+            if let Some(existing) = self
+                .pipelines
+                .iter_mut()
+                .find(|existing| existing.id == pipeline.id)
+            {
+                *existing = pipeline;
+            } else {
+                self.pipelines.push(pipeline);
+            }
+        }
+    }
+}
+
+fn merge_option<T>(target: &mut Option<T>, other: Option<T>) {
+    if let Some(value) = other {
+        *target = Some(value);
+    }
+}
+
+fn merge_route_inputs(target: &mut Vec<RouteInputConfig>, inputs: Vec<RouteInputConfig>) {
+    for input in inputs {
+        if let Some(existing) = target.iter_mut().find(|existing| existing.id == input.id) {
+            *existing = input;
+        } else {
+            target.push(input);
+        }
+    }
+}
+
+fn merge_route_outputs(target: &mut Vec<RouteOutputConfig>, outputs: Vec<RouteOutputConfig>) {
+    for output in outputs {
+        if let Some(existing) = target.iter_mut().find(|existing| existing.id == output.id) {
+            *existing = output;
+        } else {
+            target.push(output);
+        }
+    }
+}
+
 pub(crate) fn load_config(path: &Path) -> Result<AppConfig, String> {
-    let text =
-        fs::read_to_string(path).map_err(|error| format!("failed to read config file: {error}"))?;
-    let root = JsonParser::new(&text).parse()?;
-    let root = expect_object(&root, "root")?;
+    if path.is_dir() {
+        return load_config_dir(path);
+    }
+
+    load_config_file(path)
+}
+
+fn load_config_file(path: &Path) -> Result<AppConfig, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read config file {}: {error}", path.display()))?;
+    let root = JsonParser::new(&text)
+        .parse()
+        .map_err(|error| format!("failed to parse config file {}: {error}", path.display()))?;
+    let root =
+        expect_object(&root, "root").map_err(|error| format!("{}: {error}", path.display()))?;
     // 相対パスは config ファイル基準で解決しておくと扱いやすい。
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
-    let top_level_log_dir = optional_path(root, "log_dir", base_dir)?;
-    let control = parse_control_config(root.get("control"), base_dir)?;
-    let monitor = parse_monitor_config(root.get("monitor"), base_dir)?;
-    let route = parse_route_config(root.get("route"), base_dir)?;
+    let top_level_log_dir = optional_path(root, "log_dir", base_dir)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let control = parse_control_config(root.get("control"), base_dir)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let monitor = parse_monitor_config(root.get("monitor"), base_dir)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let route = parse_route_config(root.get("route"), base_dir)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
 
     Ok(AppConfig {
         log_dir: top_level_log_dir,
@@ -94,6 +210,52 @@ pub(crate) fn load_config(path: &Path) -> Result<AppConfig, String> {
         monitor,
         route,
     })
+}
+
+fn load_config_dir(path: &Path) -> Result<AppConfig, String> {
+    let mut files = Vec::new();
+    collect_config_files(path, &mut files)?;
+    files.sort();
+
+    let mut merged = AppConfig::default();
+    for file in files {
+        merged.merge_from(load_config_file(&file)?);
+    }
+
+    Ok(merged)
+}
+
+fn collect_config_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = fs::read_dir(path).map_err(|error| {
+        format!(
+            "failed to read config directory {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut children = entries
+        .map(|entry| {
+            entry.map(|entry| entry.path()).map_err(|error| {
+                format!(
+                    "failed to read config directory {}: {error}",
+                    path.display()
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    children.sort();
+
+    for child in children {
+        if child.is_dir() {
+            collect_config_files(&child, files)?;
+            continue;
+        }
+
+        if child.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            files.push(child);
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn load_config_or_default(explicit_path: Option<&Path>) -> Result<AppConfig, String> {
@@ -107,8 +269,14 @@ pub(crate) fn load_config_or_default(explicit_path: Option<&Path>) -> Result<App
 }
 
 fn find_default_config_path() -> Option<PathBuf> {
-    let path = std::env::current_dir().ok()?.join(DEFAULT_CONFIG_FILE_NAME);
-    path.is_file().then_some(path)
+    let current_dir = std::env::current_dir().ok()?;
+    let config_dir = current_dir.join(DEFAULT_CONFIG_DIR_NAME);
+    if config_dir.is_dir() {
+        return Some(config_dir);
+    }
+
+    let config_file = current_dir.join(DEFAULT_CONFIG_FILE_NAME);
+    config_file.is_file().then_some(config_file)
 }
 
 fn parse_control_config(
@@ -166,6 +334,8 @@ fn parse_route_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<Rout
         inputs: optional_route_inputs(object, "inputs")?,
         outputs: optional_route_outputs(object, "outputs")?,
         pipelines: optional_pipeline_spec(object, "pipelines")?,
+        template: optional_string(object, "template")?,
+        templates: optional_route_templates(object.get("templates"))?,
         baud: optional_u32(object, "baud")?,
         raw: optional_bool(object, "raw")?,
         display: optional_display_config(object, "display")?,
@@ -282,18 +452,14 @@ fn expect_array<'a>(value: &'a JsonValue, name: &str) -> Result<&'a Vec<JsonValu
 }
 
 fn required_string(object: &JsonObject, key: &str) -> Result<String, String> {
-    optional_string(object, key)?
-        .ok_or_else(|| format!("`{key}` is required"))
+    optional_string(object, key)?.ok_or_else(|| format!("`{key}` is required"))
 }
 
 fn type_error(key: &str, expected: &str) -> String {
     format!("`{key}` must be {expected}")
 }
 
-fn optional_route_inputs(
-    object: &JsonObject,
-    key: &str,
-) -> Result<Vec<RouteInputConfig>, String> {
+fn optional_route_inputs(object: &JsonObject, key: &str) -> Result<Vec<RouteInputConfig>, String> {
     let Some(value) = object.get(key) else {
         return Ok(Vec::new());
     };
@@ -338,6 +504,11 @@ fn optional_pipeline_spec(object: &JsonObject, key: &str) -> Result<PipelineSpec
     let Some(value) = object.get(key) else {
         return Ok(PipelineSpec::default());
     };
+
+    parse_pipeline_spec_value(value, key)
+}
+
+fn parse_pipeline_spec_value(value: &JsonValue, key: &str) -> Result<PipelineSpec, String> {
     let values = expect_array(value, key)?;
     let mut pipelines = Vec::new();
 
@@ -354,6 +525,53 @@ fn optional_pipeline_spec(object: &JsonObject, key: &str) -> Result<PipelineSpec
     }
 
     Ok(PipelineSpec { pipelines })
+}
+
+fn optional_route_templates(
+    value: Option<&JsonValue>,
+) -> Result<BTreeMap<String, RouteTemplateConfig>, String> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
+    };
+
+    match value {
+        JsonValue::Object(entries) => {
+            let mut templates = BTreeMap::new();
+            for (id, value) in entries {
+                let template = parse_route_template(value, id, "route.templates")?;
+                templates.insert(id.clone(), template);
+            }
+            Ok(templates)
+        }
+        JsonValue::Array(values) => {
+            let mut templates = BTreeMap::new();
+            for value in values {
+                let object = expect_object(value, "route.templates")?;
+                let id = required_string(object, "id")?;
+                let template = parse_route_template(value, &id, "route.templates")?;
+                templates.insert(id, template);
+            }
+            Ok(templates)
+        }
+        _ => Err(type_error("route.templates", "object or array")),
+    }
+}
+
+fn parse_route_template(
+    value: &JsonValue,
+    id: &str,
+    name: &str,
+) -> Result<RouteTemplateConfig, String> {
+    let object = expect_object(value, name)?;
+    let Some(pipelines_value) = object.get("pipelines") else {
+        return Err(format!("`{name}.{id}.pipelines` is required"));
+    };
+
+    Ok(RouteTemplateConfig {
+        id: id.to_owned(),
+        description: optional_string(object, "description")?,
+        pipelines: parse_pipeline_spec_value(pipelines_value, "pipelines")?,
+    })
 }
 
 fn parse_filter_module(value: Option<&JsonValue>) -> Result<FilterModuleConfig, String> {
@@ -404,7 +622,9 @@ fn parse_transform_module(value: &JsonValue) -> Result<TransformModuleConfig, St
         "ds4_to_compact" => Ok(TransformModuleConfig::Ds4ToCompact),
         "arm9_encode" => Ok(TransformModuleConfig::Arm9Encode),
         "join_latest" => Ok(TransformModuleConfig::JoinLatest {
-            separator: parse_hex_bytes(&optional_string(object, "separator_hex")?.unwrap_or_default())?,
+            separator: parse_hex_bytes(
+                &optional_string(object, "separator_hex")?.unwrap_or_default(),
+            )?,
             require_all: optional_bool(object, "require_all")?.unwrap_or(true),
         }),
         other => Err(format!("unsupported transform module: {other}")),
@@ -434,7 +654,9 @@ fn parse_classify_module(value: Option<&JsonValue>) -> Result<ClassifyModuleConf
 
 fn parse_router_module(value: Option<&JsonValue>) -> Result<RouterModuleConfig, String> {
     let Some(value) = value else {
-        return Err(String::from("`route` module is required for every pipeline"));
+        return Err(String::from(
+            "`route` module is required for every pipeline",
+        ));
     };
     let object = expect_object(value, "route")?;
     let module = required_string(object, "module")?;
@@ -754,7 +976,10 @@ impl<'a> JsonParser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::JsonParser;
+    use super::{JsonParser, load_config};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_config_shape_used_by_example_file() {
@@ -820,5 +1045,100 @@ mod tests {
         "#;
 
         assert!(JsonParser::new(config).parse().is_ok());
+    }
+
+    #[test]
+    fn load_config_merges_json_files_from_directory() {
+        let temp_dir = make_temp_dir("acs_config_merge");
+        fs::create_dir_all(temp_dir.join("route")).unwrap();
+        fs::write(
+            temp_dir.join("00-common.json"),
+            r#"
+            {
+              "log_dir": "logs",
+              "monitor": {
+                "ports": ["/dev/ttyUSB0"]
+              }
+            }
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.join("10-route.json"),
+            r#"
+            {
+              "route": {
+                "baud": 115200,
+                "inputs": [
+                  { "id": "in_a", "port": "/dev/ttyUSB0" }
+                ],
+                "outputs": [
+                  { "id": "out_main", "port": "/dev/ttyUSB1" }
+                ]
+              }
+            }
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.join("route/20-route-template.json"),
+            r#"
+            {
+              "route": {
+                "inputs": [
+                  { "id": "in_a", "port": "/dev/ttyUSB9" },
+                  { "id": "in_b", "port": "/dev/ttyUSB2" }
+                ],
+                "templates": {
+                  "merge_pair": {
+                    "description": "merge bytes to main output",
+                    "pipelines": [
+                      {
+                        "id": "merge_pair",
+                        "transform": {
+                          "module": "identity"
+                        },
+                        "route": {
+                          "module": "broadcast"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&temp_dir).unwrap();
+
+        assert_eq!(config.log_dir, Some(temp_dir.join("logs")));
+        assert_eq!(config.monitor.ports, vec![String::from("/dev/ttyUSB0")]);
+        assert_eq!(config.route.baud, Some(115200));
+        assert_eq!(config.route.inputs.len(), 2);
+        assert_eq!(config.route.inputs[0].port, "/dev/ttyUSB9");
+        assert_eq!(config.route.inputs[1].id, "in_b");
+        assert_eq!(config.route.outputs.len(), 1);
+        assert_eq!(
+            config
+                .route
+                .templates
+                .get("merge_pair")
+                .and_then(|template| template.description.as_deref()),
+            Some("merge bytes to main output")
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    fn make_temp_dir(prefix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), unique));
+        fs::create_dir_all(&path).unwrap();
+        path
     }
 }

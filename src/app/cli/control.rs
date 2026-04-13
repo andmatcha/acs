@@ -3,11 +3,11 @@ use super::config;
 use super::help::{is_help_flag, print_control_help};
 use super::signal;
 use crate::input::ds4_hid::Ds4Controller;
+use crate::output::OutputFormat;
 use crate::pipeline::{
     ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineEngine, PipelineSpec,
     RouterModuleConfig, TransformChainConfig, TransformModuleConfig,
 };
-use crate::output::OutputFormat;
 use crate::port_display::{PortDisplayConfig, parse_display_assignment};
 use crate::serial;
 use crate::session::event::IngressFrame;

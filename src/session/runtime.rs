@@ -122,7 +122,10 @@ impl SessionRuntime {
             .outputs
             .get_mut(output_id)
             .ok_or_else(|| format!("unknown output id: {output_id}"))?;
-        output.connection.write_bytes(bytes).map_err(|error| error.to_string())?;
+        output
+            .connection
+            .write_bytes(bytes)
+            .map_err(|error| error.to_string())?;
         self.dashboard.record_output(&output.port, bytes)?;
         self.dirty = true;
         Ok(())
@@ -214,10 +217,7 @@ impl SessionRuntime {
                     self.dirty = true;
                 }
 
-                let frame = IngressFrame {
-                    input_id,
-                    bytes,
-                };
+                let frame = IngressFrame { input_id, bytes };
                 on_frame(&frame, self)?;
             }
             SessionEvent::InputError {
@@ -236,7 +236,9 @@ impl SessionRuntime {
     }
 
     fn render_if_needed(&mut self, status: Option<&str>) -> Result<(), String> {
-        if !self.dashboard.is_paused() && self.dirty && self.last_render.elapsed() >= RENDER_INTERVAL
+        if !self.dashboard.is_paused()
+            && self.dirty
+            && self.last_render.elapsed() >= RENDER_INTERVAL
         {
             self.dashboard.render(status)?;
             self.dirty = false;

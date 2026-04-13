@@ -1,0 +1,18 @@
+{
+  "control": {
+    "port": "",
+    "baud": 115200,
+    "controller": "0",
+    "format": "arm9",
+    "raw": false,
+    "display": {
+      "default": "hex+ascii",
+      "input": {
+        "default": "ascii"
+      },
+      "output": {
+        "default": "hex"
+      }
+    }
+  }
+}

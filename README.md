@@ -10,7 +10,8 @@
 - `--raw`: 改行でまとめず、生の受信チャンクをそのまま表示する
 - `--display`: ポートごとに、受信・送信それぞれの表示形式を `hex` / `ascii` / `utf8` / `hex+ascii` / `hex+utf8` から選べる
 - ログを `./logs` 以下へ自動保存する
-- `--config` による JSON 設定ファイルの読み込みに対応し、指定がなければカレントディレクトリの `acs.config.json` を自動で読む
+- `--config` による JSON 設定ファイル/ディレクトリの読み込みに対応し、指定がなければカレントディレクトリの `config/` を優先して自動で読む
+- `acs route` は組み込みテンプレートや設定ファイル内テンプレートを選んで簡単にルーティング構成を切り替えられる
 
 ## コマンド例
 
@@ -22,9 +23,10 @@ acs control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex
 acs monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1
 acs monitor --raw --port /dev/ttyUSB0
 acs monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8
-acs route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
-acs route --config acs.config.json
-acs control --config acs.config.json
+acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+acs route --list-templates
+acs route --config config
+acs control --config config
 ```
 
 接続されている DUALSHOCK 4 コントローラーが 1 台だけ、または使用可能なシリアルポートが 1 つだけの場合は、`acs` が自動で選択します。
@@ -40,7 +42,7 @@ acs control --config acs.config.json
 ```bash
 cargo run -- control --port /dev/ttyUSB0 --baud 115200 --format arm9
 cargo run -- monitor --port /dev/ttyUSB0
-cargo run -- route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+cargo run -- route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ```
 
 一度ビルドしてから実行したい場合は、次のようにします。
@@ -48,7 +50,7 @@ cargo run -- route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ```bash
 cargo build
 ./target/debug/acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
-./target/debug/acs route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+./target/debug/acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ```
 
 配布用や普段使い用に最適化ビルドしたい場合は `--release` を使います。
@@ -56,7 +58,7 @@ cargo build
 ```bash
 cargo build --release
 ./target/release/acs monitor --port /dev/ttyUSB0
-./target/release/acs route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+./target/release/acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ```
 
 ## グローバルで使えるようにする方法
@@ -72,7 +74,7 @@ cargo install --path .
 ```bash
 acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
 acs monitor --port /dev/ttyUSB0
-acs route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
+acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 ```
 
 `PATH` が通っていない場合は、シェル設定ファイルに追加してください。`zsh` なら例えば以下です。
@@ -90,9 +92,36 @@ cargo install --path . --force
 
 ## 設定ファイル
 
-`--config` を省略した場合は、カレントディレクトリにある `acs.config.json` を自動で読み込みます。明示的に別の設定ファイルを使いたい場合だけ `--config` を指定してください。
+`--config` を省略した場合は、カレントディレクトリにある `config/` ディレクトリを自動で読み込みます。`config/` が無い場合だけ、後方互換として `acs.config.json` を探します。`--config` には JSON ファイルだけでなくディレクトリも指定できます。
 
-設定例は [acs.config.example.json](acs.config.example.json) を参照してください。
+`config/` を使う場合は、配下の `*.json` がファイル名順で順に読み込まれます。後から読まれたファイルほど優先され、`route.inputs` / `route.outputs` / `route.pipelines` / `route.templates` は `id` 単位で上書きできます。
+
+分割例は [config.example](config.example)、単一ファイル例は [acs.config.example.json](acs.config.example.json) を参照してください。
+
+### `acs route` テンプレート
+
+`acs route` では、`route <template>` または `route --template <name>` でルーティングテンプレートを選べます。`route.template` を設定しておけば、`acs route` 単体でもそのテンプレートを既定値として使えます。組み込みテンプレートは次の 2 つだけにしています。
+
+- `merge`: 複数入力を来た順にそのまま全出力へ流す。出力が 1 つなら「2入力を来た順に1出力」になる
+- `one-to-one`: 入力配列順と出力配列順を 1 対 1 に対応させ、その組だけにそのまま流す。余った input/output は無視する
+
+一覧は次で確認できます。
+
+```bash
+acs route --list-templates
+```
+
+たとえば 2 入力を来た順に 1 出力へ流したいなら、次のように書けます。
+
+```bash
+acs route merge -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2
+```
+
+入力と出力を順番に 1 対 1 対応させたいなら、次のように書けます。
+
+```bash
+acs route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/ttyUSB2 -o out_b=/dev/ttyUSB3
+```
 
 ```json
 {
@@ -151,7 +180,24 @@ cargo install --path . --force
           "outputs": ["out_main"]
         }
       }
-    ]
+    ],
+    "templates": {
+      "merge_csv": {
+        "description": "latest payloads joined with comma",
+        "pipelines": [
+          {
+            "id": "merge_csv",
+            "transform": {
+              "module": "join_latest",
+              "separator_hex": "2c"
+            },
+            "route": {
+              "module": "broadcast"
+            }
+          }
+        ]
+      }
+    }
   }
 }
 ```

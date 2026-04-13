@@ -97,6 +97,24 @@
           "outputs": ["out_main", "out_sub"]
         }
       }
-    ]
+    ],
+    "templates": {
+      "merge_csv": {
+        "description": "join latest payloads with comma and broadcast",
+        "pipelines": [
+          {
+            "id": "merge_csv",
+            "transform": {
+              "module": "join_latest",
+              "separator_hex": "2c",
+              "require_all": true
+            },
+            "route": {
+              "module": "broadcast"
+            }
+          }
+        ]
+      }
+    }
   }
 }

@@ -1,0 +1,13 @@
+{
+  "monitor": {
+    "ports": [],
+    "baud": 115200,
+    "raw": false,
+    "display": {
+      "default": "hex+ascii",
+      "input": {
+        "default": "hex+ascii"
+      }
+    }
+  }
+}

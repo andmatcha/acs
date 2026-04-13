@@ -31,8 +31,8 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format arm9");
     println!("  {bin_name} control --monitor /dev/ttyUSB1");
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
-    println!("  {bin_name} route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
-    println!("  {bin_name} control --config acs.config.json");
+    println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
+    println!("  {bin_name} control --config config");
     println!();
     println!(
         "When exactly one controller or one serial port is available, it is selected automatically."
@@ -99,7 +99,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("                             MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("      --monitor <PORT>       Additional serial port to monitor");
     println!(
-        "      --config <PATH>        Read options from a JSON file (default: ./acs.config.json if present)"
+        "      --config <PATH>        Read options from a JSON file or directory (default: ./config/, fallback: ./acs.config.json)"
     );
     println!("      --log-dir <DIR>        Log directory (default: ./logs)");
     println!("  -h, --help                 Show this help");
@@ -111,7 +111,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "  {bin_name} control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex"
     );
     println!("  {bin_name} control --controller 0 --monitor /dev/ttyUSB1");
-    println!("  {bin_name} control --config acs.config.json");
+    println!("  {bin_name} control --config config");
 }
 
 pub(crate) fn print_monitor_help(bin_name: &str) {
@@ -128,7 +128,7 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!("                                      default, input:default, output:default");
     println!("                             MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!(
-        "      --config <PATH>        Read options from a JSON file (default: ./acs.config.json if present)"
+        "      --config <PATH>        Read options from a JSON file or directory (default: ./config/, fallback: ./acs.config.json)"
     );
     println!("      --log-dir <DIR>        Log directory (default: ./logs)");
     println!("  -h, --help                 Show this help");
@@ -140,16 +140,20 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
         "  {bin_name} monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8"
     );
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
-    println!("  {bin_name} monitor --config acs.config.json");
+    println!("  {bin_name} monitor --config config");
 }
 
 pub(crate) fn print_route_help(bin_name: &str) {
-    println!("Usage: {bin_name} route [OPTIONS]");
+    println!("Usage: {bin_name} route [TEMPLATE] [OPTIONS]");
     println!();
     println!("Routes bytes from one or more serial inputs to one or more serial outputs.");
-    println!("Routing behavior is primarily configured through `acs.config.json`.");
+    println!(
+        "Routing behavior can be defined directly in config, or selected from route templates."
+    );
     println!();
     println!("Options:");
+    println!("      --template <NAME>       Route template name (same as positional TEMPLATE)");
+    println!("      --list-templates        Show built-in and config-defined route templates");
     println!("  -i, --input-port <ID=PORT>  Route input port (repeatable)");
     println!("  -o, --output-port <ID=PORT> Route output port (repeatable)");
     println!("  -b, --baud <BAUD_RATE>      Default baud rate for CLI-specified ports");
@@ -159,15 +163,25 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!(
-        "      --config <PATH>         Read options from a JSON file (default: ./acs.config.json if present)"
+        "      --config <PATH>         Read options from a JSON file or directory (default: ./config/, fallback: ./acs.config.json)"
     );
     println!("      --log-dir <DIR>         Log directory (default: ./logs)");
     println!("  -h, --help                  Show this help");
     println!();
+    println!("Built-in templates:");
+    println!("  merge            Forward bytes in arrival order to all outputs");
+    println!("  one-to-one       Pair input/output arrays by order and pass bytes through");
+    println!();
     println!("Examples:");
-    println!("  {bin_name} route -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
-    println!("  {bin_name} route -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2");
-    println!("  {bin_name} route --config acs.config.json");
+    println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
+    println!(
+        "  {bin_name} route merge -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2"
+    );
+    println!(
+        "  {bin_name} route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/ttyUSB2 -o out_b=/dev/ttyUSB3"
+    );
+    println!("  {bin_name} route --list-templates");
+    println!("  {bin_name} route --config config");
 }
 
 pub(crate) fn is_help_flag(arg: &str) -> bool {

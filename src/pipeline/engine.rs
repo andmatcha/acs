@@ -52,7 +52,10 @@ impl PipelineEngine {
         Ok(Self { pipelines })
     }
 
-    pub(crate) fn process_frame(&mut self, frame: &IngressFrame) -> Result<Vec<DispatchPlan>, String> {
+    pub(crate) fn process_frame(
+        &mut self,
+        frame: &IngressFrame,
+    ) -> Result<Vec<DispatchPlan>, String> {
         let mut dispatches = Vec::new();
 
         for pipeline in &mut self.pipelines {

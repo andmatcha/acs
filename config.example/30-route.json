@@ -1,0 +1,35 @@
+{
+  "route": {
+    "baud": 115200,
+    "raw": true,
+    "display": {
+      "default": "hex+ascii",
+      "input": {
+        "default": "hex+ascii"
+      },
+      "output": {
+        "default": "hex+ascii"
+      }
+    },
+    "inputs": [
+      {
+        "id": "in_a",
+        "port": ""
+      },
+      {
+        "id": "in_b",
+        "port": ""
+      }
+    ],
+    "outputs": [
+      {
+        "id": "out_main",
+        "port": ""
+      },
+      {
+        "id": "out_sub",
+        "port": ""
+      }
+    ]
+  }
+}
