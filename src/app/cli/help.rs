@@ -27,7 +27,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format arm9");
     println!("  {bin_name} control --monitor /dev/ttyUSB1");
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
-    println!("  {bin_name} control --config acs.config.example.json");
+    println!("  {bin_name} control --config acs.config.json");
     println!();
     println!("When exactly one controller or one serial port is available, it is selected automatically.");
 }
@@ -79,6 +79,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
     println!("  -c, --controller <ID>      Controller index or HID path");
     println!("  -f, --format <FORMAT>      Output format (currently: arm9)");
+    println!("      --raw                  Show incoming serial data as raw chunks");
     println!("      --monitor <PORT>       Additional serial port to monitor");
     println!("      --config <PATH>        Read options from a JSON file");
     println!("      --log-dir <DIR>        Log directory (default: ./logs)");
@@ -86,26 +87,29 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!();
     println!("Examples:");
     println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format arm9");
+    println!("  {bin_name} control --raw --monitor /dev/ttyUSB1");
     println!("  {bin_name} control --controller 0 --monitor /dev/ttyUSB1");
-    println!("  {bin_name} control --config acs.config.example.json");
+    println!("  {bin_name} control --config acs.config.json");
 }
 
 pub(crate) fn print_monitor_help(bin_name: &str) {
     println!("Usage: {bin_name} monitor [OPTIONS]");
     println!();
-    println!("Monitors one or more serial ports and displays the most recent 10 chunks per port.");
+    println!("Monitors one or more serial ports and displays the most recent 10 entries per port.");
     println!();
     println!("Options:");
     println!("  -p, --port <PORT>          Serial port to monitor (repeatable)");
     println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
+    println!("      --raw                  Show incoming serial data as raw chunks");
     println!("      --config <PATH>        Read options from a JSON file");
     println!("      --log-dir <DIR>        Log directory (default: ./logs)");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!("  {bin_name} monitor --port /dev/ttyUSB0");
+    println!("  {bin_name} monitor --raw --port /dev/ttyUSB0");
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
-    println!("  {bin_name} monitor --config acs.config.example.json");
+    println!("  {bin_name} monitor --config acs.config.json");
 }
 
 pub(crate) fn is_help_flag(arg: &str) -> bool {

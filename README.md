@@ -6,6 +6,7 @@
 
 - `acs control`: DUALSHOCK 4 の入力を読み取り、整形したシリアル出力を送信する
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
+- `--raw`: 改行でまとめず、生の受信チャンクをそのまま表示する
 - ログを `./logs` 以下へ自動保存する
 - `--config` による JSON 設定ファイルの読み込みに対応する
 
@@ -14,11 +15,15 @@
 ```bash
 acs control --port /dev/ttyUSB0 --baud 115200 --format arm9
 acs control --monitor /dev/ttyUSB1
+acs control --raw --monitor /dev/ttyUSB1
 acs monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1
-acs control --config acs.config.example.json
+acs monitor --raw --port /dev/ttyUSB0
+acs control --config acs.config.json
 ```
 
 接続されている DUALSHOCK 4 コントローラーが 1 台だけ、または使用可能なシリアルポートが 1 つだけの場合は、`acs` が自動で選択します。
+
+`control` と `monitor` は、デフォルトでは受信データを改行単位でまとめて表示します。`--raw` を付けると、改行を待たずに受信チャンクをそのまま表示・記録します。
 
 ## このディレクトリ内で実行する方法
 
@@ -73,7 +78,7 @@ cargo install --path . --force
 
 ## 設定ファイル
 
-設定例は [acs.config.example.json](acs.config.example.json) を参照してください。
+設定例は [acs.config.json](acs.config.json) を参照してください。
 
 ```json
 {
@@ -83,11 +88,13 @@ cargo install --path . --force
     "baud": 115200,
     "controller": "0",
     "format": "arm9",
+    "raw": false,
     "monitor_ports": ["/dev/ttyUSB1"]
   },
   "monitor": {
     "ports": ["/dev/ttyUSB0", "/dev/ttyUSB1"],
-    "baud": 115200
+    "baud": 115200,
+    "raw": false
   }
 }
 ```

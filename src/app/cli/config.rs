@@ -15,6 +15,7 @@ pub(crate) struct ControlConfig {
     pub baud: Option<u32>,
     pub controller: Option<String>,
     pub format: Option<String>,
+    pub raw: Option<bool>,
     pub monitor_ports: Vec<String>,
     pub log_dir: Option<PathBuf>,
 }
@@ -23,6 +24,7 @@ pub(crate) struct ControlConfig {
 pub(crate) struct MonitorConfig {
     pub ports: Vec<String>,
     pub baud: Option<u32>,
+    pub raw: Option<bool>,
     pub log_dir: Option<PathBuf>,
 }
 
@@ -32,7 +34,7 @@ enum JsonValue {
     Array(Vec<JsonValue>),
     String(String),
     Number(String),
-    Bool,
+    Bool(bool),
     Null,
 }
 
@@ -68,6 +70,7 @@ fn parse_control_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<Co
         baud: optional_u32(object, "baud")?,
         controller: optional_string(object, "controller")?,
         format: optional_string(object, "format")?,
+        raw: optional_bool(object, "raw")?,
         monitor_ports: optional_string_list(object, "monitor_ports")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
@@ -86,6 +89,7 @@ fn parse_monitor_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<Mo
     Ok(MonitorConfig {
         ports,
         baud: optional_u32(object, "baud")?,
+        raw: optional_bool(object, "raw")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -121,6 +125,14 @@ fn optional_u32(object: &JsonObject, key: &str) -> Result<Option<u32>, String> {
             .map(Some)
             .map_err(|_| format!("`{key}` must be an unsigned integer")),
         Some(_) => Err(type_error(key, "number")),
+    }
+}
+
+fn optional_bool(object: &JsonObject, key: &str) -> Result<Option<bool>, String> {
+    match object.get(key) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(type_error(key, "boolean")),
     }
 }
 
@@ -176,8 +188,8 @@ impl<'a> JsonParser<'a> {
             Some('{') => self.parse_object(),
             Some('[') => self.parse_array(),
             Some('"') => self.parse_string().map(JsonValue::String),
-            Some('t') => self.parse_keyword("true", JsonValue::Bool),
-            Some('f') => self.parse_keyword("false", JsonValue::Bool),
+            Some('t') => self.parse_keyword("true", JsonValue::Bool(true)),
+            Some('f') => self.parse_keyword("false", JsonValue::Bool(false)),
             Some('n') => self.parse_keyword("null", JsonValue::Null),
             Some('-' | '0'..='9') => self.parse_number().map(JsonValue::Number),
             Some(other) => Err(format!("unexpected character in config file: `{other}`")),
@@ -396,11 +408,13 @@ mod tests {
             "baud": 115200,
             "controller": "0",
             "format": "arm9",
+            "raw": false,
             "monitor_ports": ["/dev/ttyUSB1"]
           },
           "monitor": {
             "ports": ["/dev/ttyUSB0", "/dev/ttyUSB1"],
-            "baud": 115200
+            "baud": 115200,
+            "raw": true
           }
         }
         "#;

@@ -20,6 +20,7 @@ const WAIT_INTERVAL: Duration = Duration::from_millis(50);
 struct MonitorCliOptions {
     ports: Vec<String>,
     baud: Option<u32>,
+    raw: bool,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
 }
@@ -27,6 +28,7 @@ struct MonitorCliOptions {
 struct MonitorSettings {
     ports: Vec<String>,
     baud: u32,
+    raw: bool,
     log_dir: PathBuf,
 }
 
@@ -77,6 +79,10 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
     dashboard.set_header_lines(vec![
         format!("ports: {}", settings.ports.join(", ")),
         format!("baud: {}", settings.baud),
+        format!(
+            "input mode: {}",
+            if settings.raw { "raw" } else { "line" }
+        ),
         format!("log: {}", logger.path().display()),
         String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
     ]);
@@ -96,7 +102,13 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
         if handle_dashboard_action(&mut dashboard, &mut paused)? {
             dirty = true;
         }
-        if wait_for_serial_events(&event_rx, &mut dashboard, &mut logger, &mut line_buffer)? {
+        if wait_for_serial_events(
+            &event_rx,
+            &mut dashboard,
+            &mut logger,
+            &mut line_buffer,
+            settings.raw,
+        )? {
             dirty = true;
         }
         if !paused && dirty && last_render.elapsed() >= RENDER_INTERVAL {
@@ -108,8 +120,16 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
         }
     }
 
-    let _ = drain_serial_events(&event_rx, &mut dashboard, &mut logger, &mut line_buffer)?;
-    let _ = flush_pending_input_lines(&mut dashboard, &mut logger, &mut line_buffer)?;
+    let _ = drain_serial_events(
+        &event_rx,
+        &mut dashboard,
+        &mut logger,
+        &mut line_buffer,
+        settings.raw,
+    )?;
+    if !settings.raw {
+        let _ = flush_pending_input_lines(&mut dashboard, &mut logger, &mut line_buffer)?;
+    }
     dashboard
         .render(Some("stopped"))
         .map_err(|error| format!("failed to render dashboard: {error}"))?;
@@ -139,13 +159,19 @@ fn build_settings(
         .baud
         .or(file_config.monitor.baud)
         .unwrap_or_else(default_baud_rate);
+    let raw = cli_options.raw || file_config.monitor.raw.unwrap_or(false);
     let log_dir = cli_options
         .log_dir
         .or(file_config.monitor.log_dir)
         .or(file_config.log_dir)
         .unwrap_or_else(default_log_dir);
 
-    Ok(MonitorSettings { ports, baud, log_dir })
+    Ok(MonitorSettings {
+        ports,
+        baud,
+        raw,
+        log_dir,
+    })
 }
 
 fn make_serial_callback(
@@ -181,12 +207,13 @@ fn wait_for_serial_events(
     dashboard: &mut TextDashboard,
     logger: &mut CommandLogger,
     line_buffer: &mut SerialLineBuffer,
+    raw_input: bool,
 ) -> Result<bool, String> {
     let mut changed = false;
 
     match event_rx.recv_timeout(WAIT_INTERVAL) {
         Ok(event) => {
-            if handle_event(event, dashboard, logger, line_buffer)? {
+            if handle_event(event, dashboard, logger, line_buffer, raw_input)? {
                 changed = true;
             }
         }
@@ -196,7 +223,7 @@ fn wait_for_serial_events(
         }
     }
 
-    if drain_serial_events(event_rx, dashboard, logger, line_buffer)? {
+    if drain_serial_events(event_rx, dashboard, logger, line_buffer, raw_input)? {
         changed = true;
     }
 
@@ -208,11 +235,12 @@ fn drain_serial_events(
     dashboard: &mut TextDashboard,
     logger: &mut CommandLogger,
     line_buffer: &mut SerialLineBuffer,
+    raw_input: bool,
 ) -> Result<bool, String> {
     let mut changed = false;
 
     while let Ok(event) = event_rx.try_recv() {
-        if handle_event(event, dashboard, logger, line_buffer)? {
+        if handle_event(event, dashboard, logger, line_buffer, raw_input)? {
             changed = true;
         }
     }
@@ -224,18 +252,11 @@ fn handle_event(
     dashboard: &mut TextDashboard,
     logger: &mut CommandLogger,
     line_buffer: &mut SerialLineBuffer,
+    raw_input: bool,
 ) -> Result<bool, String> {
     match event {
         SerialEvent::Data { port, bytes } => {
-            let mut changed = false;
-            for line in line_buffer.push_chunk(&port, &bytes) {
-                dashboard.add_input(&port, &line);
-                logger
-                    .log_input(&port, &line)
-                    .map_err(|error| format!("failed to write log: {error}"))?;
-                changed = true;
-            }
-            Ok(changed)
+            handle_input_bytes(&port, &bytes, dashboard, logger, line_buffer, raw_input)
         }
         SerialEvent::Error { port, message } => {
             dashboard.set_input_status(&port, format!("error: {message}"));
@@ -245,6 +266,34 @@ fn handle_event(
             Ok(true)
         }
     }
+}
+
+fn handle_input_bytes(
+    port: &str,
+    bytes: &[u8],
+    dashboard: &mut TextDashboard,
+    logger: &mut CommandLogger,
+    line_buffer: &mut SerialLineBuffer,
+    raw_input: bool,
+) -> Result<bool, String> {
+    if raw_input {
+        dashboard.add_input(port, bytes);
+        logger
+            .log_input(port, bytes)
+            .map_err(|error| format!("failed to write log: {error}"))?;
+        return Ok(true);
+    }
+
+    let mut changed = false;
+    for line in line_buffer.push_chunk(port, bytes) {
+        dashboard.add_input(port, &line);
+        logger
+            .log_input(port, &line)
+            .map_err(|error| format!("failed to write log: {error}"))?;
+        changed = true;
+    }
+
+    Ok(changed)
 }
 
 fn flush_pending_input_lines(
@@ -301,6 +350,7 @@ fn parse_monitor_args(args: Vec<String>) -> Result<MonitorCliOptions, String> {
                 let value = next_value(&mut iter, "--baud")?;
                 options.baud = Some(parse_u32_arg("--baud", &value)?);
             }
+            "--raw" => options.raw = true,
             "--config" => options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?)),
             "--log-dir" => options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?)),
             other => return Err(format!("unknown option for monitor: {other}")),

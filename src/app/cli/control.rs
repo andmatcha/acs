@@ -26,6 +26,7 @@ struct ControlCliOptions {
     baud: Option<u32>,
     controller: Option<String>,
     format: Option<String>,
+    raw: bool,
     monitor_ports: Vec<String>,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
@@ -36,6 +37,7 @@ struct ControlSettings {
     baud: u32,
     controller: Option<String>,
     format: OutputFormat,
+    raw: bool,
     monitor_ports: Vec<String>,
     log_dir: PathBuf,
 }
@@ -113,6 +115,10 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             settings.baud,
             driver.format_name()
         ),
+        format!(
+            "input mode: {}",
+            if settings.raw { "raw" } else { "line" }
+        ),
         format!("log: {}", logger.path().display()),
         String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
     ]);
@@ -138,7 +144,13 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             dirty = true;
         }
 
-        if drain_serial_events(&event_rx, &mut dashboard, &mut logger, &mut line_buffer)? {
+        if drain_serial_events(
+            &event_rx,
+            &mut dashboard,
+            &mut logger,
+            &mut line_buffer,
+            settings.raw,
+        )? {
             dirty = true;
         }
 
@@ -172,8 +184,16 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         }
     }
 
-    let _ = drain_serial_events(&event_rx, &mut dashboard, &mut logger, &mut line_buffer)?;
-    let _ = flush_pending_input_lines(&mut dashboard, &mut logger, &mut line_buffer)?;
+    let _ = drain_serial_events(
+        &event_rx,
+        &mut dashboard,
+        &mut logger,
+        &mut line_buffer,
+        settings.raw,
+    )?;
+    if !settings.raw {
+        let _ = flush_pending_input_lines(&mut dashboard, &mut logger, &mut line_buffer)?;
+    }
     dashboard
         .render(Some("stopped"))
         .map_err(|error| format!("failed to render dashboard: {error}"))?;
@@ -204,6 +224,7 @@ fn build_settings(
         .or(file_config.control.format)
         .unwrap_or_else(|| String::from("arm9"));
     let format = OutputFormat::parse(&format_name)?;
+    let raw = cli_options.raw || file_config.control.raw.unwrap_or(false);
     let monitor_ports = if cli_options.monitor_ports.is_empty() {
         file_config.control.monitor_ports
     } else {
@@ -226,6 +247,7 @@ fn build_settings(
         baud,
         controller,
         format,
+        raw,
         monitor_ports,
         log_dir,
     })
@@ -264,17 +286,14 @@ fn drain_serial_events(
     dashboard: &mut TextDashboard,
     logger: &mut CommandLogger,
     line_buffer: &mut SerialLineBuffer,
+    raw_input: bool,
 ) -> Result<bool, String> {
     let mut changed = false;
 
     while let Ok(event) = event_rx.try_recv() {
         match event {
             SerialEvent::Data { port, bytes } => {
-                for line in line_buffer.push_chunk(&port, &bytes) {
-                    dashboard.add_input(&port, &line);
-                    logger
-                        .log_input(&port, &line)
-                        .map_err(|error| format!("failed to write log: {error}"))?;
+                if handle_input_bytes(&port, &bytes, dashboard, logger, line_buffer, raw_input)? {
                     changed = true;
                 }
             }
@@ -286,6 +305,34 @@ fn drain_serial_events(
                 changed = true;
             }
         }
+    }
+
+    Ok(changed)
+}
+
+fn handle_input_bytes(
+    port: &str,
+    bytes: &[u8],
+    dashboard: &mut TextDashboard,
+    logger: &mut CommandLogger,
+    line_buffer: &mut SerialLineBuffer,
+    raw_input: bool,
+) -> Result<bool, String> {
+    if raw_input {
+        dashboard.add_input(port, bytes);
+        logger
+            .log_input(port, bytes)
+            .map_err(|error| format!("failed to write log: {error}"))?;
+        return Ok(true);
+    }
+
+    let mut changed = false;
+    for line in line_buffer.push_chunk(port, bytes) {
+        dashboard.add_input(port, &line);
+        logger
+            .log_input(port, &line)
+            .map_err(|error| format!("failed to write log: {error}"))?;
+        changed = true;
     }
 
     Ok(changed)
@@ -349,6 +396,7 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
                 options.controller = Some(next_value(&mut iter, "--controller")?);
             }
             "--format" | "-f" => options.format = Some(next_value(&mut iter, "--format")?),
+            "--raw" => options.raw = true,
             "--monitor" | "-m" => {
                 options
                     .monitor_ports

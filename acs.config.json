@@ -5,6 +5,7 @@
     "baud": 115200,
     "controller": "0",
     "format": "arm9",
+    "raw": false,
     "monitor_ports": [
       ""
     ]
@@ -13,6 +14,7 @@
     "ports": [
       ""
     ],
-    "baud": 115200
+    "baud": 115200,
+    "raw": false
   }
 }
