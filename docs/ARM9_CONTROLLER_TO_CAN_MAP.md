@@ -37,5 +37,5 @@
 
 ## 根拠
 
-- [ARM9_ACV6_PACKET_AND_CAN.md](/Users/jinaoyagi/workspace/personal/ds4map/docs/ARM9_ACV6_PACKET_AND_CAN.md)
-- [encoder.rs](/Users/jinaoyagi/workspace/personal/ds4map/src/output/formats/arm9/encoder.rs)
+- [ARM9_ACV6_PACKET_AND_CAN.md](ARM9_ACV6_PACKET_AND_CAN.md)
+- [encoder.rs](../src/output/formats/arm9/encoder.rs)

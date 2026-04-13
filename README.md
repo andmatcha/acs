@@ -85,7 +85,7 @@ cargo install --path . --force
 
 `--config` を省略した場合は、カレントディレクトリにある `acs.config.json` を自動で読み込みます。明示的に別の設定ファイルを使いたい場合だけ `--config` を指定してください。
 
-設定例は [acs.config.json](acs.config.json) を参照してください。
+設定例は [acs.config.example.json](acs.config.example.json) を参照してください。
 
 ```json
 {
