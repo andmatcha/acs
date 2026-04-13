@@ -10,6 +10,7 @@ pub(crate) struct SessionDashboard {
     line_buffer: SerialLineBuffer,
     raw_input: bool,
     paused: bool,
+    status: String,
 }
 
 impl SessionDashboard {
@@ -30,6 +31,7 @@ impl SessionDashboard {
             line_buffer: SerialLineBuffer::default(),
             raw_input,
             paused: false,
+            status: String::from("running"),
         })
     }
 
@@ -75,12 +77,12 @@ impl SessionDashboard {
         match action {
             Some(TextDashboardAction::TogglePause) => {
                 self.paused = !self.paused;
-                let status = if self.paused {
+                self.status = String::from(if self.paused {
                     "paused (space: resume)"
                 } else {
-                    "resumed"
-                };
-                self.render(Some(status))?;
+                    "running"
+                });
+                self.render()?;
             }
             None => {}
         }
@@ -149,9 +151,13 @@ impl SessionDashboard {
         Ok(changed)
     }
 
-    pub(crate) fn render(&mut self, status: Option<&str>) -> Result<(), String> {
+    pub(crate) fn set_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
+    }
+
+    pub(crate) fn render(&mut self) -> Result<(), String> {
         self.dashboard
-            .render(status)
+            .render(Some(&self.status))
             .map_err(|error| format!("failed to render dashboard: {error}"))
     }
 }

@@ -185,20 +185,21 @@ impl SessionRuntime {
         G: FnMut() -> bool,
         H: FnMut(&mut SessionRuntime) -> Result<(), String>,
     {
-        self.dashboard.render(None)?;
+        self.dashboard.render()?;
 
         while !stop_requested() {
             self.dashboard.handle_dashboard_action()?;
             self.wait_for_events(wait_interval, &mut on_frame)?;
             on_tick(self)?;
-            self.render_if_needed(None)?;
+            self.render_if_needed()?;
         }
 
         self.drain_pending_events(&mut on_frame)?;
         if self.dashboard.flush_pending_input_lines()? {
             self.dirty = true;
         }
-        self.dashboard.render(Some("stopped"))?;
+        self.dashboard.set_status("stopped");
+        self.dashboard.render()?;
 
         Ok(self.dashboard.log_path().to_path_buf())
     }
@@ -264,12 +265,12 @@ impl SessionRuntime {
         Ok(())
     }
 
-    fn render_if_needed(&mut self, status: Option<&str>) -> Result<(), String> {
+    fn render_if_needed(&mut self) -> Result<(), String> {
         if !self.dashboard.is_paused()
             && self.dirty
             && self.last_render.elapsed() >= RENDER_INTERVAL
         {
-            self.dashboard.render(status)?;
+            self.dashboard.render()?;
             self.dirty = false;
             self.last_render = Instant::now();
         }

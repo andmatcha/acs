@@ -4,6 +4,7 @@ use crate::common::{
 use crate::port_display::PortDisplayMode;
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
+use std::fmt::Write as _;
 use std::io::{self, Stdin, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -16,6 +17,8 @@ const REVERSE: &str = "\x1b[7m";
 const ENTER_ALTERNATE_SCREEN: &str = "\x1b[?1049h";
 const LEAVE_ALTERNATE_SCREEN: &str = "\x1b[?1049l";
 const CLEAR_SCREEN: &str = "\x1b[2J";
+const CLEAR_TO_SCREEN_END: &str = "\x1b[J";
+const CLEAR_LINE_END: &str = "\x1b[K";
 const HOME_CURSOR: &str = "\x1b[H";
 const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
@@ -52,6 +55,7 @@ pub struct TextDashboard {
     title: String,
     header_lines: Vec<String>,
     sections: BTreeMap<(SectionKind, String), Section>,
+    previous_lines: Vec<String>,
     stdout: io::Stdout,
     #[cfg(unix)]
     terminal_input_guard: Option<TerminalInputGuard>,
@@ -78,6 +82,7 @@ impl TextDashboard {
             title: title.into(),
             header_lines: Vec::new(),
             sections: BTreeMap::new(),
+            previous_lines: Vec::new(),
             stdout,
             #[cfg(unix)]
             terminal_input_guard,
@@ -132,24 +137,17 @@ impl TextDashboard {
     }
 
     pub fn render(&mut self, status: Option<&str>) -> io::Result<()> {
-        let mut screen = String::new();
+        let mut lines = Vec::new();
         let now = Instant::now();
         let terminal_width = terminal_width();
-        screen.push_str(&self.title);
-        screen.push('\n');
+        lines.push(self.title.clone());
 
         for line in &self.header_lines {
-            screen.push_str(line);
-            screen.push('\n');
+            lines.push(line.clone());
         }
 
-        if let Some(status) = status {
-            screen.push_str("status: ");
-            screen.push_str(status);
-            screen.push('\n');
-        }
-
-        screen.push('\n');
+        lines.push(format_status_line(status));
+        lines.push(String::new());
 
         for section in self.sections.values_mut() {
             section.prune_rate_samples(now);
@@ -167,45 +165,50 @@ impl TextDashboard {
             }
             heading.push_str("  ");
             heading.push_str(&section.rate_label());
-            screen.push_str(&format_heading_line(&heading, terminal_width));
-            screen.push('\n');
+            lines.push(format_heading_line(&heading, terminal_width));
 
             if section.entries.is_empty() {
-                screen.push_str("(no data)\n");
+                lines.push(String::from("(no data)"));
             } else {
                 for entry in &section.entries {
-                    screen.push_str(&entry.timestamp);
-                    screen.push_str(" | ");
+                    let mut line = String::new();
+                    line.push_str(&entry.timestamp);
+                    line.push_str(" | ");
                     match section.display_mode {
                         PortDisplayMode::Hex => {
-                            screen.push_str(&entry.hex);
+                            line.push_str(&entry.hex);
                         }
                         PortDisplayMode::Ascii => {
-                            screen.push_str(&entry.ascii);
+                            line.push_str(&entry.ascii);
                         }
                         PortDisplayMode::Utf8 => {
-                            screen.push_str(&entry.utf8);
+                            line.push_str(&entry.utf8);
                         }
                         PortDisplayMode::HexAscii => {
-                            screen.push_str(&entry.hex);
-                            screen.push_str(" | ");
-                            screen.push_str(&entry.ascii);
+                            line.push_str(&entry.hex);
+                            line.push_str(" | ");
+                            line.push_str(&entry.ascii);
                         }
                         PortDisplayMode::HexUtf8 => {
-                            screen.push_str(&entry.hex);
-                            screen.push_str(" | ");
-                            screen.push_str(&entry.utf8);
+                            line.push_str(&entry.hex);
+                            line.push_str(" | ");
+                            line.push_str(&entry.utf8);
                         }
                     }
-                    screen.push('\n');
+                    lines.push(line);
                 }
             }
 
-            screen.push('\n');
+            lines.push(String::new());
         }
 
-        write!(self.stdout, "{CLEAR_SCREEN}{HOME_CURSOR}{screen}")?;
-        self.stdout.flush()
+        let frame = format_screen_delta(&lines, &self.previous_lines);
+        if frame.is_empty() {
+            return Ok(());
+        }
+
+        write!(self.stdout, "{frame}")?;
+        self.stdout.flush().inspect(|_| self.previous_lines = lines)
     }
 
     pub fn poll_action(&mut self) -> io::Result<Option<TextDashboardAction>> {
@@ -412,6 +415,43 @@ fn format_heading_line(text: &str, terminal_width: Option<usize>) -> String {
     line
 }
 
+fn format_status_line(status: Option<&str>) -> String {
+    match status {
+        Some(status) => format!("status: {status}"),
+        None => String::from("status: running"),
+    }
+}
+
+fn format_screen_delta(lines: &[String], previous_lines: &[String]) -> String {
+    let mut frame = String::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        if previous_lines.get(index) == Some(line) {
+            continue;
+        }
+
+        push_cursor_to_line_start(&mut frame, index + 1);
+        frame.push_str(line);
+        frame.push_str(CLEAR_LINE_END);
+    }
+
+    if lines.len() < previous_lines.len() {
+        push_cursor_to_line_start(&mut frame, lines.len() + 1);
+        frame.push_str(CLEAR_TO_SCREEN_END);
+    }
+
+    frame
+}
+
+fn push_cursor_to_line_start(frame: &mut String, row: usize) {
+    if row <= 1 {
+        frame.push_str(HOME_CURSOR);
+        return;
+    }
+
+    let _ = write!(frame, "\x1b[{row};1H");
+}
+
 fn terminal_width() -> Option<usize> {
     if let Ok(columns) = env::var("COLUMNS")
         && let Ok(width) = columns.parse::<usize>()
@@ -469,7 +509,10 @@ fn terminal_width_from_ioctl() -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RESET, REVERSE, format_heading_line};
+    use super::{
+        CLEAR_LINE_END, CLEAR_TO_SCREEN_END, HOME_CURSOR, RESET, REVERSE, format_heading_line,
+        format_screen_delta, format_status_line,
+    };
 
     #[test]
     fn format_heading_line_pads_to_terminal_width() {
@@ -484,5 +527,49 @@ mod tests {
     fn format_heading_line_keeps_long_text() {
         let line = format_heading_line("[input] tty", Some(4));
         assert_eq!(line, format!("{REVERSE}[input] tty{RESET}"));
+    }
+
+    #[test]
+    fn format_screen_delta_writes_initial_lines() {
+        let frame = format_screen_delta(&[String::from("title"), String::from("body")], &[]);
+        assert_eq!(
+            frame,
+            format!("{HOME_CURSOR}title{CLEAR_LINE_END}\x1b[2;1Hbody{CLEAR_LINE_END}")
+        );
+    }
+
+    #[test]
+    fn format_status_line_reserves_a_line_when_empty() {
+        assert_eq!(format_status_line(None), "status: running");
+        assert_eq!(
+            format_status_line(Some("paused (space: resume)")),
+            "status: paused (space: resume)"
+        );
+    }
+
+    #[test]
+    fn format_screen_delta_updates_only_changed_lines() {
+        let frame = format_screen_delta(
+            &[
+                String::from("title"),
+                String::from("status: paused"),
+                String::from("body"),
+            ],
+            &[
+                String::from("title"),
+                String::from("status: running"),
+                String::from("body"),
+            ],
+        );
+        assert_eq!(frame, format!("\x1b[2;1Hstatus: paused{CLEAR_LINE_END}"));
+    }
+
+    #[test]
+    fn format_screen_delta_clears_removed_trailing_lines() {
+        let frame = format_screen_delta(
+            &[String::from("title")],
+            &[String::from("title"), String::from("body")],
+        );
+        assert_eq!(frame, format!("\x1b[2;1H{CLEAR_TO_SCREEN_END}"));
     }
 }
