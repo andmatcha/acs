@@ -241,7 +241,7 @@ trait RouterModule {
   - 複数入力の最新値を保持し、そろったら結合して出力
 - `concat`
   - 到着した bytes を指定順で連結
-- `packetacv6_encode`
+- `output_encode`
   - 既存 `output::formats` に近い変換を route 用に再利用できる形へ移す
 
 ### 5. 分類と振り分けを分離する
@@ -327,7 +327,7 @@ struct PipelineSpec { /* pipelines, modules, routing ... */ }
 ### 5. module registry は 1 か所に集約する
 
 `control` だけが知る transform、`route` だけが知る transform、という registry 分断は避ける。
-`ds4_to_compact` や `packetacv6_encode` も pipeline registry に登録し、使うかどうかだけを command spec で切り替える。
+`ds4_to_compact` や `output_encode` も pipeline registry に登録し、使うかどうかだけを command spec で切り替える。
 
 ### 6. 既存コードの移行時は「先に共通化、後で置換」の順にする
 
@@ -435,7 +435,7 @@ acs route \
 - `identity`
 - `concat`
 - `join_latest`
-- `packetacv6_encode`
+- `output_encode`
 
 ### classify
 
@@ -465,7 +465,7 @@ acs route \
 
 ### 変換して出力
 
-- `transform = packetacv6_encode` など
+- `transform = output_encode` など
 
 ### 複数入力を来た順に 1 出力
 
@@ -553,7 +553,7 @@ acs route \
 
 - `Ds4InputAdapter`
 - `ds4_to_compact`
-- `packetacv6_encode`
+- `output_encode`
 - `control` 固有 config の正規化
 - `control --monitor` を observer input として整理
 
@@ -592,7 +592,7 @@ acs route \
 - `join_latest`
 - `by_source + source_map`
 - 同一入力を複数 pipeline に流したときの独立性
-- `control` の `ds4_to_compact -> packetacv6_encode` 連鎖
+- `control` の `ds4_to_compact -> output_encode(format=packetacv6)` 連鎖
 
 ## 既存実装に合わせた注意点
 
@@ -724,7 +724,7 @@ trait InputAdapter {
   "transform": {
     "modules": [
       { "module": "ds4_to_compact" },
-      { "module": "packetacv6_encode" }
+      { "module": "output_encode", "format": "packetacv6" }
     ]
   }
 }
@@ -788,7 +788,7 @@ trait InputAdapter {
       "transform": {
         "modules": [
           { "module": "ds4_to_compact" },
-          { "module": "packetacv6_encode" }
+          { "module": "output_encode", "format": "packetacv6" }
         ]
       },
       "classify": { "module": "none" },

@@ -1,3 +1,4 @@
+use crate::output::OutputFormat;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default)]
@@ -32,7 +33,9 @@ pub(crate) struct TransformChainConfig {
 pub(crate) enum TransformModuleConfig {
     Identity,
     Ds4ToCompact,
-    PacketAcV6Encode,
+    OutputEncode {
+        format: OutputFormat,
+    },
     JoinLatest {
         separator: Vec<u8>,
         require_all: bool,

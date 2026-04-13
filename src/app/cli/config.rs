@@ -1,4 +1,5 @@
 use crate::common::extend_unique_strings;
+use crate::output::OutputFormat;
 use crate::pipeline::{
     ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineSpec, RouterModuleConfig,
     TagRoutingRule, TransformChainConfig, TransformModuleConfig,
@@ -620,7 +621,12 @@ fn parse_transform_module(value: &JsonValue) -> Result<TransformModuleConfig, St
     match module.as_str() {
         "identity" => Ok(TransformModuleConfig::Identity),
         "ds4_to_compact" => Ok(TransformModuleConfig::Ds4ToCompact),
-        "packetacv6_encode" => Ok(TransformModuleConfig::PacketAcV6Encode),
+        "output_encode" => Ok(TransformModuleConfig::OutputEncode {
+            format: OutputFormat::parse(&required_string(object, "format")?)?,
+        }),
+        "packetacv6_encode" => Ok(TransformModuleConfig::OutputEncode {
+            format: OutputFormat::PacketAcV6,
+        }),
         "join_latest" => Ok(TransformModuleConfig::JoinLatest {
             separator: parse_hex_bytes(
                 &optional_string(object, "separator_hex")?.unwrap_or_default(),
@@ -977,6 +983,8 @@ impl<'a> JsonParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::{JsonParser, load_config};
+    use crate::output::OutputFormat;
+    use crate::pipeline::TransformModuleConfig;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1168,6 +1176,52 @@ mod tests {
 
         let error = load_config(&config_path).expect_err("legacy transform should fail");
         assert!(error.contains("unsupported transform module: arm9_encode"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_accepts_generic_output_encode_transform_module() {
+        let temp_dir = make_temp_dir("acs_config_output_encode");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "route": {
+                "inputs": [
+                  { "id": "in_a", "port": "/dev/ttyUSB0" }
+                ],
+                "outputs": [
+                  { "id": "out_main", "port": "/dev/ttyUSB1" }
+                ],
+                "pipelines": [
+                  {
+                    "id": "encode_packet",
+                    "inputs": ["in_a"],
+                    "transform": {
+                      "module": "output_encode",
+                      "format": "packetacv6"
+                    },
+                    "route": {
+                      "module": "broadcast",
+                      "outputs": ["out_main"]
+                    }
+                  }
+                ]
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).expect("generic output encode should parse");
+        match &config.route.pipelines.pipelines[0].transform.modules[0] {
+            TransformModuleConfig::OutputEncode { format } => {
+                assert_eq!(*format, OutputFormat::PacketAcV6);
+            }
+            other => panic!("unexpected transform module: {other:?}"),
+        }
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

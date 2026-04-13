@@ -185,12 +185,10 @@ fn build_control_pipeline_spec(controller_input_id: &str, format: OutputFormat) 
 }
 
 fn control_transform_modules(format: OutputFormat) -> Vec<TransformModuleConfig> {
-    match format {
-        OutputFormat::PacketAcV6 => vec![
-            TransformModuleConfig::Ds4ToCompact,
-            TransformModuleConfig::PacketAcV6Encode,
-        ],
-    }
+    vec![
+        TransformModuleConfig::Ds4ToCompact,
+        TransformModuleConfig::OutputEncode { format },
+    ]
 }
 
 fn build_settings(
