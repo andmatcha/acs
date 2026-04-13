@@ -1,4 +1,5 @@
 use serialport::{ClearBuffer, Error as SerialPortLibError, SerialPort, SerialPortInfo, SerialPortType, new};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
@@ -22,6 +23,42 @@ pub struct SerialConfig {
 pub enum SerialEvent {
     Data { port: String, bytes: Vec<u8> },
     Error { port: String, message: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct SerialInputLine {
+    pub port: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+pub struct SerialLineBuffer {
+    pending: BTreeMap<String, Vec<u8>>,
+}
+
+impl SerialLineBuffer {
+    pub fn push_chunk(&mut self, port: &str, bytes: &[u8]) -> Vec<Vec<u8>> {
+        let pending = self.pending.entry(String::from(port)).or_default();
+        pending.extend_from_slice(bytes);
+        take_complete_lines(pending)
+    }
+
+    pub fn drain_pending_lines(&mut self) -> Vec<SerialInputLine> {
+        let mut lines = Vec::new();
+
+        for (port, bytes) in self.pending.iter_mut() {
+            if bytes.is_empty() {
+                continue;
+            }
+
+            lines.push(SerialInputLine {
+                port: port.clone(),
+                bytes: std::mem::take(bytes),
+            });
+        }
+
+        lines
+    }
 }
 
 #[derive(Debug)]
@@ -276,4 +313,43 @@ fn is_transient_read_error(error: &io::Error) -> bool {
         error.kind(),
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
     )
+}
+
+fn take_complete_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut lines = Vec::new();
+
+    while let Some(position) = pending.iter().position(|byte| *byte == b'\n') {
+        lines.push(pending.drain(..=position).collect());
+    }
+
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SerialLineBuffer;
+
+    #[test]
+    fn line_buffer_reassembles_text_split_across_chunks() {
+        let mut buffer = SerialLineBuffer::default();
+
+        assert_eq!(
+            buffer.push_chunk("/dev/ttyUSB0", b"0 00 00\r\nCA"),
+            vec![b"0 00 00\r\n".to_vec()]
+        );
+        assert!(buffer.push_chunk("/dev/ttyUSB0", b"N TX 0x1FF: ").is_empty());
+        assert!(buffer.push_chunk("/dev/ttyUSB0", b"00 00 ").is_empty());
+        assert!(buffer
+            .push_chunk("/dev/ttyUSB0", b"00 00 00 00 00 00")
+            .is_empty());
+        assert_eq!(
+            buffer.push_chunk("/dev/ttyUSB0", b"\r\nCAN TX 0x2"),
+            vec![b"CAN TX 0x1FF: 00 00 00 00 00 00 00 00\r\n".to_vec()]
+        );
+
+        let pending = buffer.drain_pending_lines();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].port, "/dev/ttyUSB0");
+        assert_eq!(pending[0].bytes, b"CAN TX 0x2".to_vec());
+    }
 }

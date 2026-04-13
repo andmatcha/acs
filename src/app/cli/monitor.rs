@@ -3,7 +3,9 @@ use super::config;
 use super::help::{is_help_flag, print_monitor_help};
 use super::logger::CommandLogger;
 use super::signal;
-use crate::serial::{self, SerialCallback, SerialConfig, SerialEvent, SerialMonitor};
+use crate::serial::{
+    self, SerialCallback, SerialConfig, SerialEvent, SerialLineBuffer, SerialMonitor,
+};
 use crate::ui::text_dashboard::{TextDashboard, TextDashboardAction};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -88,12 +90,13 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
     let mut dirty = false;
     let mut last_render = Instant::now();
     let mut paused = false;
+    let mut line_buffer = SerialLineBuffer::default();
 
     while !signal::is_stop_requested() {
         if handle_dashboard_action(&mut dashboard, &mut paused)? {
             dirty = true;
         }
-        if wait_for_serial_events(&event_rx, &mut dashboard, &mut logger)? {
+        if wait_for_serial_events(&event_rx, &mut dashboard, &mut logger, &mut line_buffer)? {
             dirty = true;
         }
         if !paused && dirty && last_render.elapsed() >= RENDER_INTERVAL {
@@ -105,7 +108,8 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
         }
     }
 
-    let _ = drain_serial_events(&event_rx, &mut dashboard, &mut logger)?;
+    let _ = drain_serial_events(&event_rx, &mut dashboard, &mut logger, &mut line_buffer)?;
+    let _ = flush_pending_input_lines(&mut dashboard, &mut logger, &mut line_buffer)?;
     dashboard
         .render(Some("stopped"))
         .map_err(|error| format!("failed to render dashboard: {error}"))?;
@@ -176,12 +180,13 @@ fn wait_for_serial_events(
     event_rx: &Receiver<SerialEvent>,
     dashboard: &mut TextDashboard,
     logger: &mut CommandLogger,
+    line_buffer: &mut SerialLineBuffer,
 ) -> Result<bool, String> {
     let mut changed = false;
 
     match event_rx.recv_timeout(WAIT_INTERVAL) {
         Ok(event) => {
-            if handle_event(event, dashboard, logger)? {
+            if handle_event(event, dashboard, logger, line_buffer)? {
                 changed = true;
             }
         }
@@ -191,7 +196,7 @@ fn wait_for_serial_events(
         }
     }
 
-    if drain_serial_events(event_rx, dashboard, logger)? {
+    if drain_serial_events(event_rx, dashboard, logger, line_buffer)? {
         changed = true;
     }
 
@@ -202,11 +207,12 @@ fn drain_serial_events(
     event_rx: &Receiver<SerialEvent>,
     dashboard: &mut TextDashboard,
     logger: &mut CommandLogger,
+    line_buffer: &mut SerialLineBuffer,
 ) -> Result<bool, String> {
     let mut changed = false;
 
     while let Ok(event) = event_rx.try_recv() {
-        if handle_event(event, dashboard, logger)? {
+        if handle_event(event, dashboard, logger, line_buffer)? {
             changed = true;
         }
     }
@@ -217,14 +223,19 @@ fn handle_event(
     event: SerialEvent,
     dashboard: &mut TextDashboard,
     logger: &mut CommandLogger,
+    line_buffer: &mut SerialLineBuffer,
 ) -> Result<bool, String> {
     match event {
         SerialEvent::Data { port, bytes } => {
-            dashboard.add_input(&port, &bytes);
-            logger
-                .log_input(&port, &bytes)
-                .map_err(|error| format!("failed to write log: {error}"))?;
-            Ok(true)
+            let mut changed = false;
+            for line in line_buffer.push_chunk(&port, &bytes) {
+                dashboard.add_input(&port, &line);
+                logger
+                    .log_input(&port, &line)
+                    .map_err(|error| format!("failed to write log: {error}"))?;
+                changed = true;
+            }
+            Ok(changed)
         }
         SerialEvent::Error { port, message } => {
             dashboard.set_input_status(&port, format!("error: {message}"));
@@ -234,6 +245,24 @@ fn handle_event(
             Ok(true)
         }
     }
+}
+
+fn flush_pending_input_lines(
+    dashboard: &mut TextDashboard,
+    logger: &mut CommandLogger,
+    line_buffer: &mut SerialLineBuffer,
+) -> Result<bool, String> {
+    let mut changed = false;
+
+    for line in line_buffer.drain_pending_lines() {
+        dashboard.add_input(&line.port, &line.bytes);
+        logger
+            .log_input(&line.port, &line.bytes)
+            .map_err(|error| format!("failed to write log: {error}"))?;
+        changed = true;
+    }
+
+    Ok(changed)
 }
 
 fn handle_dashboard_action(

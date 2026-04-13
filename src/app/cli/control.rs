@@ -6,7 +6,10 @@ use super::signal;
 use crate::input::compact;
 use crate::input::ds4_hid::Ds4Controller;
 use crate::output::OutputFormat;
-use crate::serial::{self, SerialCallback, SerialConfig, SerialConnection, SerialEvent, SerialMonitor};
+use crate::serial::{
+    self, SerialCallback, SerialConfig, SerialConnection, SerialEvent, SerialLineBuffer,
+    SerialMonitor,
+};
 use crate::ui::text_dashboard::{TextDashboard, TextDashboardAction};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -128,13 +131,14 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
     let mut dirty = false;
     let mut last_render = Instant::now();
     let mut paused = false;
+    let mut line_buffer = SerialLineBuffer::default();
 
     loop {
         if handle_dashboard_action(&mut dashboard, &mut paused)? {
             dirty = true;
         }
 
-        if drain_serial_events(&event_rx, &mut dashboard, &mut logger)? {
+        if drain_serial_events(&event_rx, &mut dashboard, &mut logger, &mut line_buffer)? {
             dirty = true;
         }
 
@@ -168,7 +172,8 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         }
     }
 
-    let _ = drain_serial_events(&event_rx, &mut dashboard, &mut logger)?;
+    let _ = drain_serial_events(&event_rx, &mut dashboard, &mut logger, &mut line_buffer)?;
+    let _ = flush_pending_input_lines(&mut dashboard, &mut logger, &mut line_buffer)?;
     dashboard
         .render(Some("stopped"))
         .map_err(|error| format!("failed to render dashboard: {error}"))?;
@@ -258,17 +263,20 @@ fn drain_serial_events(
     event_rx: &Receiver<SerialEvent>,
     dashboard: &mut TextDashboard,
     logger: &mut CommandLogger,
+    line_buffer: &mut SerialLineBuffer,
 ) -> Result<bool, String> {
     let mut changed = false;
 
     while let Ok(event) = event_rx.try_recv() {
         match event {
             SerialEvent::Data { port, bytes } => {
-                dashboard.add_input(&port, &bytes);
-                logger
-                    .log_input(&port, &bytes)
-                    .map_err(|error| format!("failed to write log: {error}"))?;
-                changed = true;
+                for line in line_buffer.push_chunk(&port, &bytes) {
+                    dashboard.add_input(&port, &line);
+                    logger
+                        .log_input(&port, &line)
+                        .map_err(|error| format!("failed to write log: {error}"))?;
+                    changed = true;
+                }
             }
             SerialEvent::Error { port, message } => {
                 dashboard.set_input_status(&port, format!("error: {message}"));
@@ -278,6 +286,24 @@ fn drain_serial_events(
                 changed = true;
             }
         }
+    }
+
+    Ok(changed)
+}
+
+fn flush_pending_input_lines(
+    dashboard: &mut TextDashboard,
+    logger: &mut CommandLogger,
+    line_buffer: &mut SerialLineBuffer,
+) -> Result<bool, String> {
+    let mut changed = false;
+
+    for line in line_buffer.drain_pending_lines() {
+        dashboard.add_input(&line.port, &line.bytes);
+        logger
+            .log_input(&line.port, &line.bytes)
+            .map_err(|error| format!("failed to write log: {error}"))?;
+        changed = true;
     }
 
     Ok(changed)
