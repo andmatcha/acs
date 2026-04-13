@@ -38,7 +38,6 @@ impl OutputFormat {
 }
 
 pub trait OutputDriver {
-    fn format_name(&self) -> &'static str;
     fn encode(&mut self, compact_report: &CompactReport) -> Result<Vec<u8>, String>;
 }
 

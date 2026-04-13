@@ -2,11 +2,15 @@ use super::common::{dedup_strings, default_baud_rate, default_log_dir, next_valu
 use super::config;
 use super::help::{is_help_flag, print_control_help};
 use super::signal;
-use crate::input::compact;
 use crate::input::ds4_hid::Ds4Controller;
+use crate::pipeline::{
+    ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineEngine, PipelineSpec,
+    RouterModuleConfig, TransformChainConfig, TransformModuleConfig,
+};
 use crate::output::OutputFormat;
 use crate::port_display::{PortDisplayConfig, parse_display_assignment};
 use crate::serial;
+use crate::session::event::IngressFrame;
 use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntime, SessionSpec};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -73,7 +77,13 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
     let mut controller = Ds4Controller::open(settings.controller.as_deref())
         .map_err(|error| format!("failed to open controller: {error}"))?;
     let controller_info = controller.info().clone();
-    let mut driver = settings.format.create_driver();
+    let controller_input_id = String::from("ds4_main");
+    let controller_input_port = controller_info.path.clone();
+    let mut controller_sequence = 0u64;
+    let mut engine = PipelineEngine::new(&build_control_pipeline_spec(
+        &controller_input_id,
+        settings.format,
+    ))?;
     let extra_monitor_ports = settings
         .monitor_ports
         .into_iter()
@@ -102,7 +112,7 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             id: String::from("main"),
             port: settings.port.clone(),
             baud_rate: settings.baud,
-            format_name: driver.format_name().to_owned(),
+            format_name: settings.format.as_str().to_owned(),
             display_mode: settings.display.resolve_output(&settings.port),
         }],
     })?;
@@ -123,7 +133,7 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             "output: {} @ {} baud, format={}",
             settings.port,
             settings.baud,
-            driver.format_name()
+            settings.format.as_str()
         ),
         format!("input mode: {}", if settings.raw { "raw" } else { "line" }),
         format!("log: {log_path_display}"),
@@ -137,16 +147,56 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             if let Some(report) = controller
                 .read_next_report(CONTROLLER_POLL_MILLIS)
                 .map_err(|error| format!("failed to read controller input: {error}"))?
-                && let Ok(compact_report) = compact::convert_input_report(&report)
             {
-                let bytes = driver.encode(&compact_report)?;
-                session.write_output("main", &bytes)?;
+                let frame = IngressFrame {
+                    input_id: controller_input_id.clone(),
+                    port: controller_input_port.clone(),
+                    bytes: report,
+                    sequence: controller_sequence,
+                };
+                controller_sequence = controller_sequence.wrapping_add(1);
+
+                match engine.process_frame(&frame) {
+                    Ok(dispatches) => {
+                        for dispatch in dispatches {
+                            session.write_output(&dispatch.output_id, &dispatch.bytes)?;
+                        }
+                    }
+                    Err(error) if error.starts_with("failed to convert DS4 report:") => {}
+                    Err(error) => return Err(error),
+                }
             }
             Ok(())
         },
     )?;
 
     Ok(log_path)
+}
+
+fn build_control_pipeline_spec(controller_input_id: &str, format: OutputFormat) -> PipelineSpec {
+    PipelineSpec {
+        pipelines: vec![PipelineDefinition {
+            id: String::from("control_main"),
+            inputs: vec![controller_input_id.to_owned()],
+            filter: FilterModuleConfig::AllowAll,
+            transform: TransformChainConfig {
+                modules: control_transform_modules(format),
+            },
+            classify: ClassifyModuleConfig::None,
+            router: RouterModuleConfig::Broadcast {
+                outputs: vec![String::from("main")],
+            },
+        }],
+    }
+}
+
+fn control_transform_modules(format: OutputFormat) -> Vec<TransformModuleConfig> {
+    match format {
+        OutputFormat::Arm9 => vec![
+            TransformModuleConfig::Ds4ToCompact,
+            TransformModuleConfig::Arm9Encode,
+        ],
+    }
 }
 
 fn build_settings(

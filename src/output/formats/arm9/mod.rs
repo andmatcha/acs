@@ -2,7 +2,7 @@ mod encoder;
 mod sound;
 
 use crate::input::compact::CompactReport;
-use crate::output::formats::{OutputDriver, OutputFormat};
+use crate::output::formats::OutputDriver;
 use encoder::ManualPacketEncoder;
 use sound::ModeSoundPlayer;
 
@@ -25,10 +25,6 @@ impl Arm9OutputDriver {
 }
 
 impl OutputDriver for Arm9OutputDriver {
-    fn format_name(&self) -> &'static str {
-        OutputFormat::Arm9.as_str()
-    }
-
     fn encode(&mut self, compact_report: &CompactReport) -> Result<Vec<u8>, String> {
         let update = self.encoder.encode_compact_report_update(compact_report);
         if update.profile_changed {
