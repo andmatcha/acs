@@ -73,7 +73,26 @@ cargo build --release
 make install
 ```
 
-通常は `~/.cargo/bin/acs` にインストールされます。`make install` はバイナリのインストールに加えて、標準ユーザ設定ディレクトリとログディレクトリも用意します。
+通常は `~/.cargo/bin/acs` にインストールされます。`make install` は、デフォルトではこのローカルリポジトリの「現在の HEAD commit の内容だけ」を使ってグローバルへ導入します。未コミット変更は取り込みません。
+
+`make install` は初回導入用です。すでにグローバルに `acs` が入っている場合は再インストールせず、そのまま終了します。差し替えたい場合は `make update` または `make sync-code` を使ってください。
+
+`make install` には ref 指定もできます。
+
+```bash
+make install TAG=v0.1.0
+make install BRANCH=main
+make install COMMIT=50d3137a75b821d46b5308f7c7693e513836e11d
+```
+
+`TAG` / `BRANCH` / `COMMIT` は GitHub 上の ref を使ってグローバル導入します。複数同時指定はできません。
+
+インストール時には、build metadata として branch / commit / source kind / dirty state も埋め込みます。グローバル側では次で確認できます。
+
+```bash
+acs --version
+acs version
+```
 
 - macOS の設定ディレクトリ: `~/Library/Application Support/acs`
 - macOS のログディレクトリ: `~/Library/Logs/acs`
@@ -88,7 +107,18 @@ make install
 make sync-code
 ```
 
-`make sync-code` は、現在のチェックアウトからグローバルの `acs` バイナリを再インストールします。設定ファイルの投入は行わず、既存のグローバル設定はそのまま残します。
+`make sync-code` は、現在の working tree からグローバルの `acs` バイナリを再インストールします。未コミット変更も取り込みます。反映された build が dirty な working tree 由来だった場合は、`acs --version` に `dirty` が出るので見分けられます。設定ファイルの投入は行わず、既存のグローバル設定はそのまま残します。
+
+すでにグローバルに入っている `acs` を別の ref へ更新したい場合は次を使います。
+
+```bash
+make update
+make update TAG=v0.1.0
+make update BRANCH=main
+make update COMMIT=50d3137a75b821d46b5308f7c7693e513836e11d
+```
+
+`make update` は、引数なしなら GitHub 上の最新 tag を使ってグローバル版を更新します。`TAG` / `BRANCH` / `COMMIT` を指定した場合は、その ref をソースとして更新します。
 
 このリポジトリで調整したローカル設定をグローバル設定へ反映したい場合は、次を使えます。
 
@@ -111,6 +141,7 @@ acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 acs monitor --port /dev/ttyUSB0
 acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 acs send --port /dev/ttyUSB0 --format PacketACv6
+acs --version
 ```
 
 アンインストールは次です。これはバイナリだけ削除し、設定とログは残します。
@@ -124,18 +155,6 @@ make uninstall
 ```bash
 make purge
 ```
-
-GitHub 上の tag を使ってグローバル版を更新したい場合は、次のどれかを使います。
-
-```bash
-make update
-make update-latest
-make update VERSION=v0.1.0
-```
-
-- `make update`: GitHub の tag 一覧から対話的に選んで更新
-- `make update-latest`: 最新 tag で更新
-- `make update VERSION=...`: 指定 tag で更新
 
 ## 設定ファイル
 

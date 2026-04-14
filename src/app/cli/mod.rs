@@ -8,6 +8,7 @@ mod paths;
 mod route;
 mod send;
 mod signal;
+mod version;
 
 use std::env;
 use std::process::ExitCode;
@@ -21,7 +22,9 @@ pub fn run() -> ExitCode {
             help::print_help(&bin_name);
             ExitCode::SUCCESS
         }
+        Some("--version") | Some("-V") => version::print_version(),
         Some("help") => help::print_help_topic(&bin_name, args.next().as_deref()),
+        Some("version") => version::print_version(),
         Some("controllers") => commands::list_controllers(),
         Some("ports") => commands::list_ports(),
         Some("control") => control::run(args.collect(), &bin_name),

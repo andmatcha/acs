@@ -11,7 +11,10 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!("  send       Repeatedly send dummy payloads to a serial port");
     eprintln!("  controllers List connected DUALSHOCK 4 controllers");
     eprintln!("  ports      List available serial ports");
+    eprintln!("  version    Show build version and source metadata");
     eprintln!("  help       Show help for a command");
+    eprintln!();
+    eprintln!("Use `{bin_name} --version` or `{bin_name} version` to inspect the installed build.");
     eprintln!();
     eprintln!(
         "Use `{bin_name} help control`, `{bin_name} help monitor`, `{bin_name} help route`, or `{bin_name} help send` for details."
@@ -28,6 +31,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  send       Repeatedly send dummy payloads to a serial port");
     println!("  controllers List connected DUALSHOCK 4 controllers");
     println!("  ports      List available serial ports");
+    println!("  version    Show build version and source metadata");
     println!("  help       Show help for a command");
     println!();
     println!("Examples:");
@@ -38,6 +42,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
     println!("  {bin_name} control --config config");
+    println!("  {bin_name} --version");
     println!();
     println!(
         "When exactly one controller or one serial port is available, it is selected automatically."
@@ -78,6 +83,15 @@ pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode 
             println!("Usage: {bin_name} ports");
             println!();
             println!("Lists available serial ports and USB metadata when available.");
+            ExitCode::SUCCESS
+        }
+        Some("version") => {
+            println!("Usage: {bin_name} --version");
+            println!("       {bin_name} version");
+            println!();
+            println!(
+                "Shows the package version plus build source metadata such as commit, branch, source kind, and dirty/clean state."
+            );
             ExitCode::SUCCESS
         }
         Some(other) => {
