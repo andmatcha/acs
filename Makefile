@@ -1,13 +1,14 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/sh
 
-.PHONY: help init build release fmt test install install-global update sync-code uninstall purge sync-config unsync-config paths
+.PHONY: help init build build-release release fmt test install install-global update sync-code uninstall purge sync-config unsync-config paths
 
 help:
 	@printf '%s\n' \
 		'make init            Install Rust if needed and build a local release binary' \
 		'make build           Build the project in debug mode' \
-		'make release         Build the project in release mode' \
+		'make build-release   Build the project in release mode' \
+		'make release         Bump version, test, build, commit, and tag a release' \
 		'make fmt             Format the Rust code' \
 		'make test            Run the Rust test suite' \
 		'make install         Install acs globally from committed local HEAD or a specified ref' \
@@ -26,8 +27,11 @@ init:
 build:
 	@cargo build
 
-release:
+build-release:
 	@cargo build --release
+
+release:
+	@./scripts/release.sh --version $(VERSION)
 
 fmt:
 	@cargo fmt

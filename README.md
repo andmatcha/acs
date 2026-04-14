@@ -65,6 +65,12 @@ cargo build --release
 ./target/release/acs monitor --port /dev/ttyUSB0
 ```
 
+release ビルドだけをしたい場合は次も使えます。
+
+```bash
+make build-release
+```
+
 ## グローバルインストールと更新
 
 他のディレクトリからも `acs` をそのまま使いたい場合は、ルートで次を実行してください。
@@ -93,6 +99,14 @@ make install COMMIT=50d3137a75b821d46b5308f7c7693e513836e11d
 acs --version
 acs version
 ```
+
+tag と `Cargo.toml` の version を揃えてリリースしたい場合は、次で半自動化できます。
+
+```bash
+make release VERSION=1.2.0
+```
+
+`make release` は、clean な branch 上でだけ動きます。`Cargo.toml` と `Cargo.lock` の version を更新し、`cargo test`、`cargo build --release`、`git commit`、annotated tag の `v1.2.0` 作成まで実行します。push は自動では行わないので、最後に案内される `git push origin <branch> --follow-tags` を実行してください。
 
 - macOS の設定ディレクトリ: `~/Library/Application Support/acs`
 - macOS のログディレクトリ: `~/Library/Logs/acs`
