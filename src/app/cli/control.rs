@@ -1,4 +1,7 @@
-use super::common::{dedup_strings, default_baud_rate, default_log_dir, next_value, parse_u32_arg};
+use super::common::{
+    PortSpec, default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
+    resolve_requested_port_spec,
+};
 use super::config;
 use super::help::{is_help_flag, print_control_help};
 use super::signal;
@@ -21,25 +24,23 @@ const CONTROLLER_POLL_MILLIS: i32 = 0;
 
 #[derive(Debug, Default)]
 struct ControlCliOptions {
-    port: Option<String>,
+    port: Option<PortSpec>,
     baud: Option<u32>,
     controller: Option<String>,
     format: Option<String>,
     raw: bool,
     display: PortDisplayConfig,
-    monitor_ports: Vec<String>,
+    monitor_ports: Vec<PortSpec>,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
 }
 
 struct ControlSettings {
-    port: String,
-    baud: u32,
+    inputs: Vec<SessionInputSpec>,
+    output: SessionOutputSpec,
     controller: Option<String>,
     format: OutputFormat,
     raw: bool,
-    display: PortDisplayConfig,
-    monitor_ports: Vec<String>,
     log_dir: PathBuf,
 }
 
@@ -82,42 +83,27 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         &controller_input_id,
         settings.format,
     ))?;
+    let output_port = settings.output.port.clone();
+    let output_baud = settings.output.baud_rate;
     let extra_monitor_ports = settings
-        .monitor_ports
-        .into_iter()
-        .filter(|port| port != &settings.port)
+        .inputs
+        .iter()
+        .filter(|input| input.port != output_port)
+        .map(|input| format!("{}@{}", input.port, input.baud_rate))
         .collect::<Vec<_>>();
-    let mut inputs = vec![SessionInputSpec {
-        id: settings.port.clone(),
-        port: settings.port.clone(),
-        baud_rate: settings.baud,
-        display_mode: settings.display.resolve_input(&settings.port),
-    }];
-    inputs.extend(extra_monitor_ports.iter().map(|port| SessionInputSpec {
-        id: port.clone(),
-        port: port.clone(),
-        baud_rate: settings.baud,
-        display_mode: settings.display.resolve_input(port),
-    }));
     let mut session = SessionRuntime::new(SessionSpec {
         title: String::from("acs control"),
         command_name: String::from("control"),
         raw_input: settings.raw,
         log_dir: settings.log_dir.clone(),
-        inputs,
-        outputs: vec![SessionOutputSpec {
-            id: String::from("main"),
-            port: settings.port.clone(),
-            baud_rate: settings.baud,
-            format_name: settings.format.as_str().to_owned(),
-            display_mode: settings.display.resolve_output(&settings.port),
-        }],
+        inputs: settings.inputs.clone(),
+        outputs: vec![settings.output.clone()],
     })?;
     let log_path = session.log_path().to_path_buf();
     let log_path_display = log_path.display().to_string();
 
     signal::install_handler();
-    session.set_header_lines(vec![
+    let mut header_lines = vec![
         format!(
             "controller: {} ({})",
             controller_info
@@ -128,14 +114,23 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         ),
         format!(
             "output: {} @ {} baud, format={}",
-            settings.port,
-            settings.baud,
+            output_port,
+            output_baud,
             settings.format.as_str()
         ),
+    ];
+    if !extra_monitor_ports.is_empty() {
+        header_lines.push(format!(
+            "extra monitors: {}",
+            extra_monitor_ports.join(", ")
+        ));
+    }
+    header_lines.extend([
         format!("input mode: {}", if settings.raw { "raw" } else { "line" }),
         format!("log: {log_path_display}"),
         String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
     ]);
+    session.set_header_lines(header_lines);
     session.run_loop_with_tick(
         LOOP_INTERVAL,
         signal::is_stop_requested,
@@ -210,58 +205,106 @@ fn build_settings(
     file_config: config::AppConfig,
     config_lookup: &super::paths::ConfigLookup,
 ) -> Result<ControlSettings, String> {
-    let raw_port = resolve_requested_port(cli_options.port, file_config.control.port);
-    let port = serial::resolve_port(raw_port.as_deref()).map_err(|error| error.to_string())?;
-    let baud = cli_options
+    let config = file_config.control;
+    let using_cli_port = cli_options.port.is_some();
+    let using_cli_monitor_ports = !cli_options.monitor_ports.is_empty();
+    let selected_port = resolve_requested_port_spec(cli_options.port, config.port);
+    let default_baud = cli_options
         .baud
-        .or(file_config.control.baud)
+        .or(config.baud)
         .unwrap_or_else(default_baud_rate);
-    let controller = cli_options.controller.or(file_config.control.controller);
+    let controller = cli_options.controller.or(config.controller);
     let format_name = cli_options
         .format
-        .or(file_config.control.format)
+        .or(config.format)
         .unwrap_or_else(|| String::from("packetacv6"));
     let format = OutputFormat::parse(&format_name)?;
-    let raw = cli_options.raw || file_config.control.raw.unwrap_or(false);
-    let mut display = file_config.control.display;
-    display.merge_from(cli_options.display);
-    let monitor_ports = if cli_options.monitor_ports.is_empty() {
-        file_config.control.monitor_ports
-    } else {
+    let raw = cli_options.raw || config.raw.unwrap_or(false);
+    let mut display = config.display;
+    if !using_cli_port
+        && let Some(port_spec) = selected_port.as_ref()
+        && let Some(mode) = port_spec.display_mode
+    {
+        display.set_output(port_spec.port.clone(), mode);
+    }
+    let monitor_port_specs = if using_cli_monitor_ports {
         cli_options.monitor_ports
+    } else {
+        config.monitor_ports
     };
-    let monitor_ports = dedup_strings(
-        monitor_ports
-            .into_iter()
-            .map(|port| serial::resolve_port(Some(&port)).map_err(|error| error.to_string()))
-            .collect::<Result<Vec<_>, _>>()?,
-    );
+    if !using_cli_monitor_ports {
+        for port_spec in &monitor_port_specs {
+            if let Some(mode) = port_spec.display_mode {
+                display.set_input(port_spec.port.clone(), mode);
+            }
+        }
+    }
+    display.merge_from(cli_options.display);
+    let port = match &selected_port {
+        Some(port_spec) => {
+            serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?
+        }
+        None => serial::resolve_port(None).map_err(|error| error.to_string())?,
+    };
+    let output_baud = selected_port
+        .as_ref()
+        .and_then(|port_spec| port_spec.baud)
+        .unwrap_or(default_baud);
+    let output_display_mode = if using_cli_port {
+        selected_port
+            .as_ref()
+            .and_then(|port_spec| port_spec.display_mode)
+            .unwrap_or(display.resolve_output(&port))
+    } else {
+        display.resolve_output(&port)
+    };
     let log_dir = cli_options
         .log_dir
-        .or(file_config.control.log_dir)
+        .or(config.log_dir)
         .or(file_config.log_dir)
         .unwrap_or_else(|| default_log_dir(config_lookup));
+    let mut inputs = vec![SessionInputSpec {
+        id: port.clone(),
+        port: port.clone(),
+        baud_rate: output_baud,
+        display_mode: display.resolve_input(&port),
+    }];
+    for port_spec in monitor_port_specs {
+        let monitor_port =
+            serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?;
+        if inputs
+            .iter()
+            .any(|input: &SessionInputSpec| input.port == monitor_port)
+        {
+            continue;
+        }
+        inputs.push(SessionInputSpec {
+            id: monitor_port.clone(),
+            port: monitor_port.clone(),
+            baud_rate: port_spec.baud.unwrap_or(default_baud),
+            display_mode: if using_cli_monitor_ports {
+                port_spec
+                    .display_mode
+                    .unwrap_or(display.resolve_input(&monitor_port))
+            } else {
+                display.resolve_input(&monitor_port)
+            },
+        });
+    }
 
     Ok(ControlSettings {
-        port,
-        baud,
+        inputs,
+        output: SessionOutputSpec {
+            id: String::from("main"),
+            port,
+            baud_rate: output_baud,
+            format_name: format.as_str().to_owned(),
+            display_mode: output_display_mode,
+        },
         controller,
         format,
         raw,
-        display,
-        monitor_ports,
         log_dir,
-    })
-}
-
-fn resolve_requested_port(cli_port: Option<String>, config_port: Option<String>) -> Option<String> {
-    normalize_requested_port(cli_port).or_else(|| normalize_requested_port(config_port))
-}
-
-fn normalize_requested_port(port: Option<String>) -> Option<String> {
-    port.and_then(|port| {
-        let trimmed = port.trim();
-        (!trimmed.is_empty()).then_some(trimmed.to_owned())
     })
 }
 
@@ -271,7 +314,12 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
 
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--port" | "-p" => options.port = Some(next_value(&mut iter, "--port")?),
+            "--port" | "-p" => {
+                options.port = Some(parse_port_spec(
+                    "--port",
+                    &next_value(&mut iter, "--port")?,
+                )?)
+            }
             "--baud" | "-b" => {
                 let value = next_value(&mut iter, "--baud")?;
                 options.baud = Some(parse_u32_arg("--baud", &value)?);
@@ -290,9 +338,10 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
                     assignment.mode,
                 );
             }
-            "--monitor" | "-m" => options
-                .monitor_ports
-                .push(next_value(&mut iter, "--monitor")?),
+            "--monitor" | "-m" => options.monitor_ports.push(parse_port_spec(
+                "--monitor",
+                &next_value(&mut iter, "--monitor")?,
+            )?),
             "--config" => {
                 options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
             }
@@ -308,28 +357,40 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_requested_port;
+    use super::resolve_requested_port_spec;
+    use crate::app::cli::common::PortSpec;
+    use crate::port_display::PortDisplayMode;
 
     #[test]
     fn requested_port_falls_back_to_config_when_cli_port_is_empty() {
         assert_eq!(
-            resolve_requested_port(Some(String::from("")), Some(String::from("/dev/ttyUSB0"))),
-            Some(String::from("/dev/ttyUSB0"))
-        );
-        assert_eq!(
-            resolve_requested_port(
-                Some(String::from("   ")),
-                Some(String::from("/dev/ttyUSB0"))
+            resolve_requested_port_spec(
+                Some(PortSpec {
+                    port: String::from(""),
+                    baud: None,
+                    display_mode: None,
+                }),
+                Some(PortSpec {
+                    port: String::from("/dev/ttyUSB0"),
+                    baud: Some(115_200),
+                    display_mode: Some(PortDisplayMode::Hex),
+                }),
             ),
-            Some(String::from("/dev/ttyUSB0"))
+            Some(PortSpec {
+                port: String::from("/dev/ttyUSB0"),
+                baud: Some(115_200),
+                display_mode: Some(PortDisplayMode::Hex),
+            })
         );
-    }
-
-    #[test]
-    fn requested_port_treats_empty_config_port_as_unspecified() {
-        assert_eq!(resolve_requested_port(None, Some(String::from(""))), None);
         assert_eq!(
-            resolve_requested_port(None, Some(String::from("   "))),
+            resolve_requested_port_spec(
+                None,
+                Some(PortSpec {
+                    port: String::from("   "),
+                    baud: None,
+                    display_mode: None,
+                })
+            ),
             None
         );
     }

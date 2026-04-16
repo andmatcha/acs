@@ -7,7 +7,7 @@
 - `acs control`: DUALSHOCK 4 の入力を読み取り、整形したシリアル出力を送信する
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
 - `acs route`: 1 つ以上のシリアル入力を、設定に応じて 1 つ以上のシリアル出力へ振り分ける
-- `acs send`: 指定形式のダミーデータを継続してシリアルポートへ送信し、送信内容を monitor と同様のダッシュボードで表示する
+- `acs send`: 指定形式のダミーデータを継続してシリアルポートへ送信し、送信内容と追加 monitor ポートの受信内容を同じダッシュボードで表示する
 - `--raw`: 改行でまとめず、生の受信チャンクをそのまま表示する
 - `--display`: ポートごとに、受信・送信それぞれの表示形式を `hex` / `ascii` / `utf8` / `hex+ascii` / `hex+utf8` から選べる
 - ログを、ローカル設定時は `./logs`、グローバル設定時は標準ユーザログディレクトリへ自動保存する
@@ -19,14 +19,16 @@
 ```bash
 acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 acs control --monitor /dev/ttyUSB1
+acs control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8
 acs control --raw --monitor /dev/ttyUSB1
 acs control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex
-acs monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1
+acs monitor --port /dev/ttyUSB0@921600,utf8 --port /dev/ttyUSB1@115200,hex
 acs monitor --raw --port /dev/ttyUSB0
 acs monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8
-acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
-acs send --port /dev/ttyUSB0 --format PacketACv6
+acs route merge -i in_a=/dev/ttyUSB0@921600,utf8 -o out_main=/dev/ttyUSB1@115200,hex
+acs send --port /dev/ttyUSB0@921600,hex --format PacketACv6
 acs send --port /dev/ttyUSB0 --format PacketJFv1
+acs send --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8
 acs send --config config
 acs route --list-templates
 acs route --config config
@@ -38,6 +40,8 @@ acs control --config config
 `control`、`monitor`、`route` は、デフォルトでは受信データを改行単位でまとめて表示します。`--raw` を付けると、改行を待たずに受信チャンクをそのまま表示・記録します。
 
 表示形式は `--display <TARGET>=<MODE>` で指定できます。`TARGET` には `PORT`、`input:PORT`、`output:PORT`、`default`、`input:default`、`output:default` が使えます。方向を付けない `PORT` や `default` は送受信の両方に適用されます。`MODE` には `hex`、`ascii`、`utf8`、`hex+ascii`、`hex+utf8` が使えます。指定しない場合は `hex+utf8` です。
+
+各 port 引数は `PORT[@BAUD][,DISPLAY]` の書式も使えます。`control --port` と `send --port` は output 側、`monitor --port` と `--monitor` は input 側、`route` は `ID=PORT[@BAUD][,DISPLAY]` でそれぞれの向きに適用されます。`--baud` は inline で `@BAUD` を書かなかった port の既定値です。
 
 ## 初期化とローカル実行
 
@@ -53,8 +57,9 @@ make init
 ```bash
 ./acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 ./acs monitor --port /dev/ttyUSB0
-./acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
-./acs send --port /dev/ttyUSB0 --format PacketACv6
+./acs route merge -i in_a=/dev/ttyUSB0@921600,utf8 -o out_main=/dev/ttyUSB1@115200,hex
+./acs send --port /dev/ttyUSB0@921600,hex --format PacketACv6
+./acs send --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8
 ```
 
 直接 `cargo` を使いたい場合は従来どおり次でも動きます。
@@ -153,8 +158,9 @@ make unsync-config
 ```bash
 acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 acs monitor --port /dev/ttyUSB0
-acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
-acs send --port /dev/ttyUSB0 --format PacketACv6
+acs route merge -i in_a=/dev/ttyUSB0@921600,utf8 -o out_main=/dev/ttyUSB1@115200,hex
+acs send --port /dev/ttyUSB0@921600,hex --format PacketACv6
+acs send --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8
 acs --version
 ```
 
@@ -178,6 +184,8 @@ make purge
 
 分割例は [config.example](config.example)、単一ファイル例は [acs.config.example.json](acs.config.example.json) を参照してください。
 
+port 設定は従来どおり文字列でも書けますが、個別のボーレートや表示形式を持たせたい場合は object 形式も使えます。`control.port` / `send.port` は `{ "path": "...", "baud": 921600, "display": "hex" }`、`monitor.ports` / `control.monitor_ports` / `send.monitor_ports` は同じ形の配列、`route.inputs` / `route.outputs` は既存の object に `"baud"` と `"display"` を追加できます。
+
 ### `acs route` テンプレート
 
 `acs route` では、`route <template>` または `route --template <name>` でルーティングテンプレートを選べます。`route.template` を設定しておけば、`acs route` 単体でもそのテンプレートを既定値として使えます。組み込みテンプレートは次の 2 つだけにしています。
@@ -194,20 +202,24 @@ acs route --list-templates
 たとえば 2 入力を来た順に 1 出力へ流したいなら、次のように書けます。
 
 ```bash
-acs route merge -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2
+acs route merge -i in_a=/dev/ttyUSB0@921600,utf8 -i in_b=/dev/ttyUSB1@115200,hex+ascii -o out_main=/dev/ttyUSB2@460800,hex
 ```
 
 入力と出力を順番に 1 対 1 対応させたいなら、次のように書けます。
 
 ```bash
-acs route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/ttyUSB2 -o out_b=/dev/ttyUSB3
+acs route one-to-one -i in_a=/dev/ttyUSB0@921600,utf8 -i in_b=/dev/ttyUSB1@115200,hex+ascii -o out_a=/dev/ttyUSB2@460800,hex -o out_b=/dev/ttyUSB3@115200,hex+ascii
 ```
 
 ```json
 {
   "log_dir": "logs",
   "control": {
-    "port": "/dev/ttyUSB0",
+    "port": {
+      "path": "/dev/ttyUSB0",
+      "baud": 921600,
+      "display": "hex"
+    },
     "baud": 115200,
     "controller": "0",
     "format": "packetacv6",
@@ -223,12 +235,21 @@ acs route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/tty
         "/dev/ttyUSB0": "hex"
       }
     },
-    "monitor_ports": ["/dev/ttyUSB1"]
+    "monitor_ports": [
+      { "port": "/dev/ttyUSB1", "baud": 115200, "display": "utf8" }
+    ]
   },
   "send": {
-    "port": "/dev/ttyUSB0",
+    "port": {
+      "path": "/dev/ttyUSB0",
+      "baud": 460800,
+      "display": "hex"
+    },
     "baud": 115200,
     "format": "packetacv6",
+    "monitor_ports": [
+      { "port": "/dev/ttyUSB2", "baud": 115200, "display": "utf8" }
+    ],
     "display": {
       "output": {
         "default": "hex"
@@ -236,7 +257,10 @@ acs route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/tty
     }
   },
   "monitor": {
-    "ports": ["/dev/ttyUSB0", "/dev/ttyUSB1"],
+    "ports": [
+      { "path": "/dev/ttyUSB0", "baud": 921600, "display": "utf8" },
+      { "path": "/dev/ttyUSB1", "baud": 115200, "display": "hex+ascii" }
+    ],
     "baud": 115200,
     "raw": false,
     "display": {
@@ -251,12 +275,12 @@ acs route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/tty
     "baud": 115200,
     "raw": true,
     "inputs": [
-      { "id": "in_a", "port": "/dev/ttyUSB0" },
-      { "id": "in_b", "port": "/dev/ttyUSB1" }
+      { "id": "in_a", "port": "/dev/ttyUSB0", "baud": 921600, "display": "utf8" },
+      { "id": "in_b", "port": "/dev/ttyUSB1", "baud": 115200, "display": "hex+ascii" }
     ],
     "outputs": [
-      { "id": "out_main", "port": "/dev/ttyUSB2" },
-      { "id": "out_sub", "port": "/dev/ttyUSB3" }
+      { "id": "out_main", "port": "/dev/ttyUSB2", "baud": 460800, "display": "hex" },
+      { "id": "out_sub", "port": "/dev/ttyUSB3", "baud": 115200, "display": "hex+ascii" }
     ],
     "pipelines": [
       {

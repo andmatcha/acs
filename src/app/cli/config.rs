@@ -1,5 +1,5 @@
+use super::common::{PortSpec, merge_port_specs};
 use super::paths::{self, ConfigLookup};
-use crate::common::extend_unique_strings;
 use crate::output::OutputFormat;
 use crate::pipeline::{
     ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineSpec, RouterModuleConfig,
@@ -23,19 +23,19 @@ pub(crate) struct AppConfig {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ControlConfig {
-    pub port: Option<String>,
+    pub port: Option<PortSpec>,
     pub baud: Option<u32>,
     pub controller: Option<String>,
     pub format: Option<String>,
     pub raw: Option<bool>,
     pub display: PortDisplayConfig,
-    pub monitor_ports: Vec<String>,
+    pub monitor_ports: Vec<PortSpec>,
     pub log_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MonitorConfig {
-    pub ports: Vec<String>,
+    pub ports: Vec<PortSpec>,
     pub baud: Option<u32>,
     pub raw: Option<bool>,
     pub display: PortDisplayConfig,
@@ -44,10 +44,11 @@ pub(crate) struct MonitorConfig {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct SendConfig {
-    pub port: Option<String>,
+    pub port: Option<PortSpec>,
     pub baud: Option<u32>,
     pub format: Option<String>,
     pub display: PortDisplayConfig,
+    pub monitor_ports: Vec<PortSpec>,
     pub log_dir: Option<PathBuf>,
 }
 
@@ -76,6 +77,7 @@ pub(crate) struct RouteInputConfig {
     pub id: String,
     pub port: String,
     pub baud: Option<u32>,
+    pub display_mode: Option<PortDisplayMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +85,7 @@ pub(crate) struct RouteOutputConfig {
     pub id: String,
     pub port: String,
     pub baud: Option<u32>,
+    pub display_mode: Option<PortDisplayMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,14 +124,14 @@ impl ControlConfig {
         merge_option(&mut self.format, other.format);
         merge_option(&mut self.raw, other.raw);
         self.display.merge_from(other.display);
-        extend_unique_strings(&mut self.monitor_ports, &other.monitor_ports);
+        merge_port_specs(&mut self.monitor_ports, other.monitor_ports);
         merge_option(&mut self.log_dir, other.log_dir);
     }
 }
 
 impl MonitorConfig {
     fn merge_from(&mut self, other: MonitorConfig) {
-        extend_unique_strings(&mut self.ports, &other.ports);
+        merge_port_specs(&mut self.ports, other.ports);
         merge_option(&mut self.baud, other.baud);
         merge_option(&mut self.raw, other.raw);
         self.display.merge_from(other.display);
@@ -142,6 +145,7 @@ impl SendConfig {
         merge_option(&mut self.baud, other.baud);
         merge_option(&mut self.format, other.format);
         self.display.merge_from(other.display);
+        merge_port_specs(&mut self.monitor_ports, other.monitor_ports);
         merge_option(&mut self.log_dir, other.log_dir);
     }
 }
@@ -313,13 +317,13 @@ fn parse_control_config(
     let object = expect_object(value, "control")?;
 
     Ok(ControlConfig {
-        port: optional_string(object, "port")?,
+        port: optional_port_spec(object, "port")?,
         baud: optional_u32(object, "baud")?,
         controller: optional_string(object, "controller")?,
         format: optional_string(object, "format")?,
         raw: optional_bool(object, "raw")?,
         display: optional_display_config(object, "display")?,
-        monitor_ports: optional_string_list(object, "monitor_ports")?,
+        monitor_ports: optional_port_spec_list(object, "monitor_ports")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -332,9 +336,9 @@ fn parse_monitor_config(
         return Ok(MonitorConfig::default());
     };
     let object = expect_object(value, "monitor")?;
-    let mut ports = optional_string_list(object, "ports")?;
+    let mut ports = optional_port_spec_list(object, "ports")?;
     if ports.is_empty()
-        && let Some(port) = optional_string(object, "port")?
+        && let Some(port) = optional_port_spec(object, "port")?
     {
         ports.push(port);
     }
@@ -355,10 +359,11 @@ fn parse_send_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<SendC
     let object = expect_object(value, "send")?;
 
     Ok(SendConfig {
-        port: optional_string(object, "port")?,
+        port: optional_port_spec(object, "port")?,
         baud: optional_u32(object, "baud")?,
         format: optional_string(object, "format")?,
         display: optional_display_config(object, "display")?,
+        monitor_ports: optional_port_spec_list(object, "monitor_ports")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -476,6 +481,97 @@ fn optional_display_config(object: &JsonObject, key: &str) -> Result<PortDisplay
     Ok(config)
 }
 
+fn optional_port_spec(object: &JsonObject, key: &str) -> Result<Option<PortSpec>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+
+    parse_port_spec_value(value, key)
+}
+
+fn optional_port_spec_list(object: &JsonObject, key: &str) -> Result<Vec<PortSpec>, String> {
+    match object.get(key) {
+        None | Some(JsonValue::Null) => Ok(Vec::new()),
+        Some(JsonValue::String(_)) | Some(JsonValue::Object(_)) => {
+            parse_port_spec_value(object.get(key).expect("value exists"), key)
+                .map(|value| value.into_iter().collect())
+        }
+        Some(JsonValue::Array(values)) => values
+            .iter()
+            .filter_map(|value| match parse_port_spec_value(value, key) {
+                Ok(Some(spec)) => Some(Ok(spec)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect(),
+        Some(_) => Err(type_error(key, "string, object, or array")),
+    }
+}
+
+fn parse_port_spec_value(value: &JsonValue, key: &str) -> Result<Option<PortSpec>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(parse_port_spec_text(trimmed, key)?))
+        }
+        JsonValue::Object(object) => parse_port_spec_object(object, key),
+        _ => Err(type_error(key, "string or object")),
+    }
+}
+
+fn parse_port_spec_text(value: &str, key: &str) -> Result<PortSpec, String> {
+    let (port_and_baud, display_mode) = match value.rsplit_once(',') {
+        Some((port_and_baud, mode)) => match PortDisplayMode::parse(mode) {
+            Ok(mode) => (port_and_baud, Some(mode)),
+            Err(_) => (value, None),
+        },
+        None => (value, None),
+    };
+
+    let (port, baud) = match port_and_baud.rsplit_once('@') {
+        Some((port, baud)) => (
+            port.trim(),
+            Some(
+                baud.parse::<u32>()
+                    .map_err(|_| format!("invalid value for `{key}`: {value}"))?,
+            ),
+        ),
+        None => (port_and_baud.trim(), None),
+    };
+
+    if port.is_empty() {
+        return Err(format!("`{key}` must not be empty"));
+    }
+
+    Ok(PortSpec {
+        port: port.to_owned(),
+        baud,
+        display_mode,
+    })
+}
+
+fn parse_port_spec_object(object: &JsonObject, _key: &str) -> Result<Option<PortSpec>, String> {
+    let port = optional_string(object, "path")?
+        .or(optional_string(object, "port")?)
+        .unwrap_or_default();
+    let trimmed = port.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(PortSpec {
+        port: trimmed.to_owned(),
+        baud: optional_u32(object, "baud")?,
+        display_mode: optional_string(object, "display")?
+            .map(|mode| PortDisplayMode::parse(&mode))
+            .transpose()?,
+    }))
+}
+
 fn expect_object<'a>(value: &'a JsonValue, name: &str) -> Result<&'a JsonObject, String> {
     match value {
         JsonValue::Object(object) => Ok(object),
@@ -511,6 +607,9 @@ fn optional_route_inputs(object: &JsonObject, key: &str) -> Result<Vec<RouteInpu
             id: required_string(entry, "id")?,
             port: required_string(entry, "port")?,
             baud: optional_u32(entry, "baud")?,
+            display_mode: optional_string(entry, "display")?
+                .map(|mode| PortDisplayMode::parse(&mode))
+                .transpose()?,
         });
     }
 
@@ -533,6 +632,9 @@ fn optional_route_outputs(
             id: required_string(entry, "id")?,
             port: required_string(entry, "port")?,
             baud: optional_u32(entry, "baud")?,
+            display_mode: optional_string(entry, "display")?
+                .map(|mode| PortDisplayMode::parse(&mode))
+                .transpose()?,
         });
     }
 
@@ -1021,8 +1123,10 @@ impl<'a> JsonParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::{JsonParser, load_config};
+    use crate::app::cli::common::PortSpec;
     use crate::output::OutputFormat;
     use crate::pipeline::TransformModuleConfig;
+    use crate::port_display::PortDisplayMode;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1055,6 +1159,7 @@ mod tests {
             "port": "/dev/ttyUSB2",
             "baud": 115200,
             "format": "packetjfv1",
+            "monitor_ports": ["/dev/ttyUSB3"],
             "display": {
               "output": {
                 "default": "hex"
@@ -1113,7 +1218,8 @@ mod tests {
             {
               "log_dir": "logs",
               "send": {
-                "format": "packetjfv1"
+                "format": "packetjfv1",
+                "monitor_ports": ["/dev/ttyUSB2"]
               },
               "monitor": {
                 "ports": ["/dev/ttyUSB0"]
@@ -1174,7 +1280,22 @@ mod tests {
 
         assert_eq!(config.log_dir, Some(temp_dir.join("logs")));
         assert_eq!(config.send.format, Some(String::from("packetjfv1")));
-        assert_eq!(config.monitor.ports, vec![String::from("/dev/ttyUSB0")]);
+        assert_eq!(
+            config.send.monitor_ports,
+            vec![PortSpec {
+                port: String::from("/dev/ttyUSB2"),
+                baud: None,
+                display_mode: None,
+            }]
+        );
+        assert_eq!(
+            config.monitor.ports,
+            vec![PortSpec {
+                port: String::from("/dev/ttyUSB0"),
+                baud: None,
+                display_mode: None,
+            }]
+        );
         assert_eq!(config.route.baud, Some(115200));
         assert_eq!(config.route.inputs.len(), 2);
         assert_eq!(config.route.inputs[0].port, "/dev/ttyUSB9");
@@ -1187,6 +1308,78 @@ mod tests {
                 .get("merge_pair")
                 .and_then(|template| template.description.as_deref()),
             Some("merge bytes to main output")
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_accepts_port_objects_with_baud_and_display() {
+        let temp_dir = make_temp_dir("acs_config_port_objects");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "control": {
+                "port": { "path": "/dev/ttyUSB0", "baud": 921600, "display": "hex" },
+                "monitor_ports": [
+                  { "port": "/dev/ttyUSB1", "baud": 115200, "display": "utf8" }
+                ]
+              },
+              "monitor": {
+                "ports": [
+                  { "path": "/dev/ttyUSB2", "baud": 460800, "display": "hex+ascii" }
+                ]
+              },
+              "route": {
+                "inputs": [
+                  { "id": "in_a", "port": "/dev/ttyUSB3", "baud": 230400, "display": "utf8" }
+                ],
+                "outputs": [
+                  { "id": "out_main", "port": "/dev/ttyUSB4", "baud": 460800, "display": "hex" }
+                ]
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).unwrap();
+
+        assert_eq!(
+            config.control.port,
+            Some(PortSpec {
+                port: String::from("/dev/ttyUSB0"),
+                baud: Some(921_600),
+                display_mode: Some(PortDisplayMode::Hex),
+            })
+        );
+        assert_eq!(
+            config.control.monitor_ports,
+            vec![PortSpec {
+                port: String::from("/dev/ttyUSB1"),
+                baud: Some(115_200),
+                display_mode: Some(PortDisplayMode::Utf8),
+            }]
+        );
+        assert_eq!(
+            config.monitor.ports,
+            vec![PortSpec {
+                port: String::from("/dev/ttyUSB2"),
+                baud: Some(460_800),
+                display_mode: Some(PortDisplayMode::HexAscii),
+            }]
+        );
+        assert_eq!(config.route.inputs[0].baud, Some(230_400));
+        assert_eq!(
+            config.route.inputs[0].display_mode,
+            Some(PortDisplayMode::Utf8)
+        );
+        assert_eq!(config.route.outputs[0].baud, Some(460_800));
+        assert_eq!(
+            config.route.outputs[0].display_mode,
+            Some(PortDisplayMode::Hex)
         );
 
         let _ = fs::remove_dir_all(&temp_dir);
