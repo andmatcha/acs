@@ -1,10 +1,27 @@
 {
   "send": {
-    "port": "",
     "baud": 115200,
-    "format": "packetjfv1",
+    "outputs": [
+      {
+        "id": "main",
+        "port": "",
+        "baud": 115200,
+        "format": "packetjfv1",
+        "display": "hex+packet"
+      },
+      {
+        "id": "sub",
+        "port": "",
+        "baud": 921600,
+        "format": "packetacv6",
+        "display": "utf8+line"
+      }
+    ],
     "monitor_ports": [],
     "display": {
+      "input": {
+        "default": "hex+line"
+      },
       "output": {
         "default": "hex"
       }

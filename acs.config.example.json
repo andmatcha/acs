@@ -5,11 +5,10 @@
     "baud": 115200,
     "controller": "0",
     "format": "packetacv6",
-    "raw": false,
     "display": {
       "default": "hex+ascii",
       "input": {
-        "default": "ascii"
+        "default": "ascii+line"
       },
       "output": {
         "default": "hex"
@@ -18,11 +17,28 @@
     "monitor_ports": []
   },
   "send": {
-    "port": "",
     "baud": 115200,
-    "format": "packetjfv1",
+    "outputs": [
+      {
+        "id": "main",
+        "port": "/dev/ttyUSB0",
+        "baud": 115200,
+        "format": "packetjfv1",
+        "display": "hex+packet"
+      },
+      {
+        "id": "sub",
+        "port": "/dev/ttyUSB2",
+        "baud": 921600,
+        "format": "packetacv6",
+        "display": "utf8+line"
+      }
+    ],
     "monitor_ports": [],
     "display": {
+      "input": {
+        "default": "hex+line"
+      },
       "output": {
         "default": "hex"
       }
@@ -31,21 +47,19 @@
   "monitor": {
     "ports": [],
     "baud": 115200,
-    "raw": false,
     "display": {
       "default": "hex+ascii",
       "input": {
-        "default": "hex+ascii"
+        "default": "hex+ascii+line"
       }
     }
   },
   "route": {
     "baud": 115200,
-    "raw": true,
     "display": {
       "default": "hex+utf8",
       "input": {
-        "default": "hex+utf8"
+        "default": "hex+utf8+packet"
       },
       "output": {
         "default": "hex"

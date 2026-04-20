@@ -28,7 +28,6 @@ struct ControlCliOptions {
     baud: Option<u32>,
     controller: Option<String>,
     format: Option<String>,
-    raw: bool,
     display: PortDisplayConfig,
     monitor_ports: Vec<PortSpec>,
     config_path: Option<PathBuf>,
@@ -40,7 +39,6 @@ struct ControlSettings {
     output: SessionOutputSpec,
     controller: Option<String>,
     format: OutputFormat,
-    raw: bool,
     log_dir: PathBuf,
 }
 
@@ -94,7 +92,6 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
     let mut session = SessionRuntime::new(SessionSpec {
         title: String::from("acs control"),
         command_name: String::from("control"),
-        raw_input: settings.raw,
         log_dir: settings.log_dir.clone(),
         inputs: settings.inputs.clone(),
         outputs: vec![settings.output.clone()],
@@ -126,7 +123,6 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         ));
     }
     header_lines.extend([
-        format!("input mode: {}", if settings.raw { "raw" } else { "line" }),
         format!("log: {log_path_display}"),
         String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
     ]);
@@ -219,13 +215,22 @@ fn build_settings(
         .or(config.format)
         .unwrap_or_else(|| String::from("packetacv6"));
     let format = OutputFormat::parse(&format_name)?;
-    let raw = cli_options.raw || config.raw.unwrap_or(false);
     let mut display = config.display;
     if !using_cli_port
         && let Some(port_spec) = selected_port.as_ref()
         && let Some(mode) = port_spec.display_mode
     {
         display.set_output(port_spec.port.clone(), mode);
+    }
+    if !using_cli_port
+        && let Some(port_spec) = selected_port.as_ref()
+        && let Some(mode) = port_spec.line_break_mode
+    {
+        display.set_line_break_for_stream(
+            Some(crate::port_display::PortDisplayStream::Input),
+            port_spec.port.clone(),
+            mode,
+        );
     }
     let monitor_port_specs = if using_cli_monitor_ports {
         cli_options.monitor_ports
@@ -236,6 +241,13 @@ fn build_settings(
         for port_spec in &monitor_port_specs {
             if let Some(mode) = port_spec.display_mode {
                 display.set_input(port_spec.port.clone(), mode);
+            }
+            if let Some(mode) = port_spec.line_break_mode {
+                display.set_line_break_for_stream(
+                    Some(crate::port_display::PortDisplayStream::Input),
+                    port_spec.port.clone(),
+                    mode,
+                );
             }
         }
     }
@@ -267,7 +279,14 @@ fn build_settings(
         id: port.clone(),
         port: port.clone(),
         baud_rate: output_baud,
-        display_mode: display.resolve_input(&port),
+        display_mode: selected_port
+            .as_ref()
+            .and_then(|port_spec| port_spec.display_mode)
+            .unwrap_or(display.resolve_input(&port)),
+        line_break_mode: selected_port
+            .as_ref()
+            .and_then(|port_spec| port_spec.line_break_mode)
+            .unwrap_or(display.resolve_line_break_input(&port)),
     }];
     for port_spec in monitor_port_specs {
         let monitor_port =
@@ -289,6 +308,9 @@ fn build_settings(
             } else {
                 display.resolve_input(&monitor_port)
             },
+            line_break_mode: port_spec
+                .line_break_mode
+                .unwrap_or(display.resolve_line_break_input(&monitor_port)),
         });
     }
 
@@ -303,7 +325,6 @@ fn build_settings(
         },
         controller,
         format,
-        raw,
         log_dir,
     })
 }
@@ -328,15 +349,10 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
                 options.controller = Some(next_value(&mut iter, "--controller")?);
             }
             "--format" | "-f" => options.format = Some(next_value(&mut iter, "--format")?),
-            "--raw" => options.raw = true,
             "--display" => {
                 let value = next_value(&mut iter, "--display")?;
                 let assignment = parse_display_assignment(&value)?;
-                options.display.set_for_stream(
-                    assignment.stream,
-                    assignment.target,
-                    assignment.mode,
-                );
+                assignment.apply_to(&mut options.display);
             }
             "--monitor" | "-m" => options.monitor_ports.push(parse_port_spec(
                 "--monitor",
@@ -359,7 +375,7 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
 mod tests {
     use super::resolve_requested_port_spec;
     use crate::app::cli::common::PortSpec;
-    use crate::port_display::PortDisplayMode;
+    use crate::port_display::{LineBreakMode, PortDisplayMode};
 
     #[test]
     fn requested_port_falls_back_to_config_when_cli_port_is_empty() {
@@ -369,17 +385,20 @@ mod tests {
                     port: String::from(""),
                     baud: None,
                     display_mode: None,
+                    line_break_mode: None,
                 }),
                 Some(PortSpec {
                     port: String::from("/dev/ttyUSB0"),
                     baud: Some(115_200),
                     display_mode: Some(PortDisplayMode::Hex),
+                    line_break_mode: Some(LineBreakMode::Packet),
                 }),
             ),
             Some(PortSpec {
                 port: String::from("/dev/ttyUSB0"),
                 baud: Some(115_200),
                 display_mode: Some(PortDisplayMode::Hex),
+                line_break_mode: Some(LineBreakMode::Packet),
             })
         );
         assert_eq!(
@@ -389,6 +408,7 @@ mod tests {
                     port: String::from("   "),
                     baud: None,
                     display_mode: None,
+                    line_break_mode: None,
                 })
             ),
             None

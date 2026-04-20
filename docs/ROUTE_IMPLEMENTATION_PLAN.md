@@ -407,7 +407,7 @@ struct PipelineSpec { /* pipelines, modules, routing ... */ }
 - `--output-port` / `-o`
 - `--config`
 - `--log-dir`
-- `--raw`
+- `--display input:...=...+line|packet`
 
 複数ポートを扱うので、CLI では `ID=PORT` 形式を推奨する。
 

@@ -35,6 +35,7 @@ struct Section {
     status: String,
     baud_rate: Option<u32>,
     display_mode: PortDisplayMode,
+    packet_rate_enabled: bool,
     entries: VecDeque<Entry>,
     rate_samples: VecDeque<RateSample>,
 }
@@ -49,6 +50,7 @@ struct Entry {
 struct RateSample {
     at: Instant,
     byte_len: usize,
+    packet_count: usize,
 }
 
 pub struct TextDashboard {
@@ -59,11 +61,15 @@ pub struct TextDashboard {
     stdout: io::Stdout,
     #[cfg(unix)]
     terminal_input_guard: Option<TerminalInputGuard>,
+    interactive_mode: bool,
+    input_buffer: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextDashboardAction {
     TogglePause,
+    InputChanged,
+    Submit(String),
 }
 
 impl TextDashboard {
@@ -86,11 +92,17 @@ impl TextDashboard {
             stdout,
             #[cfg(unix)]
             terminal_input_guard,
+            interactive_mode: false,
+            input_buffer: String::new(),
         })
     }
 
     pub fn set_header_lines(&mut self, lines: Vec<String>) {
         self.header_lines = lines;
+    }
+
+    pub fn set_interactive_mode(&mut self, enabled: bool) {
+        self.interactive_mode = enabled;
     }
 
     pub fn set_output_status(&mut self, port: &str, status: impl Into<String>) {
@@ -117,14 +129,28 @@ impl TextDashboard {
         self.section_mut(SectionKind::Input, port).display_mode = display_mode;
     }
 
-    pub fn record_output_bytes(&mut self, port: &str, bytes: &[u8]) {
+    pub fn set_output_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
         self.section_mut(SectionKind::Output, port)
-            .record_rate_sample(bytes.len());
+            .packet_rate_enabled = enabled;
+    }
+
+    pub fn set_input_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
+        self.section_mut(SectionKind::Input, port)
+            .packet_rate_enabled = enabled;
     }
 
     pub fn record_input_bytes(&mut self, port: &str, bytes: &[u8]) {
+        self.record_input_sample(port, bytes.len(), 0);
+    }
+
+    pub fn record_output_sample(&mut self, port: &str, byte_len: usize, packet_count: usize) {
+        self.section_mut(SectionKind::Output, port)
+            .record_rate_sample(byte_len, packet_count);
+    }
+
+    pub fn record_input_sample(&mut self, port: &str, byte_len: usize, packet_count: usize) {
         self.section_mut(SectionKind::Input, port)
-            .record_rate_sample(bytes.len());
+            .record_rate_sample(byte_len, packet_count);
     }
 
     pub fn add_output(&mut self, port: &str, bytes: &[u8]) {
@@ -202,20 +228,50 @@ impl TextDashboard {
             lines.push(String::new());
         }
 
+        if self.interactive_mode {
+            lines.push(format!("> {}", self.input_buffer));
+        }
+
         let frame = format_screen_delta(&lines, &self.previous_lines);
-        if frame.is_empty() {
+
+        if frame.is_empty() && !self.interactive_mode {
             return Ok(());
         }
 
-        write!(self.stdout, "{frame}")?;
-        self.stdout.flush().inspect(|_| self.previous_lines = lines)
+        if !frame.is_empty() {
+            write!(self.stdout, "{frame}")?;
+        }
+
+        if self.interactive_mode {
+            let input_row = lines.len();
+            let input_col = 3 + self.input_buffer.chars().count();
+            write!(self.stdout, "{SHOW_CURSOR}\x1b[{input_row};{input_col}H")?;
+        }
+
+        self.stdout.flush()?;
+        if !frame.is_empty() {
+            self.previous_lines = lines;
+        }
+        Ok(())
     }
 
     pub fn poll_action(&mut self) -> io::Result<Option<TextDashboardAction>> {
         #[cfg(unix)]
         {
             if let Some(guard) = self.terminal_input_guard.as_mut() {
-                return guard.poll_action();
+                if let Some(bytes) = guard.read_raw()? {
+                    if self.interactive_mode {
+                        return Ok(process_interactive_input(&bytes, &mut self.input_buffer));
+                    } else {
+                        let mut action = None;
+                        for b in &bytes {
+                            if *b == b' ' {
+                                action = Some(TextDashboardAction::TogglePause);
+                            }
+                        }
+                        return Ok(action);
+                    }
+                }
             }
         }
 
@@ -231,6 +287,7 @@ impl TextDashboard {
                 status: String::new(),
                 baud_rate: None,
                 display_mode: PortDisplayMode::HexUtf8,
+                packet_rate_enabled: false,
                 entries: VecDeque::new(),
                 rate_samples: VecDeque::new(),
             })
@@ -280,7 +337,7 @@ impl TerminalInputGuard {
         }))
     }
 
-    fn poll_action(&mut self) -> io::Result<Option<TextDashboardAction>> {
+    fn read_raw(&mut self) -> io::Result<Option<Vec<u8>>> {
         let fd = self.stdin.as_raw_fd();
         let mut buffer = [0u8; 32];
         let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
@@ -290,15 +347,7 @@ impl TerminalInputGuard {
         if count == 0 {
             return Ok(None);
         }
-
-        let mut action = None;
-        for byte in &buffer[..count as usize] {
-            if *byte == b' ' {
-                action = Some(TextDashboardAction::TogglePause);
-            }
-        }
-
-        Ok(action)
+        Ok(Some(buffer[..count as usize].to_vec()))
     }
 }
 
@@ -312,6 +361,60 @@ impl Drop for TerminalInputGuard {
                 &self.original_termios,
             )
         };
+    }
+}
+
+fn process_interactive_input(
+    bytes: &[u8],
+    input_buffer: &mut String,
+) -> Option<TextDashboardAction> {
+    let mut changed = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x0D || b == 0x0A {
+            // Enter: submit and clear buffer
+            let text = std::mem::take(input_buffer);
+            return Some(TextDashboardAction::Submit(text));
+        } else if b == 0x7F || b == 0x08 {
+            // Backspace / DEL
+            input_buffer.pop();
+            changed = true;
+            i += 1;
+        } else if b < 0x20 {
+            // Other control chars: skip
+            i += 1;
+        } else {
+            // Printable ASCII or start of multi-byte UTF-8
+            let seq_len = utf8_sequence_len(b);
+            let end = (i + seq_len).min(bytes.len());
+            if let Ok(s) = std::str::from_utf8(&bytes[i..end]) {
+                for c in s.chars() {
+                    input_buffer.push(c);
+                }
+                changed = true;
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    if changed {
+        Some(TextDashboardAction::InputChanged)
+    } else {
+        None
+    }
+}
+
+fn utf8_sequence_len(first_byte: u8) -> usize {
+    if first_byte < 0x80 {
+        1
+    } else if first_byte < 0xE0 {
+        2
+    } else if first_byte < 0xF0 {
+        3
+    } else {
+        4
     }
 }
 
@@ -334,10 +437,11 @@ impl Section {
         self.entries.truncate(HISTORY_LIMIT);
     }
 
-    fn record_rate_sample(&mut self, byte_len: usize) {
+    fn record_rate_sample(&mut self, byte_len: usize, packet_count: usize) {
         self.rate_samples.push_back(RateSample {
             at: Instant::now(),
             byte_len,
+            packet_count,
         });
     }
 
@@ -357,10 +461,29 @@ impl Section {
             .map(|sample| sample.byte_len)
             .sum::<usize>() as f64
             / RATE_WINDOW.as_secs_f64();
+        let packets_per_second = self
+            .rate_samples
+            .iter()
+            .map(|sample| sample.packet_count)
+            .sum::<usize>() as f64
+            / RATE_WINDOW.as_secs_f64();
         let name = match self.kind {
             SectionKind::Output => "tx",
             SectionKind::Input => "rx",
         };
+        if self.packet_rate_enabled {
+            return match self.baud_rate {
+                Some(baud_rate) => format!(
+                    "{name}={packets_per_second:.1} Hz {} ({})",
+                    format_rate(bytes_per_second),
+                    format_utilization(bytes_per_second, baud_rate)
+                ),
+                None => format!(
+                    "{name}={packets_per_second:.1} Hz {}",
+                    format_rate(bytes_per_second)
+                ),
+            };
+        }
         match self.baud_rate {
             Some(baud_rate) => format!(
                 "{name}={} ({})",
@@ -510,9 +633,12 @@ fn terminal_width_from_ioctl() -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLEAR_LINE_END, CLEAR_TO_SCREEN_END, HOME_CURSOR, RESET, REVERSE, format_heading_line,
-        format_screen_delta, format_status_line,
+        CLEAR_LINE_END, CLEAR_TO_SCREEN_END, HOME_CURSOR, RESET, REVERSE, RateSample, Section,
+        SectionKind, format_heading_line, format_screen_delta, format_status_line,
     };
+    use crate::port_display::PortDisplayMode;
+    use std::collections::VecDeque;
+    use std::time::Instant;
 
     #[test]
     fn format_heading_line_pads_to_terminal_width() {
@@ -571,5 +697,27 @@ mod tests {
             &[String::from("title"), String::from("body")],
         );
         assert_eq!(frame, format!("\x1b[2;1H{CLEAR_TO_SCREEN_END}"));
+    }
+
+    #[test]
+    fn rate_label_shows_hz_when_packet_rate_enabled() {
+        let section = Section {
+            kind: SectionKind::Output,
+            port: String::from("tty"),
+            status: String::new(),
+            baud_rate: Some(115_200),
+            display_mode: PortDisplayMode::HexUtf8,
+            packet_rate_enabled: true,
+            entries: VecDeque::new(),
+            rate_samples: VecDeque::from([RateSample {
+                at: Instant::now(),
+                byte_len: 39,
+                packet_count: 2,
+            }]),
+        };
+
+        let label = section.rate_label();
+        assert!(label.contains("2.0 Hz"));
+        assert!(label.contains("39 B/s"));
     }
 }

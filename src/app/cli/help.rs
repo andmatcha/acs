@@ -39,11 +39,16 @@ pub(crate) fn print_help(bin_name: &str) {
     println!(
         "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8"
     );
-    println!("  {bin_name} monitor --port /dev/ttyUSB0@921600,utf8 --port /dev/ttyUSB1@115200,hex");
+    println!(
+        "  {bin_name} monitor --port /dev/ttyUSB0@921600,utf8+packet --port /dev/ttyUSB1@115200,hex"
+    );
     println!(
         "  {bin_name} route merge -i in_a=/dev/ttyUSB0@921600,utf8 -o out_main=/dev/ttyUSB1@115200,hex"
     );
     println!("  {bin_name} send --port /dev/ttyUSB0@921600,hex --format PacketACv6");
+    println!(
+        "  {bin_name} send -o main=/dev/ttyUSB0@921600,hex,packetacv6 -o sub=/dev/ttyUSB1@115200,utf8,packetjfv1"
+    );
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
     println!("  {bin_name} control --config config");
     println!("  {bin_name} --version");
@@ -120,11 +125,11 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!("  -c, --controller <ID>      Controller index or HID path");
     println!("  -f, --format <FORMAT>      Output format (currently: packetacv6)");
-    println!("      --raw                  Show incoming serial data as raw chunks");
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
-    println!("                             MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("                                    + optional +line/+packet for monitor input");
     println!("      --monitor <PORT[@BAUD][,DISPLAY]> Additional serial port to monitor");
     println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
@@ -142,7 +147,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!(
         "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8"
     );
-    println!("  {bin_name} control --raw --monitor /dev/ttyUSB1");
+    println!("  {bin_name} control --display input:default=utf8+packet --monitor /dev/ttyUSB1");
     println!(
         "  {bin_name} control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex"
     );
@@ -154,21 +159,29 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("Usage: {bin_name} send [OPTIONS]");
     println!();
     println!("Repeatedly sends dummy payloads in the selected format to a serial port.");
+    println!("With --interactive, accepts terminal input and sends each line on Enter.");
     println!("Sent packets are displayed live like `monitor`. Stops on Ctrl-C.");
     println!("The send interval matches `control` (20 ms).");
     println!();
     println!("Options:");
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial output port");
+    println!(
+        "  -o, --output-port <ID=PORT[@BAUD][,DISPLAY][,FORMAT]> Additional/repeatable serial output"
+    );
     println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!(
         "  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, packetjfv1)"
     );
-    println!("  -m, --monitor <PORT[@BAUD][,DISPLAY]> Additional serial port to monitor");
+    println!(
+        "  -i, --interactive          Read lines from terminal and send on Enter (raw UTF-8 + \\r\\n)"
+    );
+    println!("  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT]> Additional serial port to monitor");
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!(
         "                              TARGET: PORT, input:PORT, output:PORT, default, input:default, output:default"
     );
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("                                    + optional +line/+packet for monitor input");
     println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
         "                              Defaults: {}",
@@ -183,9 +196,16 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("Examples:");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
-    println!("  {bin_name} send --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8");
+    println!(
+        "  {bin_name} send --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8,packetjfv1"
+    );
     println!("  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
-    println!("  {bin_name} send --display output:default=hex");
+    println!(
+        "  {bin_name} send -o main=/dev/ttyUSB0@921600,hex,packetacv6 -o sub=/dev/ttyUSB1@115200,utf8+packet,packetjfv1"
+    );
+    println!("  {bin_name} send --interactive --port /dev/ttyUSB0@115200");
+    println!("  {bin_name} send -i --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
+    println!("  {bin_name} send --display output:default=hex --display input:default=utf8+packet");
     println!("  {bin_name} send --config config");
 }
 
@@ -197,11 +217,11 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!("Options:");
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial port to monitor (repeatable)");
     println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
-    println!("      --raw                  Show incoming serial data as raw chunks");
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
-    println!("                             MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("                                    + optional +line/+packet for monitor input");
     println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
         "                              Defaults: {}",
@@ -215,10 +235,11 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!();
     println!("Examples:");
     println!("  {bin_name} monitor --port /dev/ttyUSB0");
-    println!("  {bin_name} monitor --port /dev/ttyUSB0@921600,utf8 --port /dev/ttyUSB1@115200,hex");
-    println!("  {bin_name} monitor --raw --port /dev/ttyUSB0");
     println!(
-        "  {bin_name} monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8"
+        "  {bin_name} monitor --port /dev/ttyUSB0@921600,utf8+packet --port /dev/ttyUSB1@115200,hex"
+    );
+    println!(
+        "  {bin_name} monitor --display input:/dev/ttyUSB0=utf8+packet --display input:default=hex+utf8+line"
     );
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
     println!("  {bin_name} monitor --config config");
@@ -238,11 +259,11 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("  -i, --input-port <ID=PORT[@BAUD][,DISPLAY]>  Route input port (repeatable)");
     println!("  -o, --output-port <ID=PORT[@BAUD][,DISPLAY]> Route output port (repeatable)");
     println!("  -b, --baud <BAUD_RATE>      Default baud rate for ports without inline baud");
-    println!("      --raw                   Show incoming serial data as raw chunks");
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("                                    + optional +line/+packet for monitor input");
     println!("      --config <PATH>         Read options from a JSON file or directory");
     println!(
         "                               Defaults: {}",

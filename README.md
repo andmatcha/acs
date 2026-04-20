@@ -93,6 +93,7 @@ acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 acs monitor --port /dev/ttyUSB0
 acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 acs send --port /dev/ttyUSB0 --format PacketJFv1
+acs send -o main=/dev/ttyUSB0@115200,hex,packetjfv1 -o sub=/dev/ttyUSB1@921600,utf8+packet,packetacv6
 acs --version
 ```
 

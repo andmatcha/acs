@@ -1,4 +1,4 @@
-use crate::port_display::PortDisplayMode;
+use crate::port_display::{LineBreakMode, PortDisplayMode};
 use crate::serial::{
     SerialCallback, SerialConfig, SerialEvent, SerialMonitor, SerialWriter, open_monitor_and_writer,
 };
@@ -19,6 +19,7 @@ pub(crate) struct SessionInputSpec {
     pub port: String,
     pub baud_rate: u32,
     pub display_mode: PortDisplayMode,
+    pub line_break_mode: LineBreakMode,
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +35,6 @@ pub(crate) struct SessionOutputSpec {
 pub(crate) struct SessionSpec {
     pub title: String,
     pub command_name: String,
-    pub raw_input: bool,
     pub log_dir: PathBuf,
     pub inputs: Vec<SessionInputSpec>,
     pub outputs: Vec<SessionOutputSpec>,
@@ -54,19 +54,20 @@ pub(crate) struct SessionRuntime {
     dirty: bool,
     inputs_disconnected: bool,
     last_render: Instant,
+    pending_user_input: Option<String>,
 }
 
 impl SessionRuntime {
     pub(crate) fn new(spec: SessionSpec) -> Result<Self, String> {
-        let mut dashboard = SessionDashboard::new(
-            &spec.title,
-            spec.raw_input,
-            &spec.command_name,
-            &spec.log_dir,
-        )?;
+        let mut dashboard = SessionDashboard::new(&spec.title, &spec.command_name, &spec.log_dir)?;
 
         for input in &spec.inputs {
-            dashboard.configure_input_port(&input.port, input.baud_rate, input.display_mode);
+            dashboard.configure_input_port(
+                &input.port,
+                input.baud_rate,
+                input.display_mode,
+                input.line_break_mode,
+            );
         }
         for output in &spec.outputs {
             dashboard.configure_output_port(
@@ -141,11 +142,30 @@ impl SessionRuntime {
             dirty: false,
             inputs_disconnected: false,
             last_render: Instant::now(),
+            pending_user_input: None,
         })
     }
 
     pub(crate) fn log_path(&self) -> &Path {
         self.dashboard.log_path()
+    }
+
+    pub(crate) fn set_interactive_input(&mut self, enabled: bool) {
+        self.dashboard.set_interactive_mode(enabled);
+    }
+
+    pub(crate) fn set_input_packet_framing(&mut self, port: &str, packet_len: usize) {
+        self.dashboard.set_input_packet_framing(port, packet_len);
+        self.dirty = true;
+    }
+
+    pub(crate) fn set_output_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
+        self.dashboard.set_output_packet_rate_enabled(port, enabled);
+        self.dirty = true;
+    }
+
+    pub(crate) fn take_user_input(&mut self) -> Option<String> {
+        self.pending_user_input.take()
     }
 
     pub(crate) fn set_header_lines(&mut self, lines: Vec<String>) {
@@ -227,7 +247,10 @@ impl SessionRuntime {
         self.dashboard.render()?;
 
         while !stop_requested() {
-            self.dashboard.handle_dashboard_action()?;
+            let user_input = self.dashboard.handle_dashboard_action()?;
+            if let Some(input) = user_input {
+                self.pending_user_input = Some(input);
+            }
             self.wait_for_events(wait_interval, &mut on_frame)?;
             on_tick(self)?;
             self.render_if_needed()?;

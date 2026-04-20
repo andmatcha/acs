@@ -13,22 +13,25 @@ pub enum OutputFormat {
 struct OutputFormatDefinition {
     format: OutputFormat,
     names: &'static [&'static str],
+    packet_len: usize,
     create_driver: Option<fn() -> Box<dyn OutputDriver>>,
-    encode_dummy_payload: fn() -> Result<Vec<u8>, String>,
+    create_dummy_generator: fn() -> Result<Box<dyn DummyPayloadGenerator>, String>,
 }
 
 const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[
     OutputFormatDefinition {
         format: OutputFormat::PacketAcV6,
         names: &["packetacv6"],
+        packet_len: packetacv6::packet_len(),
         create_driver: Some(packetacv6::create_driver),
-        encode_dummy_payload: packetacv6::encode_dummy_payload,
+        create_dummy_generator: packetacv6::create_dummy_generator,
     },
     OutputFormatDefinition {
         format: OutputFormat::PacketJfV1,
         names: &["packetjfv1"],
+        packet_len: packetjfv1::packet_len(),
         create_driver: None,
-        encode_dummy_payload: packetjfv1::encode_dummy_payload,
+        create_dummy_generator: packetjfv1::create_dummy_generator,
     },
 ];
 
@@ -63,12 +66,25 @@ impl OutputFormat {
     }
 
     pub fn encode_dummy_payload(self) -> Result<Vec<u8>, String> {
-        (find_definition(self).encode_dummy_payload)()
+        let mut generator = self.create_dummy_generator()?;
+        generator.next_payload()
+    }
+
+    pub fn create_dummy_generator(self) -> Result<Box<dyn DummyPayloadGenerator>, String> {
+        (find_definition(self).create_dummy_generator)()
+    }
+
+    pub fn packet_len(self) -> usize {
+        find_definition(self).packet_len
     }
 }
 
 pub trait OutputDriver {
     fn encode(&mut self, compact_report: &CompactReport) -> Result<Vec<u8>, String>;
+}
+
+pub trait DummyPayloadGenerator {
+    fn next_payload(&mut self) -> Result<Vec<u8>, String>;
 }
 
 fn find_definition(format: OutputFormat) -> &'static OutputFormatDefinition {
@@ -104,12 +120,15 @@ mod tests {
 
     #[test]
     fn packetacv6_dummy_payload_has_ac_header() {
-        let payload = OutputFormat::PacketAcV6
-            .encode_dummy_payload()
-            .expect("should encode");
+        let mut generator = OutputFormat::PacketAcV6
+            .create_dummy_generator()
+            .expect("should create generator");
+        let payload = generator.next_payload().expect("should encode");
+        let next_payload = generator.next_payload().expect("should encode");
 
         assert_eq!(payload.len(), 39);
         assert_eq!(&payload[..2], b"AC");
+        assert_ne!(payload, next_payload);
     }
 
     #[test]
@@ -143,5 +162,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn packetjfv1_dummy_generator_advances_sequence() {
+        let mut generator = OutputFormat::PacketJfV1
+            .create_dummy_generator()
+            .expect("should create generator");
+        let first = generator.next_payload().expect("should encode");
+        let second = generator.next_payload().expect("should encode");
+
+        assert_eq!(first[2], 0x01);
+        assert_eq!(second[2], 0x02);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn packet_lengths_match_documented_formats() {
+        assert_eq!(OutputFormat::PacketAcV6.packet_len(), 39);
+        assert_eq!(OutputFormat::PacketJfV1.packet_len(), 16);
     }
 }
