@@ -10,6 +10,7 @@
 
 1. `src/main.rs` が `app::cli::run()` を呼び、サブコマンドへ振り分けます。
 2. `app/cli` が引数、設定ファイル、既定値、ポート名、ログ保存先を解決します。
+   port ごとの baud / display は CLI の `PORT@BAUD,DISPLAY` や config object から個別解決されます。
 3. `session` が監視対象ポート、出力ポート、ダッシュボード、ログファイルを初期化します。
 4. 入力があるコマンドでは `serial` の monitor thread がデータを受け、`SessionEvent` としてメインループへ渡します。
 5. `control` と `route` では `pipeline` がフレームをフィルタ・変換・分類・配送し、送信先ごとの `DispatchPlan` を返します。
@@ -40,6 +41,7 @@
 
 - 出力形式に応じたダミーペイロードを生成します。
 - 20ms 周期で同じペイロードを繰り返し送信し、送信履歴を monitor と同じ UI で表示します。
+- 出力ポートの受信側や、追加で指定した monitor ポートも同時に監視できます。
 - 現時点で `packetacv6` と `packetjfv1` のダミーデータ送信に対応しています。
 
 ## 主要モジュール

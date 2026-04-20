@@ -1,4 +1,6 @@
-use super::common::{default_baud_rate, default_log_dir, next_value, parse_u32_arg};
+use super::common::{
+    default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
+};
 use super::config;
 use super::help::{is_help_flag, print_route_help};
 use super::signal;
@@ -34,6 +36,8 @@ struct RouteCliOptions {
 struct RoutePortBinding {
     id: String,
     port: String,
+    baud: Option<u32>,
+    display_mode: Option<crate::port_display::PortDisplayMode>,
 }
 
 struct RouteSettings {
@@ -204,16 +208,23 @@ fn normalize_inputs(
                 input.id.clone(),
                 input.port.clone(),
                 input.baud.unwrap_or(default_baud),
+                input.display_mode,
             )
         })
         .collect::<Vec<_>>();
 
     for binding in cli_inputs {
-        if let Some(existing) = merged.iter_mut().find(|(id, _, _)| id == &binding.id) {
+        if let Some(existing) = merged.iter_mut().find(|(id, _, _, _)| id == &binding.id) {
             existing.1 = binding.port.clone();
-            existing.2 = default_baud;
+            existing.2 = binding.baud.unwrap_or(default_baud);
+            existing.3 = binding.display_mode;
         } else {
-            merged.push((binding.id.clone(), binding.port.clone(), default_baud));
+            merged.push((
+                binding.id.clone(),
+                binding.port.clone(),
+                binding.baud.unwrap_or(default_baud),
+                binding.display_mode,
+            ));
         }
     }
 
@@ -222,7 +233,7 @@ fn normalize_inputs(
     }
 
     let mut resolved = Vec::new();
-    for (id, port, baud_rate) in merged {
+    for (id, port, baud_rate, display_mode) in merged {
         if resolved
             .iter()
             .any(|input: &SessionInputSpec| input.id == id)
@@ -232,7 +243,7 @@ fn normalize_inputs(
         let port = serial::resolve_port(Some(&port)).map_err(|error| error.to_string())?;
         resolved.push(SessionInputSpec {
             id,
-            display_mode: display.resolve_input(&port),
+            display_mode: display_mode.unwrap_or(display.resolve_input(&port)),
             port,
             baud_rate,
         });
@@ -254,16 +265,23 @@ fn normalize_outputs(
                 output.id.clone(),
                 output.port.clone(),
                 output.baud.unwrap_or(default_baud),
+                output.display_mode,
             )
         })
         .collect::<Vec<_>>();
 
     for binding in cli_outputs {
-        if let Some(existing) = merged.iter_mut().find(|(id, _, _)| id == &binding.id) {
+        if let Some(existing) = merged.iter_mut().find(|(id, _, _, _)| id == &binding.id) {
             existing.1 = binding.port.clone();
-            existing.2 = default_baud;
+            existing.2 = binding.baud.unwrap_or(default_baud);
+            existing.3 = binding.display_mode;
         } else {
-            merged.push((binding.id.clone(), binding.port.clone(), default_baud));
+            merged.push((
+                binding.id.clone(),
+                binding.port.clone(),
+                binding.baud.unwrap_or(default_baud),
+                binding.display_mode,
+            ));
         }
     }
 
@@ -272,7 +290,7 @@ fn normalize_outputs(
     }
 
     let mut resolved = Vec::new();
-    for (id, port, baud_rate) in merged {
+    for (id, port, baud_rate, display_mode) in merged {
         if resolved
             .iter()
             .any(|output: &SessionOutputSpec| output.id == id)
@@ -282,7 +300,7 @@ fn normalize_outputs(
         let port = serial::resolve_port(Some(&port)).map_err(|error| error.to_string())?;
         resolved.push(SessionOutputSpec {
             id,
-            display_mode: display.resolve_output(&port),
+            display_mode: display_mode.unwrap_or(display.resolve_output(&port)),
             format_name: String::from("bytes"),
             port,
             baud_rate,
@@ -625,9 +643,12 @@ fn parse_route_port_binding(value: &str) -> Result<RoutePortBinding, String> {
         if id.is_empty() || port.is_empty() {
             return Err(format!("invalid route port binding: {value}"));
         }
+        let port_spec = parse_port_spec("route port binding", port)?;
         return Ok(RoutePortBinding {
             id: id.to_owned(),
-            port: port.to_owned(),
+            port: port_spec.port,
+            baud: port_spec.baud,
+            display_mode: port_spec.display_mode,
         });
     }
 
@@ -635,9 +656,13 @@ fn parse_route_port_binding(value: &str) -> Result<RoutePortBinding, String> {
         return Err(String::from("route port binding must not be empty"));
     }
 
+    let port_spec = parse_port_spec("route port binding", value)?;
+
     Ok(RoutePortBinding {
-        id: value.to_owned(),
-        port: value.to_owned(),
+        id: port_spec.port.clone(),
+        port: port_spec.port,
+        baud: port_spec.baud,
+        display_mode: port_spec.display_mode,
     })
 }
 

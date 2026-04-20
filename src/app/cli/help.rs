@@ -36,10 +36,14 @@ pub(crate) fn print_help(bin_name: &str) {
     println!();
     println!("Examples:");
     println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6");
-    println!("  {bin_name} control --monitor /dev/ttyUSB1");
-    println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
-    println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
+    println!(
+        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8"
+    );
+    println!("  {bin_name} monitor --port /dev/ttyUSB0@921600,utf8 --port /dev/ttyUSB1@115200,hex");
+    println!(
+        "  {bin_name} route merge -i in_a=/dev/ttyUSB0@921600,utf8 -o out_main=/dev/ttyUSB1@115200,hex"
+    );
+    println!("  {bin_name} send --port /dev/ttyUSB0@921600,hex --format PacketACv6");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
     println!("  {bin_name} control --config config");
     println!("  {bin_name} --version");
@@ -111,9 +115,9 @@ pub(crate) fn print_control_help(bin_name: &str) {
     );
     println!();
     println!("Options:");
-    println!("  -p, --port <PORT>          Serial output port");
+    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial output port");
     println!("                              Omit to auto-select a single USB serial or ST-LINK");
-    println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
+    println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!("  -c, --controller <ID>      Controller index or HID path");
     println!("  -f, --format <FORMAT>      Output format (currently: packetacv6)");
     println!("      --raw                  Show incoming serial data as raw chunks");
@@ -121,7 +125,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                             MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
-    println!("      --monitor <PORT>       Additional serial port to monitor");
+    println!("      --monitor <PORT[@BAUD][,DISPLAY]> Additional serial port to monitor");
     println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
         "                              Defaults: {}",
@@ -135,6 +139,9 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!();
     println!("Examples:");
     println!("  {bin_name} control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6");
+    println!(
+        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8"
+    );
     println!("  {bin_name} control --raw --monitor /dev/ttyUSB1");
     println!(
         "  {bin_name} control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex"
@@ -151,13 +158,16 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("The send interval matches `control` (20 ms).");
     println!();
     println!("Options:");
-    println!("  -p, --port <PORT>          Serial output port");
-    println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
+    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial output port");
+    println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!(
         "  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, packetjfv1)"
     );
+    println!("  -m, --monitor <PORT[@BAUD][,DISPLAY]> Additional serial port to monitor");
     println!("      --display <TARGET=MODE> Display mode for a port");
-    println!("                              TARGET: PORT, output:PORT, default, output:default");
+    println!(
+        "                              TARGET: PORT, input:PORT, output:PORT, default, input:default, output:default"
+    );
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
@@ -173,6 +183,8 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("Examples:");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
+    println!("  {bin_name} send --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
     println!("  {bin_name} send --display output:default=hex");
     println!("  {bin_name} send --config config");
 }
@@ -183,8 +195,8 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!("Monitors one or more serial ports and displays the most recent 10 entries per port.");
     println!();
     println!("Options:");
-    println!("  -p, --port <PORT>          Serial port to monitor (repeatable)");
-    println!("  -b, --baud <BAUD_RATE>     Serial baud rate (default: 115200)");
+    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial port to monitor (repeatable)");
+    println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!("      --raw                  Show incoming serial data as raw chunks");
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
@@ -203,6 +215,7 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!();
     println!("Examples:");
     println!("  {bin_name} monitor --port /dev/ttyUSB0");
+    println!("  {bin_name} monitor --port /dev/ttyUSB0@921600,utf8 --port /dev/ttyUSB1@115200,hex");
     println!("  {bin_name} monitor --raw --port /dev/ttyUSB0");
     println!(
         "  {bin_name} monitor --display input:/dev/ttyUSB0=utf8 --display input:default=hex+utf8"
@@ -222,9 +235,9 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("Options:");
     println!("      --template <NAME>       Route template name (same as positional TEMPLATE)");
     println!("      --list-templates        Show built-in and config-defined route templates");
-    println!("  -i, --input-port <ID=PORT>  Route input port (repeatable)");
-    println!("  -o, --output-port <ID=PORT> Route output port (repeatable)");
-    println!("  -b, --baud <BAUD_RATE>      Default baud rate for CLI-specified ports");
+    println!("  -i, --input-port <ID=PORT[@BAUD][,DISPLAY]>  Route input port (repeatable)");
+    println!("  -o, --output-port <ID=PORT[@BAUD][,DISPLAY]> Route output port (repeatable)");
+    println!("  -b, --baud <BAUD_RATE>      Default baud rate for ports without inline baud");
     println!("      --raw                   Show incoming serial data as raw chunks");
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
@@ -249,6 +262,9 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
     println!(
         "  {bin_name} route merge -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2"
+    );
+    println!(
+        "  {bin_name} route merge -i in_a=/dev/ttyUSB0@921600,utf8 -o out_main=/dev/ttyUSB2@115200,hex"
     );
     println!(
         "  {bin_name} route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/ttyUSB2 -o out_b=/dev/ttyUSB3"

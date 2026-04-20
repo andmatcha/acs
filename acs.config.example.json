@@ -21,6 +21,7 @@
     "port": "",
     "baud": 115200,
     "format": "packetjfv1",
+    "monitor_ports": [],
     "display": {
       "output": {
         "default": "hex"
@@ -53,21 +54,29 @@
     "inputs": [
       {
         "id": "in_a",
-        "port": "/dev/ttyUSB0"
+        "port": "/dev/ttyUSB0",
+        "baud": 921600,
+        "display": "utf8"
       },
       {
         "id": "in_b",
-        "port": "/dev/ttyUSB1"
+        "port": "/dev/ttyUSB1",
+        "baud": 115200,
+        "display": "hex+ascii"
       }
     ],
     "outputs": [
       {
         "id": "out_main",
-        "port": "/dev/ttyUSB2"
+        "port": "/dev/ttyUSB2",
+        "baud": 460800,
+        "display": "hex"
       },
       {
         "id": "out_sub",
-        "port": "/dev/ttyUSB3"
+        "port": "/dev/ttyUSB3",
+        "baud": 115200,
+        "display": "hex+ascii"
       }
     ],
     "pipelines": [
