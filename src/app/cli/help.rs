@@ -172,7 +172,7 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("Repeatedly sends dummy payloads in the selected format to a serial port.");
     println!("With --interactive, accepts terminal input and sends each line on Enter.");
     println!("Sent packets are displayed live like `monitor`. Stops on Ctrl-C.");
-    println!("The send interval matches `control` (20 ms).");
+    println!("Default send rate is 50 Hz, which matches `control`'s 20 ms interval.");
     println!();
     println!("Options:");
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial output port");
@@ -180,6 +180,9 @@ pub(crate) fn print_send_help(bin_name: &str) {
         "  -o, --output-port <ID=PORT[@BAUD][,DISPLAY][,FORMAT]> Additional/repeatable serial output"
     );
     println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
+    println!(
+        "  -r, --rate <HZ>            Dummy packet send rate (default: 50, ignored with --interactive)"
+    );
     println!(
         "  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, packetjfv1, roverupgeneral, roverdowngeneral)"
     );
@@ -206,6 +209,7 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!();
     println!("Examples:");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6 --rate 100");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverUpGeneral");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverDownGeneral");

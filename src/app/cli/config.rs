@@ -48,6 +48,7 @@ pub(crate) struct SendConfig {
     pub port: Option<PortSpec>,
     pub outputs: Vec<SendOutputConfig>,
     pub baud: Option<u32>,
+    pub rate_hz: Option<u32>,
     pub format: Option<String>,
     pub display: PortDisplayConfig,
     pub monitor_ports: Vec<SendMonitorConfig>,
@@ -180,6 +181,7 @@ impl SendConfig {
         merge_option(&mut self.port, other.port);
         merge_send_outputs(&mut self.outputs, other.outputs);
         merge_option(&mut self.baud, other.baud);
+        merge_option(&mut self.rate_hz, other.rate_hz);
         merge_option(&mut self.format, other.format);
         self.display.merge_from(other.display);
         merge_send_monitors(&mut self.monitor_ports, other.monitor_ports);
@@ -446,6 +448,7 @@ fn parse_send_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<SendC
         port: optional_port_spec(object, "port")?,
         outputs: optional_send_outputs(object, "outputs")?,
         baud: optional_u32(object, "baud")?,
+        rate_hz: optional_u32(object, "rate")?,
         format: optional_string(object, "format")?,
         display: optional_display_config(object, "display")?,
         monitor_ports: optional_send_monitors(object, "monitor_ports")?,
@@ -1587,6 +1590,7 @@ mod tests {
               "log_dir": "logs",
               "send": {
                 "format": "packetjfv1",
+                "rate": 100,
                 "monitor_ports": ["/dev/ttyUSB2"]
               },
               "monitor": {
@@ -1648,6 +1652,7 @@ mod tests {
 
         assert_eq!(config.log_dir, Some(temp_dir.join("logs")));
         assert_eq!(config.send.format, Some(String::from("packetjfv1")));
+        assert_eq!(config.send.rate_hz, Some(100));
         assert!(config.xbee_test.ports.is_empty());
         assert_eq!(
             config.send.monitor_ports,

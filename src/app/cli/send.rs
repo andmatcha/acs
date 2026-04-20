@@ -13,15 +13,17 @@ use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntim
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-const SEND_INTERVAL: Duration = Duration::from_millis(20);
+const DEFAULT_SEND_RATE_HZ: u32 = 50;
+const SEND_LOOP_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Default)]
 struct SendCliOptions {
     port: Option<PortSpec>,
     outputs: Vec<SendOutputBinding>,
     baud: Option<u32>,
+    rate_hz: Option<u32>,
     format: Option<String>,
     display: PortDisplayConfig,
     monitor_ports: Vec<SendMonitorBinding>,
@@ -65,6 +67,7 @@ struct SendSettings {
     inputs: Vec<SessionInputSpec>,
     outputs: Vec<SendOutputSettings>,
     input_packet_formats: Vec<SendInputPacketFormat>,
+    rate_hz: u32,
     log_dir: PathBuf,
     interactive: bool,
 }
@@ -81,6 +84,7 @@ struct SendOutputRunResult {
 struct SendRunResult {
     interactive: bool,
     message_count: u64,
+    rate_hz: Option<u32>,
     outputs: Vec<SendOutputRunResult>,
     log_path: PathBuf,
 }
@@ -125,15 +129,20 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
             } else if result.outputs.len() == 1 {
                 let output = &result.outputs[0];
                 println!(
-                    "sent {} packets ({} bytes each) to {} @ {} baud, format={}",
+                    "sent {} packets ({} bytes each) to {} @ {} baud, format={}, target={} Hz",
                     output.sent_count,
                     output.payload_len,
                     output.port,
                     output.baud_rate,
-                    output.format.as_str()
+                    output.format.as_str(),
+                    result.rate_hz.unwrap_or(DEFAULT_SEND_RATE_HZ)
                 );
             } else {
-                println!("sent dummy packets to {} outputs", result.outputs.len());
+                println!(
+                    "sent dummy packets to {} outputs at {} Hz",
+                    result.outputs.len(),
+                    result.rate_hz.unwrap_or(DEFAULT_SEND_RATE_HZ)
+                );
                 for output in &result.outputs {
                     println!(
                         "  {}: {} packets ({} bytes each) to {} @ {} baud, format={}",
@@ -221,11 +230,12 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
                 )
             } else {
                 format!(
-                    "output[{}]: {} @ {} baud, format={}, payload={} bytes",
+                    "output[{}]: {} @ {} baud, format={}, rate={} Hz, payload={} bytes",
                     output.session.id,
                     output.session.port,
                     output.session.baud_rate,
                     output.format.as_str(),
+                    settings.rate_hz,
                     payload_lengths
                         .get(&output.session.id)
                         .copied()
@@ -268,7 +278,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     if settings.interactive {
         session.set_interactive_input(true);
         session.run_loop_with_tick(
-            SEND_INTERVAL,
+            SEND_LOOP_INTERVAL,
             signal::is_stop_requested,
             |_, _| Ok(()),
             |session| {
@@ -300,32 +310,40 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
             },
         )?;
     } else {
+        let packet_period = Duration::from_secs_f64(1.0 / settings.rate_hz as f64);
+        let mut next_send_at = Instant::now();
         session.run_loop_with_tick(
-            SEND_INTERVAL,
+            SEND_LOOP_INTERVAL,
             signal::is_stop_requested,
             |_, _| Ok(()),
             |session| {
-                for output in &output_specs {
-                    let output_id = &output.session.id;
-                    let payload = generators
-                        .get_mut(output_id)
-                        .ok_or_else(|| format!("missing dummy generator for output `{output_id}`"))?
-                        .next_payload()?;
-                    match session.write_output(output_id, &payload) {
-                        Ok(()) => {
-                            if output_has_error.get(output_id).copied().unwrap_or(false) {
-                                session.clear_output_error(output_id)?;
-                                output_has_error.insert(output_id.clone(), false);
+                let now = Instant::now();
+                while now >= next_send_at {
+                    for output in &output_specs {
+                        let output_id = &output.session.id;
+                        let payload = generators
+                            .get_mut(output_id)
+                            .ok_or_else(|| {
+                                format!("missing dummy generator for output `{output_id}`")
+                            })?
+                            .next_payload()?;
+                        match session.write_output(output_id, &payload) {
+                            Ok(()) => {
+                                if output_has_error.get(output_id).copied().unwrap_or(false) {
+                                    session.clear_output_error(output_id)?;
+                                    output_has_error.insert(output_id.clone(), false);
+                                }
+                                *sent_counts.entry(output_id.clone()).or_insert(0) += 1;
+                                last_errors.remove(output_id);
                             }
-                            *sent_counts.entry(output_id.clone()).or_insert(0) += 1;
-                            last_errors.remove(output_id);
-                        }
-                        Err(error) => {
-                            session.set_output_error(output_id, &error)?;
-                            output_has_error.insert(output_id.clone(), true);
-                            last_errors.insert(output_id.clone(), error);
+                            Err(error) => {
+                                session.set_output_error(output_id, &error)?;
+                                output_has_error.insert(output_id.clone(), true);
+                                last_errors.insert(output_id.clone(), error);
+                            }
                         }
                     }
+                    next_send_at += packet_period;
                 }
                 Ok(())
             },
@@ -341,6 +359,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     Ok(SendRunResult {
         interactive: settings.interactive,
         message_count,
+        rate_hz: (!settings.interactive).then_some(settings.rate_hz),
         outputs: output_specs
             .into_iter()
             .map(|output| SendOutputRunResult {
@@ -382,6 +401,13 @@ fn build_settings(
         .baud
         .or(config.baud)
         .unwrap_or_else(default_baud_rate);
+    let rate_hz = cli_options
+        .rate_hz
+        .or(config.rate_hz)
+        .unwrap_or(DEFAULT_SEND_RATE_HZ);
+    if rate_hz == 0 {
+        return Err(String::from("--rate must be greater than 0"));
+    }
     let default_format_name = cli_options
         .format
         .clone()
@@ -495,6 +521,7 @@ fn build_settings(
         inputs,
         outputs,
         input_packet_formats,
+        rate_hz,
         log_dir,
         interactive: cli_options.interactive,
     })
@@ -663,6 +690,10 @@ fn parse_send_args(args: Vec<String>) -> Result<SendCliOptions, String> {
                 let value = next_value(&mut iter, "--baud")?;
                 options.baud = Some(parse_u32_arg("--baud", &value)?);
             }
+            "--rate" | "-r" => {
+                let value = next_value(&mut iter, "--rate")?;
+                options.rate_hz = Some(parse_u32_arg("--rate", &value)?);
+            }
             "--format" | "-f" => options.format = Some(next_value(&mut iter, "--format")?),
             "--display" => {
                 let value = next_value(&mut iter, "--display")?;
@@ -768,6 +799,8 @@ mod tests {
             String::from("/dev/ttyUSB0"),
             String::from("--baud"),
             String::from("921600"),
+            String::from("--rate"),
+            String::from("100"),
             String::from("--format"),
             String::from("PacketACv6"),
             String::from("--monitor"),
@@ -780,6 +813,7 @@ mod tests {
             Some("/dev/ttyUSB0")
         );
         assert_eq!(options.baud, Some(921_600));
+        assert_eq!(options.rate_hz, Some(100));
         assert_eq!(options.format.as_deref(), Some("PacketACv6"));
         assert_eq!(options.monitor_ports.len(), 1);
         assert_eq!(options.monitor_ports[0].port, "/dev/ttyUSB1");

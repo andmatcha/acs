@@ -1,6 +1,7 @@
 {
   "send": {
     "baud": 115200,
+    "rate": 50,
     "outputs": [
       {
         "id": "main",
