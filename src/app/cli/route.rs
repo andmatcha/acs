@@ -750,31 +750,33 @@ mod tests {
 
     #[test]
     fn config_defined_template_overrides_builtin_template() {
-        let mut route_config = RouteConfig::default();
-        route_config.templates = BTreeMap::from([(
-            String::from("merge"),
-            RouteTemplateConfig {
-                id: String::from("merge"),
-                description: Some(String::from("custom merge")),
-                pipelines: PipelineSpec {
-                    pipelines: vec![PipelineDefinition {
-                        id: String::from("custom_merge"),
-                        inputs: Vec::new(),
-                        filter: FilterModuleConfig::AllowAll,
-                        transform: TransformChainConfig {
-                            modules: vec![TransformModuleConfig::JoinLatest {
-                                separator: vec![b','],
-                                require_all: true,
-                            }],
-                        },
-                        classify: ClassifyModuleConfig::None,
-                        router: RouterModuleConfig::Broadcast {
-                            outputs: Vec::new(),
-                        },
-                    }],
+        let route_config = RouteConfig {
+            templates: BTreeMap::from([(
+                String::from("merge"),
+                RouteTemplateConfig {
+                    id: String::from("merge"),
+                    description: Some(String::from("custom merge")),
+                    pipelines: PipelineSpec {
+                        pipelines: vec![PipelineDefinition {
+                            id: String::from("custom_merge"),
+                            inputs: Vec::new(),
+                            filter: FilterModuleConfig::AllowAll,
+                            transform: TransformChainConfig {
+                                modules: vec![TransformModuleConfig::JoinLatest {
+                                    separator: vec![b','],
+                                    require_all: true,
+                                }],
+                            },
+                            classify: ClassifyModuleConfig::None,
+                            router: RouterModuleConfig::Broadcast {
+                                outputs: Vec::new(),
+                            },
+                        }],
+                    },
                 },
-            },
-        )]);
+            )]),
+            ..RouteConfig::default()
+        };
 
         let resolved = resolve_pipeline_spec(&route_config, Some("merge"), &[], &[]).unwrap();
 

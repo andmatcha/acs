@@ -52,6 +52,8 @@ pub(crate) fn print_help(bin_name: &str) {
         "  {bin_name} send -o main=/dev/ttyUSB0@921600,hex,packetacv6 -o sub=/dev/ttyUSB1@115200,utf8,packetjfv1"
     );
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverUpGeneral");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverDownGeneral");
     println!(
         "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --jf-rate 100"
     );
@@ -179,7 +181,7 @@ pub(crate) fn print_send_help(bin_name: &str) {
     );
     println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!(
-        "  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, packetjfv1)"
+        "  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, packetjfv1, roverupgeneral, roverdowngeneral)"
     );
     println!(
         "  -i, --interactive          Read lines from terminal and send on Enter (raw UTF-8 + \\r\\n)"
@@ -205,6 +207,8 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("Examples:");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverUpGeneral");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverDownGeneral");
     println!(
         "  {bin_name} send --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8,packetjfv1"
     );

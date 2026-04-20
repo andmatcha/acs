@@ -16,12 +16,17 @@ pub(crate) struct PipelineDefinition {
     pub router: RouterModuleConfig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) enum FilterModuleConfig {
+    #[default]
     AllowAll,
     DropEmpty,
-    MatchSource { input_ids: Vec<String> },
-    MatchPrefix { prefix: Vec<u8> },
+    MatchSource {
+        input_ids: Vec<String>,
+    },
+    MatchPrefix {
+        prefix: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -42,12 +47,18 @@ pub(crate) enum TransformModuleConfig {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) enum ClassifyModuleConfig {
+    #[default]
     None,
     BySource,
-    TagStatic { tags: Vec<String> },
-    MatchPrefix { prefix: Vec<u8>, tag: String },
+    TagStatic {
+        tags: Vec<String>,
+    },
+    MatchPrefix {
+        prefix: Vec<u8>,
+        tag: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -74,22 +85,10 @@ pub(crate) struct TagRoutingRule {
     pub outputs: Vec<String>,
 }
 
-impl Default for FilterModuleConfig {
-    fn default() -> Self {
-        Self::AllowAll
-    }
-}
-
 impl Default for TransformChainConfig {
     fn default() -> Self {
         Self {
             modules: vec![TransformModuleConfig::Identity],
         }
-    }
-}
-
-impl Default for ClassifyModuleConfig {
-    fn default() -> Self {
-        Self::None
     }
 }

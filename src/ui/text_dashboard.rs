@@ -258,19 +258,19 @@ impl TextDashboard {
     pub fn poll_action(&mut self) -> io::Result<Option<TextDashboardAction>> {
         #[cfg(unix)]
         {
-            if let Some(guard) = self.terminal_input_guard.as_mut() {
-                if let Some(bytes) = guard.read_raw()? {
-                    if self.interactive_mode {
-                        return Ok(process_interactive_input(&bytes, &mut self.input_buffer));
-                    } else {
-                        let mut action = None;
-                        for b in &bytes {
-                            if *b == b' ' {
-                                action = Some(TextDashboardAction::TogglePause);
-                            }
+            if let Some(guard) = self.terminal_input_guard.as_mut()
+                && let Some(bytes) = guard.read_raw()?
+            {
+                if self.interactive_mode {
+                    return Ok(process_interactive_input(&bytes, &mut self.input_buffer));
+                } else {
+                    let mut action = None;
+                    for b in &bytes {
+                        if *b == b' ' {
+                            action = Some(TextDashboardAction::TogglePause);
                         }
-                        return Ok(action);
                     }
+                    return Ok(action);
                 }
             }
         }

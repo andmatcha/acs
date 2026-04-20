@@ -118,6 +118,12 @@ impl PacketDefinition {
                 payload_len: 14,
                 header: *b"JF",
             },
+            OutputFormat::RoverUpGeneral | OutputFormat::RoverDownGeneral => {
+                panic!(
+                    "xbee-test does not support output format `{}`",
+                    format.as_str()
+                )
+            }
         }
     }
 }
@@ -284,7 +290,6 @@ impl ObservedInput {
         input_port: String,
         from_port_id: &'static str,
         format: OutputFormat,
-        _started_at: Instant,
     ) -> Self {
         Self {
             input_id,
@@ -563,7 +568,7 @@ struct DisplayedOutput {
 }
 
 impl DisplayedOutput {
-    fn new(port: String, _started_at: Instant) -> Self {
+    fn new(port: String) -> Self {
         Self {
             port,
             display_queue: PacketDisplayQueue::new(),
@@ -632,21 +637,19 @@ impl XbeeTestState {
                 settings.jf_rate_hz,
                 started_at,
             )?,
-            base_output: DisplayedOutput::new(settings.base_port.port.clone(), started_at),
-            rover_output: DisplayedOutput::new(settings.rover_port.port.clone(), started_at),
+            base_output: DisplayedOutput::new(settings.base_port.port.clone()),
+            rover_output: DisplayedOutput::new(settings.rover_port.port.clone()),
             base_input: ObservedInput::new(
                 BASE_PORT_ID,
                 settings.base_port.port.clone(),
                 ROVER_PORT_ID,
                 OutputFormat::PacketJfV1,
-                started_at,
             ),
             rover_input: ObservedInput::new(
                 ROVER_PORT_ID,
                 settings.rover_port.port.clone(),
                 BASE_PORT_ID,
                 OutputFormat::PacketAcV6,
-                started_at,
             ),
             last_status_update: started_at
                 .checked_sub(STATUS_INTERVAL)
