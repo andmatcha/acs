@@ -7,6 +7,7 @@
         "id": "main",
         "port": "",
         "baud": 115200,
+        "rate": 100,
         "format": "packetjfv1",
         "display": "hex+packet"
       },
@@ -14,6 +15,7 @@
         "id": "sub",
         "port": "",
         "baud": 921600,
+        "rate": 10,
         "format": "packetacv6",
         "display": "utf8+line"
       }

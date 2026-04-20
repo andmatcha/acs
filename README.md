@@ -95,7 +95,7 @@ acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 acs monitor --port /dev/ttyUSB0
 acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 acs send --port /dev/ttyUSB0 --format PacketJFv1 --rate 100
-acs send -o main=/dev/ttyUSB0@115200,hex,packetjfv1 -o sub=/dev/ttyUSB1@921600,utf8+packet,packetacv6
+acs send -o main=/dev/ttyUSB0@115200,hex,packetjfv1,100 -o sub=/dev/ttyUSB1@921600,utf8+packet,packetacv6,10
 acs xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --jf-rate 100
 acs xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100
 acs --version

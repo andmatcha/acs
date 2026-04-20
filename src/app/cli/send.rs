@@ -37,6 +37,7 @@ struct SendOutputBinding {
     id: String,
     port: String,
     baud: Option<u32>,
+    rate_hz: Option<u32>,
     format: Option<String>,
     display_mode: Option<crate::port_display::PortDisplayMode>,
     line_break_mode: Option<crate::port_display::LineBreakMode>,
@@ -55,6 +56,7 @@ struct SendMonitorBinding {
 struct SendOutputSettings {
     session: SessionOutputSpec,
     format: OutputFormat,
+    rate_hz: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +69,6 @@ struct SendSettings {
     inputs: Vec<SessionInputSpec>,
     outputs: Vec<SendOutputSettings>,
     input_packet_formats: Vec<SendInputPacketFormat>,
-    rate_hz: u32,
     log_dir: PathBuf,
     interactive: bool,
 }
@@ -77,6 +78,7 @@ struct SendOutputRunResult {
     port: String,
     baud_rate: u32,
     format: OutputFormat,
+    rate_hz: u32,
     sent_count: u64,
     payload_len: usize,
 }
@@ -84,9 +86,13 @@ struct SendOutputRunResult {
 struct SendRunResult {
     interactive: bool,
     message_count: u64,
-    rate_hz: Option<u32>,
     outputs: Vec<SendOutputRunResult>,
     log_path: PathBuf,
+}
+
+struct OutputSchedule {
+    next_send_at: Instant,
+    period: Duration,
 }
 
 pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
@@ -135,23 +141,20 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
                     output.port,
                     output.baud_rate,
                     output.format.as_str(),
-                    result.rate_hz.unwrap_or(DEFAULT_SEND_RATE_HZ)
+                    output.rate_hz
                 );
             } else {
-                println!(
-                    "sent dummy packets to {} outputs at {} Hz",
-                    result.outputs.len(),
-                    result.rate_hz.unwrap_or(DEFAULT_SEND_RATE_HZ)
-                );
+                println!("sent dummy packets to {} outputs", result.outputs.len());
                 for output in &result.outputs {
                     println!(
-                        "  {}: {} packets ({} bytes each) to {} @ {} baud, format={}",
+                        "  {}: {} packets ({} bytes each) to {} @ {} baud, format={}, target={} Hz",
                         output.id,
                         output.sent_count,
                         output.payload_len,
                         output.port,
                         output.baud_rate,
-                        output.format.as_str()
+                        output.format.as_str(),
+                        output.rate_hz
                     );
                 }
             }
@@ -235,7 +238,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
                     output.session.port,
                     output.session.baud_rate,
                     output.format.as_str(),
-                    settings.rate_hz,
+                    output.rate_hz,
                     payload_lengths
                         .get(&output.session.id)
                         .copied()
@@ -310,17 +313,31 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
             },
         )?;
     } else {
-        let packet_period = Duration::from_secs_f64(1.0 / settings.rate_hz as f64);
-        let mut next_send_at = Instant::now();
+        let started_at = Instant::now();
+        let mut schedules = output_specs
+            .iter()
+            .map(|output| {
+                (
+                    output.session.id.clone(),
+                    OutputSchedule {
+                        next_send_at: started_at,
+                        period: Duration::from_secs_f64(1.0 / output.rate_hz as f64),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         session.run_loop_with_tick(
             SEND_LOOP_INTERVAL,
             signal::is_stop_requested,
             |_, _| Ok(()),
             |session| {
                 let now = Instant::now();
-                while now >= next_send_at {
-                    for output in &output_specs {
-                        let output_id = &output.session.id;
+                for output in &output_specs {
+                    let output_id = &output.session.id;
+                    let schedule = schedules
+                        .get_mut(output_id)
+                        .ok_or_else(|| format!("missing send schedule for output `{output_id}`"))?;
+                    while now >= schedule.next_send_at {
                         let payload = generators
                             .get_mut(output_id)
                             .ok_or_else(|| {
@@ -342,8 +359,8 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
                                 last_errors.insert(output_id.clone(), error);
                             }
                         }
+                        schedule.next_send_at += schedule.period;
                     }
-                    next_send_at += packet_period;
                 }
                 Ok(())
             },
@@ -359,7 +376,6 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     Ok(SendRunResult {
         interactive: settings.interactive,
         message_count,
-        rate_hz: (!settings.interactive).then_some(settings.rate_hz),
         outputs: output_specs
             .into_iter()
             .map(|output| SendOutputRunResult {
@@ -367,6 +383,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
                 port: output.session.port,
                 baud_rate: output.session.baud_rate,
                 format: output.format,
+                rate_hz: output.rate_hz,
                 sent_count: sent_counts.remove(&output.session.id).unwrap_or_default(),
                 payload_len: payload_lengths
                     .remove(&output.session.id)
@@ -401,11 +418,11 @@ fn build_settings(
         .baud
         .or(config.baud)
         .unwrap_or_else(default_baud_rate);
-    let rate_hz = cli_options
+    let default_rate_hz = cli_options
         .rate_hz
         .or(config.rate_hz)
         .unwrap_or(DEFAULT_SEND_RATE_HZ);
-    if rate_hz == 0 {
+    if default_rate_hz == 0 {
         return Err(String::from("--rate must be greater than 0"));
     }
     let default_format_name = cli_options
@@ -414,8 +431,13 @@ fn build_settings(
         .or(config.format.clone())
         .unwrap_or_else(|| String::from("packetacv6"));
     let default_format = OutputFormat::parse(&default_format_name)?;
-    let output_bindings =
-        resolve_output_bindings(&cli_options, &config, default_baud, default_format)?;
+    let output_bindings = resolve_output_bindings(
+        &cli_options,
+        &config,
+        default_baud,
+        default_rate_hz,
+        default_format,
+    )?;
     let monitor_port_specs =
         resolve_monitor_bindings(&cli_options, &config, using_cli_monitor_ports)?;
 
@@ -476,6 +498,7 @@ fn build_settings(
                 display_mode: output_display_mode,
             },
             format,
+            rate_hz: binding.rate_hz,
         });
         inputs.push(SessionInputSpec {
             id: port.clone(),
@@ -521,7 +544,6 @@ fn build_settings(
         inputs,
         outputs,
         input_packet_formats,
-        rate_hz,
         log_dir,
         interactive: cli_options.interactive,
     })
@@ -531,6 +553,7 @@ fn resolve_output_bindings(
     cli_options: &SendCliOptions,
     config: &config::SendConfig,
     default_baud: u32,
+    default_rate_hz: u32,
     default_format: OutputFormat,
 ) -> Result<Vec<ResolvedSendOutputBinding>, String> {
     if !cli_options.outputs.is_empty() {
@@ -538,7 +561,9 @@ fn resolve_output_bindings(
             .outputs
             .iter()
             .cloned()
-            .map(|binding| resolve_send_output_binding(binding, default_baud, default_format))
+            .map(|binding| {
+                resolve_send_output_binding(binding, default_baud, default_rate_hz, default_format)
+            })
             .collect();
     }
 
@@ -552,11 +577,13 @@ fn resolve_output_bindings(
                         id: output.id.clone(),
                         port: output.port.clone(),
                         baud: output.baud,
+                        rate_hz: output.rate_hz,
                         format: output.format.clone(),
                         display_mode: output.display_mode,
                         line_break_mode: output.line_break_mode,
                     },
                     default_baud,
+                    default_rate_hz,
                     default_format,
                 )
             })
@@ -576,6 +603,7 @@ fn resolve_output_bindings(
             id: String::from("main"),
             port,
             baud: selected_port.as_ref().and_then(|port_spec| port_spec.baud),
+            rate_hz: None,
             format: None,
             display_mode: selected_port
                 .as_ref()
@@ -585,6 +613,7 @@ fn resolve_output_bindings(
                 .and_then(|port_spec| port_spec.line_break_mode),
         },
         default_baud,
+        default_rate_hz,
         default_format,
     )
     .map(|binding| vec![binding])
@@ -595,6 +624,7 @@ struct ResolvedSendOutputBinding {
     id: String,
     port: String,
     baud: Option<u32>,
+    rate_hz: u32,
     format: Option<OutputFormat>,
     display_mode: Option<crate::port_display::PortDisplayMode>,
     line_break_mode: Option<crate::port_display::LineBreakMode>,
@@ -603,12 +633,19 @@ struct ResolvedSendOutputBinding {
 fn resolve_send_output_binding(
     binding: SendOutputBinding,
     _default_baud: u32,
+    default_rate_hz: u32,
     default_format: OutputFormat,
 ) -> Result<ResolvedSendOutputBinding, String> {
+    let rate_hz = binding.rate_hz.unwrap_or(default_rate_hz);
+    if rate_hz == 0 {
+        return Err(String::from("send output rate must be greater than 0"));
+    }
+
     Ok(ResolvedSendOutputBinding {
         id: binding.id,
         port: binding.port,
         baud: binding.baud,
+        rate_hz,
         format: Some(match binding.format {
             Some(format) => OutputFormat::parse(&format)?,
             None => default_format,
@@ -752,15 +789,25 @@ fn parse_send_output_binding(value: &str) -> Result<SendOutputBinding, String> {
         return Err(String::from("send output binding must not be empty"));
     }
 
-    let (binding_text, format) = if let Some((binding_text, format_name)) = value.rsplit_once(',') {
-        if OutputFormat::parse(format_name).is_ok() {
-            (binding_text, Some(format_name.to_owned()))
+    let mut binding_text = value;
+    let mut rate_hz = None;
+    if let Some((candidate_binding, candidate_rate)) = binding_text.rsplit_once(',')
+        && !candidate_rate.is_empty()
+        && candidate_rate.chars().all(|ch| ch.is_ascii_digit())
+    {
+        rate_hz = Some(parse_u32_arg("send output rate", candidate_rate)?);
+        binding_text = candidate_binding;
+    }
+    let (binding_text, format) =
+        if let Some((candidate_binding, format_name)) = binding_text.rsplit_once(',') {
+            if OutputFormat::parse(format_name).is_ok() {
+                (candidate_binding, Some(format_name.to_owned()))
+            } else {
+                (binding_text, None)
+            }
         } else {
-            (value, None)
-        }
-    } else {
-        (value, None)
-    };
+            (binding_text, None)
+        };
 
     let (id, port_text) = if let Some((id, port_text)) = binding_text.split_once('=') {
         if id.is_empty() || port_text.is_empty() {
@@ -776,6 +823,7 @@ fn parse_send_output_binding(value: &str) -> Result<SendOutputBinding, String> {
         id: id.unwrap_or_else(|| port_spec.port.clone()),
         port: port_spec.port,
         baud: port_spec.baud,
+        rate_hz,
         format,
         display_mode: port_spec.display_mode,
         line_break_mode: port_spec.line_break_mode,
@@ -836,11 +884,13 @@ mod tests {
     #[test]
     fn parse_send_output_binding_accepts_id_format_and_packet_mode() {
         let binding =
-            parse_send_output_binding("main=/dev/ttyUSB0@921600,hex+packet,packetacv6").unwrap();
+            parse_send_output_binding("main=/dev/ttyUSB0@921600,hex+packet,packetacv6,100")
+                .unwrap();
 
         assert_eq!(binding.id, "main");
         assert_eq!(binding.port, "/dev/ttyUSB0");
         assert_eq!(binding.baud, Some(921_600));
+        assert_eq!(binding.rate_hz, Some(100));
         assert_eq!(binding.format.as_deref(), Some("packetacv6"));
         assert_eq!(binding.display_mode, Some(PortDisplayMode::Hex));
         assert_eq!(binding.line_break_mode, Some(LineBreakMode::Packet));

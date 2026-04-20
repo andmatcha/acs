@@ -24,6 +24,7 @@
         "id": "main",
         "port": "/dev/ttyUSB0",
         "baud": 115200,
+        "rate": 100,
         "format": "packetjfv1",
         "display": "hex+packet"
       },
@@ -31,6 +32,7 @@
         "id": "sub",
         "port": "/dev/ttyUSB2",
         "baud": 921600,
+        "rate": 10,
         "format": "packetacv6",
         "display": "utf8+line"
       }

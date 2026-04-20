@@ -81,6 +81,7 @@ pub(crate) struct SendOutputConfig {
     pub id: String,
     pub port: String,
     pub baud: Option<u32>,
+    pub rate_hz: Option<u32>,
     pub format: Option<String>,
     pub display_mode: Option<PortDisplayMode>,
     pub line_break_mode: Option<LineBreakMode>,
@@ -829,6 +830,7 @@ fn optional_send_outputs(object: &JsonObject, key: &str) -> Result<Vec<SendOutpu
                 .unwrap_or_else(|| required_string(entry, "port").expect("port exists")),
             port: required_string(entry, "port")?,
             baud: optional_u32(entry, "baud")?,
+            rate_hz: optional_u32(entry, "rate")?,
             format: optional_string(entry, "format")?,
             display_mode: display.and_then(|(display_mode, _)| display_mode),
             line_break_mode: display.and_then(|(_, line_break_mode)| line_break_mode),
@@ -1779,6 +1781,7 @@ mod tests {
                     "id": "main",
                     "port": "/dev/ttyUSB0",
                     "baud": 921600,
+                    "rate": 100,
                     "format": "packetacv6",
                     "display": "hex+packet"
                   },
@@ -1786,6 +1789,7 @@ mod tests {
                     "id": "sub",
                     "port": "/dev/ttyUSB1",
                     "baud": 115200,
+                    "rate": 10,
                     "format": "packetjfv1",
                     "display": "utf8+line"
                   }
@@ -1800,6 +1804,7 @@ mod tests {
 
         assert_eq!(config.send.outputs.len(), 2);
         assert_eq!(config.send.outputs[0].id, "main");
+        assert_eq!(config.send.outputs[0].rate_hz, Some(100));
         assert_eq!(config.send.outputs[0].format.as_deref(), Some("packetacv6"));
         assert_eq!(
             config.send.outputs[0].display_mode,
@@ -1810,6 +1815,7 @@ mod tests {
             Some(LineBreakMode::Packet)
         );
         assert_eq!(config.send.outputs[1].id, "sub");
+        assert_eq!(config.send.outputs[1].rate_hz, Some(10));
         assert_eq!(config.send.outputs[1].format.as_deref(), Some("packetjfv1"));
         assert_eq!(
             config.send.outputs[1].display_mode,
