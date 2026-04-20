@@ -25,9 +25,14 @@ impl SessionDashboard {
         title: impl Into<String>,
         command_name: &str,
         log_dir: &Path,
+        logging_enabled: bool,
     ) -> Result<Self, String> {
-        let logger = CommandLogger::create(command_name, log_dir)
-            .map_err(|error| format!("failed to create log file: {error}"))?;
+        let logger = if logging_enabled {
+            CommandLogger::create(command_name, log_dir)
+                .map_err(|error| format!("failed to create log file: {error}"))?
+        } else {
+            CommandLogger::disabled(command_name)
+        };
         let dashboard = TextDashboard::new(title)
             .map_err(|error| format!("failed to initialize dashboard: {error}"))?;
 
@@ -87,6 +92,10 @@ impl SessionDashboard {
 
     pub(crate) fn set_output_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
         self.dashboard.set_output_packet_rate_enabled(port, enabled);
+    }
+
+    pub(crate) fn set_input_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
+        self.dashboard.set_input_packet_rate_enabled(port, enabled);
     }
 
     pub(crate) fn set_output_status(&mut self, port: &str, status: impl Into<String>) {
@@ -215,6 +224,35 @@ impl SessionDashboard {
             .log_status(port, message)
             .map_err(|error| format!("failed to write log: {error}"))?;
         Ok(true)
+    }
+
+    pub(crate) fn record_input_sample(&mut self, port: &str, byte_len: usize, packet_count: usize) {
+        self.dashboard
+            .record_input_sample(port, byte_len, packet_count);
+    }
+
+    pub(crate) fn record_output_sample(
+        &mut self,
+        port: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.dashboard
+            .record_output_sample(port, byte_len, packet_count);
+    }
+
+    pub(crate) fn add_input_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
+        self.dashboard.add_input(port, bytes);
+        self.logger
+            .log_input(port, bytes)
+            .map_err(|error| format!("failed to write log: {error}"))
+    }
+
+    pub(crate) fn add_output_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
+        self.dashboard.add_output(port, bytes);
+        self.logger
+            .log_output(port, bytes)
+            .map_err(|error| format!("failed to write log: {error}"))
     }
 
     pub(crate) fn flush_pending_input_lines(&mut self) -> Result<bool, String> {

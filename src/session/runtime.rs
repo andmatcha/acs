@@ -5,6 +5,8 @@ use crate::serial::{
 use crate::session::dashboard::SessionDashboard;
 use crate::session::event::{IngressFrame, SessionEvent};
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
@@ -12,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const RENDER_INTERVAL: Duration = Duration::from_millis(100);
+const RENDER_RATE_WINDOW: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionInputSpec {
@@ -36,6 +39,7 @@ pub(crate) struct SessionSpec {
     pub title: String,
     pub command_name: String,
     pub log_dir: PathBuf,
+    pub logging_enabled: bool,
     pub inputs: Vec<SessionInputSpec>,
     pub outputs: Vec<SessionOutputSpec>,
 }
@@ -51,6 +55,9 @@ pub(crate) struct SessionRuntime {
     event_rx: Receiver<SessionEvent>,
     _input_monitors: Vec<SerialMonitor>,
     outputs: BTreeMap<String, SessionOutputHandle>,
+    manual_input_recording: BTreeSet<String>,
+    manual_output_recording: BTreeSet<String>,
+    render_samples: VecDeque<Instant>,
     dirty: bool,
     inputs_disconnected: bool,
     last_render: Instant,
@@ -59,7 +66,12 @@ pub(crate) struct SessionRuntime {
 
 impl SessionRuntime {
     pub(crate) fn new(spec: SessionSpec) -> Result<Self, String> {
-        let mut dashboard = SessionDashboard::new(&spec.title, &spec.command_name, &spec.log_dir)?;
+        let mut dashboard = SessionDashboard::new(
+            &spec.title,
+            &spec.command_name,
+            &spec.log_dir,
+            spec.logging_enabled,
+        )?;
 
         for input in &spec.inputs {
             dashboard.configure_input_port(
@@ -139,6 +151,9 @@ impl SessionRuntime {
             event_rx,
             _input_monitors: input_monitors,
             outputs,
+            manual_input_recording: BTreeSet::new(),
+            manual_output_recording: BTreeSet::new(),
+            render_samples: VecDeque::new(),
             dirty: false,
             inputs_disconnected: false,
             last_render: Instant::now(),
@@ -159,9 +174,30 @@ impl SessionRuntime {
         self.dirty = true;
     }
 
+    pub(crate) fn set_input_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
+        self.dashboard.set_input_packet_rate_enabled(port, enabled);
+        self.dirty = true;
+    }
+
     pub(crate) fn set_output_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
         self.dashboard.set_output_packet_rate_enabled(port, enabled);
         self.dirty = true;
+    }
+
+    pub(crate) fn set_manual_input_recording(&mut self, input_id: &str, enabled: bool) {
+        if enabled {
+            self.manual_input_recording.insert(input_id.to_owned());
+        } else {
+            self.manual_input_recording.remove(input_id);
+        }
+    }
+
+    pub(crate) fn set_manual_output_recording(&mut self, output_id: &str, enabled: bool) {
+        if enabled {
+            self.manual_output_recording.insert(output_id.to_owned());
+        } else {
+            self.manual_output_recording.remove(output_id);
+        }
     }
 
     pub(crate) fn take_user_input(&mut self) -> Option<String> {
@@ -170,11 +206,41 @@ impl SessionRuntime {
 
     pub(crate) fn set_header_lines(&mut self, lines: Vec<String>) {
         self.dashboard.set_header_lines(lines);
+        self.dirty = true;
     }
 
     pub(crate) fn set_status(&mut self, status: impl Into<String>) {
         self.dashboard.set_status(status);
         self.dirty = true;
+    }
+
+    pub(crate) fn record_input_sample(&mut self, port: &str, byte_len: usize, packet_count: usize) {
+        self.dashboard
+            .record_input_sample(port, byte_len, packet_count);
+        self.dirty = true;
+    }
+
+    pub(crate) fn record_output_sample(
+        &mut self,
+        port: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.dashboard
+            .record_output_sample(port, byte_len, packet_count);
+        self.dirty = true;
+    }
+
+    pub(crate) fn add_input_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
+        self.dashboard.add_input_entry(port, bytes)?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub(crate) fn add_output_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
+        self.dashboard.add_output_entry(port, bytes)?;
+        self.dirty = true;
+        Ok(())
     }
 
     pub(crate) fn write_output(&mut self, output_id: &str, bytes: &[u8]) -> Result<(), String> {
@@ -186,9 +252,16 @@ impl SessionRuntime {
             .connection
             .write_bytes(bytes)
             .map_err(|error| error.to_string())?;
-        self.dashboard.record_output(&output.port, bytes)?;
-        self.dirty = true;
+        if !self.manual_output_recording.contains(output_id) {
+            self.dashboard.record_output(&output.port, bytes)?;
+            self.dirty = true;
+        }
         Ok(())
+    }
+
+    pub(crate) fn current_render_fps(&mut self) -> f64 {
+        self.prune_render_samples(Instant::now());
+        self.render_samples.len() as f64 / RENDER_RATE_WINDOW.as_secs_f64()
     }
 
     pub(crate) fn set_output_error(
@@ -245,6 +318,7 @@ impl SessionRuntime {
         H: FnMut(&mut SessionRuntime) -> Result<(), String>,
     {
         self.dashboard.render()?;
+        self.note_render(Instant::now());
 
         while !stop_requested() {
             let user_input = self.dashboard.handle_dashboard_action()?;
@@ -262,6 +336,7 @@ impl SessionRuntime {
         }
         self.dashboard.set_status("stopped");
         self.dashboard.render()?;
+        self.note_render(Instant::now());
 
         Ok(self.dashboard.log_path().to_path_buf())
     }
@@ -316,7 +391,8 @@ impl SessionRuntime {
                 port,
                 bytes,
             } => {
-                if self.dashboard.record_input(&port, &bytes)? {
+                let should_record_input = !self.manual_input_recording.contains(&input_id);
+                if should_record_input && self.dashboard.record_input(&port, &bytes)? {
                     self.dirty = true;
                 }
 
@@ -345,9 +421,24 @@ impl SessionRuntime {
         {
             self.dashboard.render()?;
             self.dirty = false;
-            self.last_render = Instant::now();
+            self.note_render(Instant::now());
         }
         Ok(())
+    }
+
+    fn note_render(&mut self, now: Instant) {
+        self.last_render = now;
+        self.render_samples.push_back(now);
+        self.prune_render_samples(now);
+    }
+
+    fn prune_render_samples(&mut self, now: Instant) {
+        while let Some(sample) = self.render_samples.front() {
+            if now.duration_since(*sample) <= RENDER_RATE_WINDOW {
+                break;
+            }
+            self.render_samples.pop_front();
+        }
     }
 }
 

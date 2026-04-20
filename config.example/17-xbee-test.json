@@ -1,0 +1,19 @@
+{
+  "xbee_test": {
+    "ports": [
+      {
+        "id": "base",
+        "port": "/dev/ttyUSB0",
+        "baud": 921600
+      },
+      {
+        "id": "rover",
+        "port": "/dev/ttyUSB1",
+        "baud": 115200
+      }
+    ],
+    "mode": "flood",
+    "ac_rate": 100,
+    "jf_rate": 100
+  }
+}

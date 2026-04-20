@@ -19,6 +19,7 @@ pub(crate) struct AppConfig {
     pub log_dir: Option<PathBuf>,
     pub control: ControlConfig,
     pub send: SendConfig,
+    pub xbee_test: XbeeTestConfig,
     pub monitor: MonitorConfig,
     pub route: RouteConfig,
 }
@@ -54,6 +55,15 @@ pub(crate) struct SendConfig {
 }
 
 #[derive(Debug, Default, Clone)]
+pub(crate) struct XbeeTestConfig {
+    pub ports: Vec<XbeeTestPortConfig>,
+    pub mode: Option<String>,
+    pub ac_rate_hz: Option<u32>,
+    pub jf_rate_hz: Option<u32>,
+    pub log_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone)]
 pub(crate) struct RouteConfig {
     pub inputs: Vec<RouteInputConfig>,
     pub outputs: Vec<RouteOutputConfig>,
@@ -82,6 +92,13 @@ pub(crate) struct SendMonitorConfig {
     pub format: Option<String>,
     pub display_mode: Option<PortDisplayMode>,
     pub line_break_mode: Option<LineBreakMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct XbeeTestPortConfig {
+    pub id: String,
+    pub port: String,
+    pub baud: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +148,7 @@ impl AppConfig {
         merge_option(&mut self.log_dir, other.log_dir);
         self.control.merge_from(other.control);
         self.send.merge_from(other.send);
+        self.xbee_test.merge_from(other.xbee_test);
         self.monitor.merge_from(other.monitor);
         self.route.merge_from(other.route);
     }
@@ -165,6 +183,16 @@ impl SendConfig {
         merge_option(&mut self.format, other.format);
         self.display.merge_from(other.display);
         merge_send_monitors(&mut self.monitor_ports, other.monitor_ports);
+        merge_option(&mut self.log_dir, other.log_dir);
+    }
+}
+
+impl XbeeTestConfig {
+    fn merge_from(&mut self, other: XbeeTestConfig) {
+        merge_xbee_test_ports(&mut self.ports, other.ports);
+        merge_option(&mut self.mode, other.mode);
+        merge_option(&mut self.ac_rate_hz, other.ac_rate_hz);
+        merge_option(&mut self.jf_rate_hz, other.jf_rate_hz);
         merge_option(&mut self.log_dir, other.log_dir);
     }
 }
@@ -249,6 +277,16 @@ fn merge_send_monitors(target: &mut Vec<SendMonitorConfig>, monitors: Vec<SendMo
     }
 }
 
+fn merge_xbee_test_ports(target: &mut Vec<XbeeTestPortConfig>, ports: Vec<XbeeTestPortConfig>) {
+    for port in ports {
+        if let Some(existing) = target.iter_mut().find(|existing| existing.id == port.id) {
+            *existing = port;
+        } else {
+            target.push(port);
+        }
+    }
+}
+
 pub(crate) fn load_config(path: &Path) -> Result<AppConfig, String> {
     if path.is_dir() {
         return load_config_dir(path);
@@ -274,6 +312,8 @@ fn load_config_file(path: &Path) -> Result<AppConfig, String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let send = parse_send_config(root.get("send"), base_dir)
         .map_err(|error| format!("{}: {error}", path.display()))?;
+    let xbee_test = parse_xbee_test_config(root.get("xbee_test"), base_dir)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
     let monitor = parse_monitor_config(root.get("monitor"), base_dir)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let route = parse_route_config(root.get("route"), base_dir)
@@ -283,6 +323,7 @@ fn load_config_file(path: &Path) -> Result<AppConfig, String> {
         log_dir: top_level_log_dir,
         control,
         send,
+        xbee_test,
         monitor,
         route,
     })
@@ -408,6 +449,24 @@ fn parse_send_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<SendC
         format: optional_string(object, "format")?,
         display: optional_display_config(object, "display")?,
         monitor_ports: optional_send_monitors(object, "monitor_ports")?,
+        log_dir: optional_path(object, "log_dir", base_dir)?,
+    })
+}
+
+fn parse_xbee_test_config(
+    value: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<XbeeTestConfig, String> {
+    let Some(value) = value else {
+        return Ok(XbeeTestConfig::default());
+    };
+    let object = expect_object(value, "xbee_test")?;
+
+    Ok(XbeeTestConfig {
+        ports: optional_xbee_test_ports(object, "ports")?,
+        mode: optional_string(object, "mode")?,
+        ac_rate_hz: optional_u32(object, "ac_rate")?,
+        jf_rate_hz: optional_u32(object, "jf_rate")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -852,6 +911,102 @@ fn parse_send_monitor_object(
         display_mode: port_spec.display_mode,
         line_break_mode: port_spec.line_break_mode,
     }))
+}
+
+fn optional_xbee_test_ports(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Vec<XbeeTestPortConfig>, String> {
+    match object.get(key) {
+        None | Some(JsonValue::Null) => Ok(Vec::new()),
+        Some(JsonValue::String(_)) | Some(JsonValue::Object(_)) => {
+            parse_xbee_test_port_value(object.get(key).expect("value exists"), key)
+                .map(|value| value.into_iter().collect())
+        }
+        Some(JsonValue::Array(values)) => values
+            .iter()
+            .filter_map(|value| match parse_xbee_test_port_value(value, key) {
+                Ok(Some(spec)) => Some(Ok(spec)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect(),
+        Some(_) => Err(type_error(key, "string, object, or array")),
+    }
+}
+
+fn parse_xbee_test_port_value(
+    value: &JsonValue,
+    key: &str,
+) -> Result<Option<XbeeTestPortConfig>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(parse_xbee_test_port_text(trimmed, key)?))
+        }
+        JsonValue::Object(object) => parse_xbee_test_port_object(object, key),
+        _ => Err(type_error(key, "string or object")),
+    }
+}
+
+fn parse_xbee_test_port_text(value: &str, key: &str) -> Result<XbeeTestPortConfig, String> {
+    let Some((id, port_text)) = value.split_once('=') else {
+        return Err(format!(
+            "`{key}` entry must be `base=PORT[@BAUD]` or `rover=PORT[@BAUD]`"
+        ));
+    };
+
+    let port_spec = parse_port_spec_text(port_text, key)?;
+    if port_spec.display_mode.is_some() || port_spec.line_break_mode.is_some() {
+        return Err(format!(
+            "`{key}` entry must not specify display mode; xbee_test uses fixed hex packet display"
+        ));
+    }
+
+    Ok(XbeeTestPortConfig {
+        id: normalize_xbee_test_port_id(id)?,
+        port: port_spec.port,
+        baud: port_spec.baud,
+    })
+}
+
+fn parse_xbee_test_port_object(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Option<XbeeTestPortConfig>, String> {
+    let id = optional_string(object, "id")?.unwrap_or_default();
+    let id = id.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+
+    let port = optional_string(object, "path")?
+        .or(optional_string(object, "port")?)
+        .unwrap_or_default();
+    let port = port.trim();
+    if port.is_empty() {
+        return Err(format!("`{key}.port` is required"));
+    }
+
+    Ok(Some(XbeeTestPortConfig {
+        id: normalize_xbee_test_port_id(id)?,
+        port: port.to_owned(),
+        baud: optional_u32(object, "baud")?,
+    }))
+}
+
+fn normalize_xbee_test_port_id(value: &str) -> Result<String, String> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "base" | "rover" => Ok(value),
+        _ => Err(format!(
+            "xbee_test port id must be `base` or `rover`, got `{value}`"
+        )),
+    }
 }
 
 fn optional_pipeline_spec(object: &JsonObject, key: &str) -> Result<PipelineSpec, String> {
@@ -1335,7 +1490,7 @@ impl<'a> JsonParser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{JsonParser, SendMonitorConfig, load_config};
+    use super::{JsonParser, SendMonitorConfig, XbeeTestPortConfig, load_config};
     use crate::app::cli::common::PortSpec;
     use crate::output::OutputFormat;
     use crate::pipeline::TransformModuleConfig;
@@ -1493,6 +1648,7 @@ mod tests {
 
         assert_eq!(config.log_dir, Some(temp_dir.join("logs")));
         assert_eq!(config.send.format, Some(String::from("packetjfv1")));
+        assert!(config.xbee_test.ports.is_empty());
         assert_eq!(
             config.send.monitor_ports,
             vec![SendMonitorConfig {
@@ -1710,6 +1866,52 @@ mod tests {
             config.send.monitor_ports[1].line_break_mode,
             Some(LineBreakMode::Packet)
         );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_accepts_xbee_test_ports_and_rates() {
+        let temp_dir = make_temp_dir("acs_config_xbee_test");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "xbee_test": {
+                "ports": [
+                  "base=/dev/ttyUSB0@921600",
+                  { "id": "rover", "port": "/dev/ttyUSB1", "baud": 115200 }
+                ],
+                "mode": "ping-pong",
+                "ac_rate": 100,
+                "jf_rate": 80
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).unwrap();
+
+        assert_eq!(
+            config.xbee_test.ports,
+            vec![
+                XbeeTestPortConfig {
+                    id: String::from("base"),
+                    port: String::from("/dev/ttyUSB0"),
+                    baud: Some(921_600),
+                },
+                XbeeTestPortConfig {
+                    id: String::from("rover"),
+                    port: String::from("/dev/ttyUSB1"),
+                    baud: Some(115_200),
+                }
+            ]
+        );
+        assert_eq!(config.xbee_test.mode.as_deref(), Some("ping-pong"));
+        assert_eq!(config.xbee_test.ac_rate_hz, Some(100));
+        assert_eq!(config.xbee_test.jf_rate_hz, Some(80));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

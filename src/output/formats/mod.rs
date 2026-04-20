@@ -3,6 +3,7 @@ mod packetacv6;
 mod packetjfv1;
 
 use crate::input::compact::CompactReport;
+pub(crate) use crc::crc16_ccitt_false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {

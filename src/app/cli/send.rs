@@ -181,6 +181,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
         title: String::from("acs send"),
         command_name: String::from("send"),
         log_dir: settings.log_dir.clone(),
+        logging_enabled: true,
         inputs: settings.inputs.clone(),
         outputs: output_specs
             .iter()

@@ -93,6 +93,7 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         title: String::from("acs control"),
         command_name: String::from("control"),
         log_dir: settings.log_dir.clone(),
+        logging_enabled: true,
         inputs: settings.inputs.clone(),
         outputs: vec![settings.output.clone()],
     })?;

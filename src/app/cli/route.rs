@@ -185,6 +185,7 @@ fn build_settings(
             title: String::from("acs route"),
             command_name: String::from("route"),
             log_dir,
+            logging_enabled: true,
             inputs,
             outputs,
         },

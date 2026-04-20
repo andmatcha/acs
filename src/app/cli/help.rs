@@ -9,6 +9,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!("  monitor    Monitor one or more serial ports");
     eprintln!("  route      Route bytes between serial inputs and outputs");
     eprintln!("  send       Repeatedly send dummy payloads to a serial port");
+    eprintln!("  xbee-test  Cross-test PacketACv6 and PacketJFv1 across base/rover ports");
     eprintln!("  controllers List connected DUALSHOCK 4 controllers");
     eprintln!("  ports      List available serial ports");
     eprintln!("  version    Show build version and source metadata");
@@ -17,7 +18,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!("Use `{bin_name} --version` or `{bin_name} version` to inspect the installed build.");
     eprintln!();
     eprintln!(
-        "Use `{bin_name} help control`, `{bin_name} help monitor`, `{bin_name} help route`, or `{bin_name} help send` for details."
+        "Use `{bin_name} help control`, `{bin_name} help monitor`, `{bin_name} help route`, `{bin_name} help send`, or `{bin_name} help xbee-test` for details."
     );
 }
 
@@ -29,6 +30,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  monitor    Monitor one or more serial ports");
     println!("  route      Route bytes between serial inputs and outputs");
     println!("  send       Repeatedly send dummy payloads to a serial port");
+    println!("  xbee-test  Cross-test PacketACv6 and PacketJFv1 across base/rover ports");
     println!("  controllers List connected DUALSHOCK 4 controllers");
     println!("  ports      List available serial ports");
     println!("  version    Show build version and source metadata");
@@ -50,6 +52,9 @@ pub(crate) fn print_help(bin_name: &str) {
         "  {bin_name} send -o main=/dev/ttyUSB0@921600,hex,packetacv6 -o sub=/dev/ttyUSB1@115200,utf8,packetjfv1"
     );
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
+    println!(
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --jf-rate 100"
+    );
     println!("  {bin_name} control --config config");
     println!("  {bin_name} --version");
     println!();
@@ -78,6 +83,10 @@ pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode 
         }
         Some("send") => {
             print_send_help(bin_name);
+            ExitCode::SUCCESS
+        }
+        Some("xbee-test") => {
+            print_xbee_test_help(bin_name);
             ExitCode::SUCCESS
         }
         Some("controllers") => {
@@ -207,6 +216,62 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("  {bin_name} send -i --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
     println!("  {bin_name} send --display output:default=hex --display input:default=utf8+packet");
     println!("  {bin_name} send --config config");
+}
+
+pub(crate) fn print_xbee_test_help(bin_name: &str) {
+    println!("Usage: {bin_name} xbee-test [OPTIONS]");
+    println!();
+    println!(
+        "Sends PacketACv6 from `base` to `rover` and PacketJFv1 from `rover` to `base` at independent rates."
+    );
+    println!(
+        "Each port is monitored simultaneously, and the dashboard shows per-port TX/RX packet rates plus matched/error statistics."
+    );
+    println!(
+        "Input and output are fixed to hex packet display for lightweight high-rate monitoring."
+    );
+    println!(
+        "The header also shows the actual display FPS, while RX rate/error counters continue to track packets independently of terminal refresh speed."
+    );
+    println!();
+    println!("Options:");
+    println!("  -p, --port <ID=PORT[@BAUD]> Port binding. IDs: `base`, `rover`");
+    println!("      --mode <MODE>          Transfer mode: `flood` or `ping-pong` (default: flood)");
+    println!(
+        "      --ac-rate <HZ>         PacketACv6 send rate from `base` to `rover` (default: 100)"
+    );
+    println!(
+        "      --jf-rate <HZ>         PacketJFv1 send rate from `rover` to `base` (default: 100)"
+    );
+    println!(
+        "                              Ignored in `ping-pong`; JF is sent once per valid AC receive"
+    );
+    println!("      --config <PATH>        Read options from a JSON file or directory");
+    println!(
+        "                              Defaults: {}",
+        paths::default_config_help()
+    );
+    println!(
+        "      --log-dir <DIR>        Log directory (default: {})",
+        paths::default_log_help()
+    );
+    println!("      --no-log               Disable log file creation for maximum throughput");
+    println!("  -h, --help                 Show this help");
+    println!();
+    println!("Examples:");
+    println!(
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200"
+    );
+    println!(
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --jf-rate 50"
+    );
+    println!(
+        "  {bin_name} xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100"
+    );
+    println!(
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --no-log"
+    );
+    println!("  {bin_name} xbee-test --config config");
 }
 
 pub(crate) fn print_monitor_help(bin_name: &str) {

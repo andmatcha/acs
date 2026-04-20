@@ -8,6 +8,7 @@
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
 - `acs route`: シリアル入力を設定に応じてシリアル出力へ振り分ける
 - `acs send`: 指定形式のダミーデータを継続してシリアルポートへ送信する
+- `acs xbee-test`: `base` / `rover` の 2 ポート間で PacketACv6 / PacketJFv1 の往復試験を行う。`flood` / `ping-pong` を切り替えられ、ヘッダに実際の表示更新 fps も表示する
 
 ## グローバルインストール
 
@@ -82,6 +83,7 @@ acs help control
 acs help monitor
 acs help route
 acs help send
+acs help xbee-test
 ```
 
 よく使う基本コマンドは次のとおりです。
@@ -94,12 +96,15 @@ acs monitor --port /dev/ttyUSB0
 acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 acs send --port /dev/ttyUSB0 --format PacketJFv1
 acs send -o main=/dev/ttyUSB0@115200,hex,packetjfv1 -o sub=/dev/ttyUSB1@921600,utf8+packet,packetacv6
+acs xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --jf-rate 100
+acs xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100
 acs --version
 ```
 
 - 1 台だけコントローラーやシリアルポートが見つかる場合は、自動選択されます。
 - `--config` には JSON ファイルだけでなくディレクトリも指定できます。
 - 詳しいオプションや表示形式は `acs help <command>` を参照してください。
+- `acs xbee-test` は表示更新が遅い場合も受信レートとエラー率の集計を優先し、packet 表示は別キューで追いかけます。
 
 ## 設定ファイル
 

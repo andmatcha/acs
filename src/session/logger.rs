@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) struct CommandLogger {
     path: PathBuf,
-    writer: BufWriter<std::fs::File>,
+    writer: Option<BufWriter<std::fs::File>>,
 }
 
 impl CommandLogger {
@@ -17,8 +17,15 @@ impl CommandLogger {
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             path,
-            writer: BufWriter::new(file),
+            writer: Some(BufWriter::new(file)),
         })
+    }
+
+    pub(crate) fn disabled(command_name: &str) -> Self {
+        Self {
+            path: PathBuf::from(format!("(disabled:{command_name})")),
+            writer: None,
+        }
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -44,8 +51,12 @@ impl CommandLogger {
         bytes: Option<&[u8]>,
         message: Option<&str>,
     ) -> io::Result<()> {
+        let Some(writer) = self.writer.as_mut() else {
+            return Ok(());
+        };
+
         write!(
-            self.writer,
+            writer,
             "ts={} kind={} port={}",
             now_display_timestamp(),
             kind,
@@ -54,7 +65,7 @@ impl CommandLogger {
 
         if let Some(bytes) = bytes {
             write!(
-                self.writer,
+                writer,
                 " hex={} ascii={}",
                 format_bytes_hex(bytes),
                 format_bytes_ascii(bytes)
@@ -62,10 +73,10 @@ impl CommandLogger {
         }
 
         if let Some(message) = message {
-            write!(self.writer, " message={message}")?;
+            write!(writer, " message={message}")?;
         }
 
-        self.writer.write_all(b"\n")?;
-        self.writer.flush()
+        writer.write_all(b"\n")?;
+        writer.flush()
     }
 }

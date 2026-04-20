@@ -61,6 +61,7 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
         title: String::from("acs monitor"),
         command_name: String::from("monitor"),
         log_dir: settings.log_dir.clone(),
+        logging_enabled: true,
         inputs: settings.inputs.clone(),
         outputs: Vec::new(),
     })?;
