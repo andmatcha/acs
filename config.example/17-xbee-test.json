@@ -12,7 +12,10 @@
         "baud": 115200
       }
     ],
-    "mode": "flood",
+    "mode": "polling",
+    "poll_rate": 100,
+    "base_real_percent": 10,
+    "remote_real_percent": 20,
     "au_rate": 100,
     "ru_rate": 100,
     "ad_rate": 100,

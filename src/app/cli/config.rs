@@ -59,6 +59,9 @@ pub(crate) struct SendConfig {
 pub(crate) struct XbeeTestConfig {
     pub ports: Vec<XbeeTestPortConfig>,
     pub mode: Option<String>,
+    pub poll_rate_hz: Option<u32>,
+    pub base_real_percent: Option<u32>,
+    pub remote_real_percent: Option<u32>,
     pub au_rate_hz: Option<u32>,
     pub ru_rate_hz: Option<u32>,
     pub ad_rate_hz: Option<u32>,
@@ -196,6 +199,9 @@ impl XbeeTestConfig {
     fn merge_from(&mut self, other: XbeeTestConfig) {
         merge_xbee_test_ports(&mut self.ports, other.ports);
         merge_option(&mut self.mode, other.mode);
+        merge_option(&mut self.poll_rate_hz, other.poll_rate_hz);
+        merge_option(&mut self.base_real_percent, other.base_real_percent);
+        merge_option(&mut self.remote_real_percent, other.remote_real_percent);
         merge_option(&mut self.au_rate_hz, other.au_rate_hz);
         merge_option(&mut self.ru_rate_hz, other.ru_rate_hz);
         merge_option(&mut self.ad_rate_hz, other.ad_rate_hz);
@@ -473,6 +479,9 @@ fn parse_xbee_test_config(
     Ok(XbeeTestConfig {
         ports: optional_xbee_test_ports(object, "ports")?,
         mode: optional_string(object, "mode")?,
+        poll_rate_hz: optional_u32(object, "poll_rate")?,
+        base_real_percent: optional_u32(object, "base_real_percent")?,
+        remote_real_percent: optional_u32(object, "remote_real_percent")?,
         au_rate_hz: optional_u32(object, "au_rate")?,
         ru_rate_hz: optional_u32(object, "ru_rate")?,
         ad_rate_hz: optional_u32(object, "ad_rate")?,
@@ -1900,7 +1909,10 @@ mod tests {
                   "base=/dev/ttyUSB0@921600",
                   { "id": "remote", "port": "/dev/ttyUSB1", "baud": 115200 }
                 ],
-                "mode": "ping-pong",
+                "mode": "polling",
+                "poll_rate": 100,
+                "base_real_percent": 15,
+                "remote_real_percent": 25,
                 "au_rate": 100,
                 "ru_rate": 90,
                 "ad_rate": 80,
@@ -1928,7 +1940,10 @@ mod tests {
                 }
             ]
         );
-        assert_eq!(config.xbee_test.mode.as_deref(), Some("ping-pong"));
+        assert_eq!(config.xbee_test.mode.as_deref(), Some("polling"));
+        assert_eq!(config.xbee_test.poll_rate_hz, Some(100));
+        assert_eq!(config.xbee_test.base_real_percent, Some(15));
+        assert_eq!(config.xbee_test.remote_real_percent, Some(25));
         assert_eq!(config.xbee_test.au_rate_hz, Some(100));
         assert_eq!(config.xbee_test.ru_rate_hz, Some(90));
         assert_eq!(config.xbee_test.ad_rate_hz, Some(80));

@@ -246,6 +246,7 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     println!(
         "Sends AU(PacketACv6) + RU(RoverUpGeneral) from `base` to `remote`, and AD(PacketJFv1) + RD(RoverDownGeneral) from `remote` to `base`."
     );
+    println!("Modes: `flood`, `ping-pong`, and `polling`.");
     println!(
         "Each port is monitored simultaneously, and the dashboard shows per-port TX/RX packet rates plus matched/error statistics."
     );
@@ -258,7 +259,16 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     println!();
     println!("Options:");
     println!("  -p, --port <ID=PORT[@BAUD]> Port binding. IDs: `base`, `remote`");
-    println!("      --mode <MODE>          Transfer mode: `flood` or `ping-pong` (default: flood)");
+    println!(
+        "      --mode <MODE>          Transfer mode: `flood`, `ping-pong`, or `polling` (default: flood)"
+    );
+    println!("      --poll-rate <HZ>       Base polling rate in `polling` mode (default: 100)");
+    println!(
+        "      --base-real-percent <N> Replace PollGreeting with AU+RU at N% in `polling` mode (0-100, default: 0)"
+    );
+    println!(
+        "      --remote-real-percent <N> Replace PollResponse with AD+RD at N% in `polling` mode (0-100, default: 0)"
+    );
     println!(
         "      --au-rate <HZ>         AU(PacketACv6) send rate from `base` to `remote` (default: 100)"
     );
@@ -298,6 +308,9 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     );
     println!(
         "  {bin_name} xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --au-rate 100 --ru-rate 50"
+    );
+    println!(
+        "  {bin_name} xbee-test --mode polling --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --poll-rate 100 --base-real-percent 10 --remote-real-percent 20"
     );
     println!(
         "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --no-log"

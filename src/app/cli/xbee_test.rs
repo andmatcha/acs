@@ -13,15 +13,18 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const BASE_PORT_ID: &str = "base";
 const REMOTE_PORT_ID: &str = "remote";
 const BASE_AU_OUTPUT_ID: &str = "base-au";
 const BASE_RU_OUTPUT_ID: &str = "base-ru";
+const BASE_POLL_OUTPUT_ID: &str = "base-poll";
 const REMOTE_AD_OUTPUT_ID: &str = "remote-ad";
 const REMOTE_RD_OUTPUT_ID: &str = "remote-rd";
+const REMOTE_POLL_OUTPUT_ID: &str = "remote-poll";
 const DEFAULT_RATE_HZ: u32 = 100;
+const DEFAULT_REAL_PERCENT: u32 = 0;
 const LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
 const EXPECTED_QUEUE_LIMIT: usize = 8_192;
@@ -29,11 +32,20 @@ const DISPLAY_FLUSH_SLICE: usize = 16;
 const DISPLAY_FLUSH_PACKET_BUDGET: usize = 256;
 const DISPLAY_QUEUE_LIMIT: usize = 65_536;
 const SPACE_HINT: &str = "Space で表示を一時停止/再開  Ctrl-C で終了";
+const POLL_FRAME_PACKET_LEN: usize = 5;
+const POLL_FRAME_PAYLOAD_LEN: usize = 3;
+const POLL_GREETING_FORMAT_NAME: &str = "PollGreeting";
+const POLL_RESPONSE_FORMAT_NAME: &str = "PollResponse";
+const POLL_GREETING_HEADER: [u8; 2] = *b"HI";
+const POLL_RESPONSE_HEADER: [u8; 2] = *b"OK";
 
 #[derive(Debug, Default)]
 struct XbeeTestCliOptions {
     ports: Vec<XbeeTestPortBinding>,
     mode: Option<String>,
+    poll_rate_hz: Option<u32>,
+    base_real_percent: Option<u32>,
+    remote_real_percent: Option<u32>,
     au_rate_hz: Option<u32>,
     ru_rate_hz: Option<u32>,
     ad_rate_hz: Option<u32>,
@@ -61,6 +73,9 @@ struct XbeeTestSettings {
     base_port: ResolvedXbeeTestPort,
     remote_port: ResolvedXbeeTestPort,
     mode: XbeeTestMode,
+    poll_rate_hz: u32,
+    base_real_percent: u32,
+    remote_real_percent: u32,
     au_rate_hz: u32,
     ru_rate_hz: u32,
     ad_rate_hz: u32,
@@ -73,6 +88,11 @@ struct XbeeTestRunResult {
     base_port: ResolvedXbeeTestPort,
     remote_port: ResolvedXbeeTestPort,
     mode: XbeeTestMode,
+    poll_rate_hz: u32,
+    base_real_percent: u32,
+    remote_real_percent: u32,
+    greeting_stats: PacketMatchStats,
+    response_stats: PacketMatchStats,
     au_rate_hz: u32,
     ru_rate_hz: u32,
     ad_rate_hz: u32,
@@ -89,6 +109,7 @@ struct XbeeTestRunResult {
 enum XbeeTestMode {
     Flood,
     PingPong,
+    Polling,
 }
 
 impl XbeeTestMode {
@@ -96,8 +117,9 @@ impl XbeeTestMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "flood" => Ok(Self::Flood),
             "ping-pong" | "pingpong" => Ok(Self::PingPong),
+            "polling" | "poll" => Ok(Self::Polling),
             other => Err(format!(
-                "unsupported xbee-test mode: {other} (expected `flood` or `ping-pong`)"
+                "unsupported xbee-test mode: {other} (expected `flood`, `ping-pong`, or `polling`)"
             )),
         }
     }
@@ -106,6 +128,32 @@ impl XbeeTestMode {
         match self {
             Self::Flood => "flood",
             Self::PingPong => "ping-pong",
+            Self::Polling => "polling",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum XbeeTestFrameKind {
+    Format(OutputFormat),
+    PollGreeting,
+    PollResponse,
+}
+
+impl XbeeTestFrameKind {
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Format(format) => format.display_name(),
+            Self::PollGreeting => POLL_GREETING_FORMAT_NAME,
+            Self::PollResponse => POLL_RESPONSE_FORMAT_NAME,
+        }
+    }
+
+    fn session_format_name(self) -> &'static str {
+        match self {
+            Self::Format(format) => format.as_str(),
+            Self::PollGreeting => POLL_GREETING_FORMAT_NAME,
+            Self::PollResponse => POLL_RESPONSE_FORMAT_NAME,
         }
     }
 }
@@ -140,12 +188,14 @@ impl PacketDefinition {
     }
 }
 
-fn xbee_test_format_label(format: OutputFormat) -> &'static str {
-    match format {
-        OutputFormat::PacketAcV6 => "AU(PacketACv6)",
-        OutputFormat::RoverUpGeneral => "RU(RoverUpGeneral)",
-        OutputFormat::PacketJfV1 => "AD(PacketJFv1)",
-        OutputFormat::RoverDownGeneral => "RD(RoverDownGeneral)",
+fn xbee_test_format_label(kind: XbeeTestFrameKind) -> &'static str {
+    match kind {
+        XbeeTestFrameKind::Format(OutputFormat::PacketAcV6) => "AU(PacketACv6)",
+        XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => "RU(RoverUpGeneral)",
+        XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => "AD(PacketJFv1)",
+        XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => "RD(RoverDownGeneral)",
+        XbeeTestFrameKind::PollGreeting => "PollGreeting",
+        XbeeTestFrameKind::PollResponse => "PollResponse",
     }
 }
 
@@ -177,14 +227,14 @@ impl PacketMatchStats {
 }
 
 struct PacketStreamDecoder {
-    format: OutputFormat,
+    kind: XbeeTestFrameKind,
     buffer: Vec<u8>,
 }
 
 impl PacketStreamDecoder {
-    fn new(format: OutputFormat) -> Self {
+    fn new(kind: XbeeTestFrameKind) -> Self {
         Self {
-            format,
+            kind,
             buffer: Vec::new(),
         }
     }
@@ -195,15 +245,15 @@ impl PacketStreamDecoder {
         let mut invalid_packets = 0u64;
 
         loop {
-            if self.buffer.len() < packet_start_len(self.format) {
+            if self.buffer.len() < packet_start_len(self.kind) {
                 break;
             }
 
-            let Some(header_index) = find_packet_start(&self.buffer, self.format) else {
+            let Some(header_index) = find_packet_start(&self.buffer, self.kind) else {
                 let keep_len = self
                     .buffer
                     .len()
-                    .min(packet_start_len(self.format).saturating_sub(1));
+                    .min(packet_start_len(self.kind).saturating_sub(1));
                 let drain_len = self.buffer.len().saturating_sub(keep_len);
                 if drain_len > 0 {
                     self.buffer.drain(..drain_len);
@@ -215,12 +265,12 @@ impl PacketStreamDecoder {
                 self.buffer.drain(..header_index);
             }
 
-            if self.buffer.len() < self.format.packet_len() {
+            if self.buffer.len() < packet_len(self.kind) {
                 break;
             }
 
-            if packet_matches(self.format, &self.buffer[..self.format.packet_len()]) {
-                packets.push(self.buffer.drain(..self.format.packet_len()).collect());
+            if packet_matches(self.kind, &self.buffer[..packet_len(self.kind)]) {
+                packets.push(self.buffer.drain(..packet_len(self.kind)).collect());
             } else {
                 self.buffer.drain(..1);
                 invalid_packets = invalid_packets.saturating_add(1);
@@ -234,30 +284,50 @@ impl PacketStreamDecoder {
     }
 }
 
-fn packet_start_len(format: OutputFormat) -> usize {
-    match format {
-        OutputFormat::PacketAcV6 | OutputFormat::PacketJfV1 => 2,
-        OutputFormat::RoverUpGeneral => 6,
-        OutputFormat::RoverDownGeneral => 4,
+fn packet_len(kind: XbeeTestFrameKind) -> usize {
+    match kind {
+        XbeeTestFrameKind::Format(format) => format.packet_len(),
+        XbeeTestFrameKind::PollGreeting | XbeeTestFrameKind::PollResponse => POLL_FRAME_PACKET_LEN,
     }
 }
 
-fn find_packet_start(buffer: &[u8], format: OutputFormat) -> Option<usize> {
-    match format {
-        OutputFormat::PacketAcV6 => find_header(buffer, b"AC"),
-        OutputFormat::PacketJfV1 => find_header(buffer, b"JF"),
-        OutputFormat::RoverUpGeneral => find_rover_up_start(buffer),
-        OutputFormat::RoverDownGeneral => find_rover_down_start(buffer),
+fn packet_start_len(kind: XbeeTestFrameKind) -> usize {
+    match kind {
+        XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1)
+        | XbeeTestFrameKind::PollGreeting
+        | XbeeTestFrameKind::PollResponse => 2,
+        XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => 6,
+        XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => 4,
     }
 }
 
-fn packet_matches(format: OutputFormat, packet: &[u8]) -> bool {
-    match format {
-        OutputFormat::PacketAcV6 | OutputFormat::PacketJfV1 => {
+fn find_packet_start(buffer: &[u8], kind: XbeeTestFrameKind) -> Option<usize> {
+    match kind {
+        XbeeTestFrameKind::Format(OutputFormat::PacketAcV6) => find_header(buffer, b"AC"),
+        XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => find_header(buffer, b"JF"),
+        XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => find_rover_up_start(buffer),
+        XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => find_rover_down_start(buffer),
+        XbeeTestFrameKind::PollGreeting => find_header(buffer, &POLL_GREETING_HEADER),
+        XbeeTestFrameKind::PollResponse => find_header(buffer, &POLL_RESPONSE_HEADER),
+    }
+}
+
+fn packet_matches(kind: XbeeTestFrameKind, packet: &[u8]) -> bool {
+    match kind {
+        XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => {
+            let XbeeTestFrameKind::Format(format) = kind else {
+                unreachable!()
+            };
             packet_is_valid(packet, PacketDefinition::for_format(format))
         }
-        OutputFormat::RoverUpGeneral => matches_rover_up_packet(packet),
-        OutputFormat::RoverDownGeneral => matches_rover_down_packet(packet),
+        XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => matches_rover_up_packet(packet),
+        XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => {
+            matches_rover_down_packet(packet)
+        }
+        XbeeTestFrameKind::PollGreeting => matches_poll_frame(packet, &POLL_GREETING_HEADER),
+        XbeeTestFrameKind::PollResponse => matches_poll_frame(packet, &POLL_RESPONSE_HEADER),
     }
 }
 
@@ -284,6 +354,66 @@ fn find_rover_down_start(buffer: &[u8]) -> Option<usize> {
 struct DecodedPacketBatch {
     packets: Vec<Vec<u8>>,
     invalid_packets: u64,
+}
+
+fn build_poll_frame(header: &[u8; 2], seq: u8) -> Vec<u8> {
+    let mut packet = [0u8; POLL_FRAME_PACKET_LEN];
+    packet[0] = header[0];
+    packet[1] = header[1];
+    packet[2] = seq;
+    let crc = crc16_ccitt_false(&packet[..POLL_FRAME_PAYLOAD_LEN]).to_le_bytes();
+    packet[3] = crc[0];
+    packet[4] = crc[1];
+    packet.to_vec()
+}
+
+fn matches_poll_frame(bytes: &[u8], header: &[u8; 2]) -> bool {
+    if bytes.len() != POLL_FRAME_PACKET_LEN || &bytes[..2] != header {
+        return false;
+    }
+
+    let expected_crc = crc16_ccitt_false(&bytes[..POLL_FRAME_PAYLOAD_LEN]);
+    let actual_crc = u16::from_le_bytes([
+        bytes[POLL_FRAME_PAYLOAD_LEN],
+        bytes[POLL_FRAME_PAYLOAD_LEN + 1],
+    ]);
+    expected_crc == actual_crc
+}
+
+#[derive(Default)]
+struct PollGreetingDummyGenerator {
+    seq: u8,
+}
+
+impl DummyPayloadGenerator for PollGreetingDummyGenerator {
+    fn next_payload(&mut self) -> Result<Vec<u8>, String> {
+        let payload = build_poll_frame(&POLL_GREETING_HEADER, self.seq);
+        self.seq = self.seq.wrapping_add(1);
+        Ok(payload)
+    }
+}
+
+#[derive(Default)]
+struct PollResponseDummyGenerator {
+    seq: u8,
+}
+
+impl DummyPayloadGenerator for PollResponseDummyGenerator {
+    fn next_payload(&mut self) -> Result<Vec<u8>, String> {
+        let payload = build_poll_frame(&POLL_RESPONSE_HEADER, self.seq);
+        self.seq = self.seq.wrapping_add(1);
+        Ok(payload)
+    }
+}
+
+fn create_xbee_test_generator(
+    kind: XbeeTestFrameKind,
+) -> Result<Box<dyn DummyPayloadGenerator>, String> {
+    match kind {
+        XbeeTestFrameKind::Format(format) => format.create_dummy_generator(),
+        XbeeTestFrameKind::PollGreeting => Ok(Box::new(PollGreetingDummyGenerator::default())),
+        XbeeTestFrameKind::PollResponse => Ok(Box::new(PollResponseDummyGenerator::default())),
+    }
 }
 
 struct ExpectedPacketTracker {
@@ -353,7 +483,7 @@ struct ObservedInput {
 
 struct ObservedInputFormatState {
     from_port_id: &'static str,
-    format: OutputFormat,
+    kind: XbeeTestFrameKind,
     decoder: PacketStreamDecoder,
     tracker: ExpectedPacketTracker,
     rate_samples: VecDeque<PacketRateSample>,
@@ -364,18 +494,18 @@ impl ObservedInput {
         input_id: &'static str,
         input_port: String,
         from_port_id: &'static str,
-        formats: Vec<OutputFormat>,
+        kinds: Vec<XbeeTestFrameKind>,
     ) -> Self {
         Self {
             input_id,
             input_port,
             display_queue: PacketDisplayQueue::new(),
-            format_states: formats
+            format_states: kinds
                 .into_iter()
-                .map(|format| ObservedInputFormatState {
+                .map(|kind| ObservedInputFormatState {
                     from_port_id,
-                    format,
-                    decoder: PacketStreamDecoder::new(format),
+                    kind,
+                    decoder: PacketStreamDecoder::new(kind),
                     tracker: ExpectedPacketTracker::new(),
                     rate_samples: VecDeque::new(),
                 })
@@ -383,11 +513,11 @@ impl ObservedInput {
         }
     }
 
-    fn expect(&mut self, format: OutputFormat, packet: Vec<u8>) {
+    fn expect(&mut self, kind: XbeeTestFrameKind, packet: Vec<u8>) {
         if let Some(state) = self
             .format_states
             .iter_mut()
-            .find(|state| state.format == format)
+            .find(|state| state.kind == kind)
         {
             state.tracker.expect(packet);
         }
@@ -416,8 +546,8 @@ impl ObservedInput {
                 observed.valid_byte_len += valid_byte_len;
                 observed.valid_packet_count += valid_packet_count;
                 observed
-                    .per_format_totals
-                    .insert(state.format, (valid_byte_len, valid_packet_count));
+                    .per_kind_totals
+                    .insert(state.kind, (valid_byte_len, valid_packet_count));
             }
             state.prune_rate_samples(now);
         }
@@ -434,17 +564,17 @@ impl ObservedInput {
             .flush_input_batch(session, &self.input_port, max_packets)
     }
 
-    fn status_lines(&self, target_rates_hz: &BTreeMap<OutputFormat, u32>) -> Vec<String> {
+    fn status_lines(&self, target_rates_hz: &BTreeMap<XbeeTestFrameKind, f64>) -> Vec<String> {
         self.format_states
             .iter()
             .map(|state| state.status_line(self.input_id, target_rates_hz))
             .collect()
     }
 
-    fn stats(&self, format: OutputFormat) -> PacketMatchStats {
+    fn stats(&self, kind: XbeeTestFrameKind) -> PacketMatchStats {
         self.format_states
             .iter()
-            .find(|state| state.format == format)
+            .find(|state| state.kind == kind)
             .map(|state| state.tracker.stats())
             .unwrap_or_default()
     }
@@ -474,17 +604,18 @@ impl ObservedInputFormatState {
             .sum::<usize>() as f64
     }
 
-    fn status_line(&self, input_id: &str, target_rates_hz: &BTreeMap<OutputFormat, u32>) -> String {
+    fn status_line(
+        &self,
+        input_id: &str,
+        target_rates_hz: &BTreeMap<XbeeTestFrameKind, f64>,
+    ) -> String {
         let stats = self.tracker.stats();
-        let target_rate_hz = target_rates_hz
-            .get(&self.format)
-            .copied()
-            .unwrap_or_default();
+        let target_rate_hz = target_rates_hz.get(&self.kind).copied().unwrap_or_default();
         format!(
-            "{} <- {}  format={}  target={} Hz  rx={:.1} Hz {:.0} B/s  matched={}  err={:.2}%  pending={}  miss={}  bad={}  unexp={}  overflow={}",
+            "{} <- {}  format={}  target={:.1} Hz  rx={:.1} Hz {:.0} B/s  matched={}  err={:.2}%  pending={}  miss={}  bad={}  unexp={}  overflow={}",
             input_id,
             self.from_port_id,
-            xbee_test_format_label(self.format),
+            xbee_test_format_label(self.kind),
             target_rate_hz,
             self.rx_rate_hz(),
             self.rx_bytes_per_second(),
@@ -509,7 +640,7 @@ struct PacketRateSample {
 struct ObservedInputBatch {
     valid_byte_len: usize,
     valid_packet_count: usize,
-    per_format_totals: BTreeMap<OutputFormat, (usize, usize)>,
+    per_kind_totals: BTreeMap<XbeeTestFrameKind, (usize, usize)>,
 }
 
 struct PacketDisplayQueue {
@@ -576,42 +707,117 @@ impl PacketDisplayQueue {
     }
 }
 
-struct ScheduledSender {
+struct GeneratedSender {
     output_id: &'static str,
     target_input_id: &'static str,
-    format: OutputFormat,
-    target_rate_hz: u32,
-    period: Duration,
-    next_send_at: Instant,
+    kind: XbeeTestFrameKind,
     generator: Box<dyn DummyPayloadGenerator>,
     sent_packets: u64,
     write_errors: u64,
     last_error: Option<String>,
 }
 
+impl GeneratedSender {
+    fn new(
+        output_id: &'static str,
+        target_input_id: &'static str,
+        kind: XbeeTestFrameKind,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            output_id,
+            target_input_id,
+            kind,
+            generator: create_xbee_test_generator(kind)?,
+            sent_packets: 0,
+            write_errors: 0,
+            last_error: None,
+        })
+    }
+
+    fn send_once(
+        &mut self,
+        session: &mut SessionRuntime,
+        input: &mut ObservedInput,
+        output: &mut DisplayedOutput,
+    ) -> bool {
+        let payload = match self.generator.next_payload() {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.write_errors = self.write_errors.saturating_add(1);
+                self.last_error = Some(error);
+                return false;
+            }
+        };
+
+        match session.write_output(self.output_id, &payload) {
+            Ok(()) => {
+                session.record_output_sample(&output.port, payload.len(), 1);
+                session.record_output_format_sample(
+                    &output.port,
+                    self.kind.display_name(),
+                    payload.len(),
+                    1,
+                );
+                output.display_queue.enqueue(payload.clone());
+                input.expect(self.kind, payload);
+                self.sent_packets = self.sent_packets.saturating_add(1);
+                self.last_error = None;
+                true
+            }
+            Err(error) => {
+                self.write_errors = self.write_errors.saturating_add(1);
+                self.last_error = Some(error);
+                false
+            }
+        }
+    }
+}
+
+struct SendSchedule {
+    target_rate_hz: u32,
+    period: Duration,
+    next_send_at: Instant,
+}
+
+impl SendSchedule {
+    fn new(target_rate_hz: u32, started_at: Instant, label: &str) -> Result<Self, String> {
+        if target_rate_hz == 0 {
+            return Err(format!("{label} rate must be greater than 0"));
+        }
+
+        Ok(Self {
+            target_rate_hz,
+            period: Duration::from_secs_f64(1.0 / target_rate_hz as f64),
+            next_send_at: started_at,
+        })
+    }
+
+    fn take_due_count(&mut self, now: Instant) -> usize {
+        let mut due_count = 0usize;
+        while now >= self.next_send_at {
+            due_count += 1;
+            self.next_send_at += self.period;
+        }
+        due_count
+    }
+}
+
+struct ScheduledSender {
+    sender: GeneratedSender,
+    schedule: SendSchedule,
+}
+
 impl ScheduledSender {
     fn new(
         output_id: &'static str,
         target_input_id: &'static str,
-        format: OutputFormat,
+        kind: XbeeTestFrameKind,
         target_rate_hz: u32,
         started_at: Instant,
     ) -> Result<Self, String> {
-        if target_rate_hz == 0 {
-            return Err(format!("{} rate must be greater than 0", format.as_str()));
-        }
-
         Ok(Self {
-            output_id,
-            target_input_id,
-            format,
-            target_rate_hz,
-            period: Duration::from_secs_f64(1.0 / target_rate_hz as f64),
-            next_send_at: started_at,
-            generator: format.create_dummy_generator()?,
-            sent_packets: 0,
-            write_errors: 0,
-            last_error: None,
+            sender: GeneratedSender::new(output_id, target_input_id, kind)?,
+            schedule: SendSchedule::new(target_rate_hz, started_at, kind.display_name())?,
         })
     }
 
@@ -622,9 +828,8 @@ impl ScheduledSender {
         input: &mut ObservedInput,
         output: &mut DisplayedOutput,
     ) {
-        while now >= self.next_send_at {
-            self.send_once(session, input, output);
-            self.next_send_at += self.period;
+        for _ in 0..self.schedule.take_due_count(now) {
+            self.sender.send_once(session, input, output);
         }
     }
 
@@ -633,52 +838,199 @@ impl ScheduledSender {
         session: &mut SessionRuntime,
         input: &mut ObservedInput,
         output: &mut DisplayedOutput,
-    ) {
-        let payload = match self.generator.next_payload() {
-            Ok(payload) => payload,
-            Err(error) => {
-                self.write_errors = self.write_errors.saturating_add(1);
-                self.last_error = Some(error);
-                return;
-            }
-        };
-
-        match session.write_output(self.output_id, &payload) {
-            Ok(()) => {
-                session.record_output_sample(&output.port, payload.len(), 1);
-                session.record_output_format_sample(
-                    &output.port,
-                    self.format.display_name(),
-                    payload.len(),
-                    1,
-                );
-                output.display_queue.enqueue(payload.clone());
-                input.expect(self.format, payload);
-                self.sent_packets = self.sent_packets.saturating_add(1);
-                self.last_error = None;
-            }
-            Err(error) => {
-                self.write_errors = self.write_errors.saturating_add(1);
-                self.last_error = Some(error);
-            }
-        }
+    ) -> bool {
+        self.sender.send_once(session, input, output)
     }
 
     fn status_line(&self) -> String {
         let mut line = format!(
             "{} -> {}  format={}  target={} Hz  sent={}  tx_err={}",
-            self.output_id,
-            self.target_input_id,
-            xbee_test_format_label(self.format),
-            self.target_rate_hz,
-            self.sent_packets,
-            self.write_errors
+            self.sender.output_id,
+            self.sender.target_input_id,
+            xbee_test_format_label(self.sender.kind),
+            self.schedule.target_rate_hz,
+            self.sender.sent_packets,
+            self.sender.write_errors
         );
-        if let Some(error) = &self.last_error {
+        if let Some(error) = &self.sender.last_error {
             line.push_str("  last_error=");
             line.push_str(error);
         }
         line
+    }
+
+    fn output_id(&self) -> &'static str {
+        self.sender.output_id
+    }
+
+    fn target_input_id(&self) -> &'static str {
+        self.sender.target_input_id
+    }
+
+    fn kind(&self) -> XbeeTestFrameKind {
+        self.sender.kind
+    }
+
+    fn target_rate_hz(&self) -> u32 {
+        self.schedule.target_rate_hz
+    }
+
+    fn sent_packets(&self) -> u64 {
+        self.sender.sent_packets
+    }
+
+    fn write_errors(&self) -> u64 {
+        self.sender.write_errors
+    }
+
+    fn last_error(&self) -> Option<&str> {
+        self.sender.last_error.as_deref()
+    }
+}
+
+struct SimpleRng {
+    state: u64,
+}
+
+impl Default for SimpleRng {
+    fn default() -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let seed = nanos ^ ((std::process::id() as u64) << 32) ^ 0x9E37_79B9_7F4A_7C15;
+        Self {
+            state: if seed == 0 { 1 } else { seed },
+        }
+    }
+}
+
+impl SimpleRng {
+    fn next_u64(&mut self) -> u64 {
+        let mut value = self.state;
+        value ^= value >> 12;
+        value ^= value << 25;
+        value ^= value >> 27;
+        self.state = value;
+        value.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn percent_chance(&mut self, percent: u32) -> bool {
+        if percent == 0 {
+            return false;
+        }
+        if percent >= 100 {
+            return true;
+        }
+
+        self.next_u64() % 100 < percent as u64
+    }
+}
+
+struct PollingModeState {
+    poll_schedule: SendSchedule,
+    base_poll_sender: GeneratedSender,
+    remote_poll_sender: GeneratedSender,
+    base_real_percent: u32,
+    remote_real_percent: u32,
+    pending_greeting_replies: usize,
+    pending_real_replies: usize,
+    base_greeting_cycles: u64,
+    base_real_cycles: u64,
+    remote_response_cycles: u64,
+    remote_real_cycles: u64,
+    rng: SimpleRng,
+}
+
+impl PollingModeState {
+    fn new(settings: &XbeeTestSettings, started_at: Instant) -> Result<Self, String> {
+        Ok(Self {
+            poll_schedule: SendSchedule::new(
+                settings.poll_rate_hz,
+                started_at,
+                POLL_GREETING_FORMAT_NAME,
+            )?,
+            base_poll_sender: GeneratedSender::new(
+                BASE_POLL_OUTPUT_ID,
+                REMOTE_PORT_ID,
+                XbeeTestFrameKind::PollGreeting,
+            )?,
+            remote_poll_sender: GeneratedSender::new(
+                REMOTE_POLL_OUTPUT_ID,
+                BASE_PORT_ID,
+                XbeeTestFrameKind::PollResponse,
+            )?,
+            base_real_percent: settings.base_real_percent,
+            remote_real_percent: settings.remote_real_percent,
+            pending_greeting_replies: 0,
+            pending_real_replies: 0,
+            base_greeting_cycles: 0,
+            base_real_cycles: 0,
+            remote_response_cycles: 0,
+            remote_real_cycles: 0,
+            rng: SimpleRng::default(),
+        })
+    }
+
+    fn take_due_polls(&mut self, now: Instant) -> usize {
+        self.poll_schedule.take_due_count(now)
+    }
+
+    fn base_send_real(&mut self) -> bool {
+        self.rng.percent_chance(self.base_real_percent)
+    }
+
+    fn remote_send_real(&mut self) -> bool {
+        self.rng.percent_chance(self.remote_real_percent)
+    }
+
+    fn note_base_greeting_cycle(&mut self, sent: bool) {
+        if sent {
+            self.pending_greeting_replies += 1;
+            self.base_greeting_cycles = self.base_greeting_cycles.saturating_add(1);
+        }
+    }
+
+    fn note_base_real_cycle(&mut self, sent: bool) {
+        if sent {
+            self.pending_real_replies += 1;
+            self.base_real_cycles = self.base_real_cycles.saturating_add(1);
+        }
+    }
+
+    fn consume_ready_remote_replies(
+        &mut self,
+        observed: &BTreeMap<XbeeTestFrameKind, (usize, usize)>,
+    ) -> usize {
+        let greeting_count = observed
+            .get(&XbeeTestFrameKind::PollGreeting)
+            .map(|(_, packet_count)| *packet_count)
+            .unwrap_or(0);
+        let au_count = observed
+            .get(&XbeeTestFrameKind::Format(OutputFormat::PacketAcV6))
+            .map(|(_, packet_count)| *packet_count)
+            .unwrap_or(0);
+        let ru_count = observed
+            .get(&XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral))
+            .map(|(_, packet_count)| *packet_count)
+            .unwrap_or(0);
+
+        let greeting_ready = greeting_count.min(self.pending_greeting_replies);
+        self.pending_greeting_replies -= greeting_ready;
+
+        let real_ready = au_count.max(ru_count).min(self.pending_real_replies);
+        self.pending_real_replies -= real_ready;
+
+        greeting_ready + real_ready
+    }
+
+    fn note_remote_response_cycle(&mut self, sent: bool, used_real_packets: bool) {
+        if sent {
+            self.remote_response_cycles = self.remote_response_cycles.saturating_add(1);
+            if used_real_packets {
+                self.remote_real_cycles = self.remote_real_cycles.saturating_add(1);
+            }
+        }
     }
 }
 
@@ -717,6 +1069,9 @@ struct XbeeTestState {
     base_port: ResolvedXbeeTestPort,
     remote_port: ResolvedXbeeTestPort,
     mode: XbeeTestMode,
+    poll_rate_hz: u32,
+    base_real_percent: u32,
+    remote_real_percent: u32,
     log_path_display: String,
     logging_enabled: bool,
     display_fps: f64,
@@ -724,6 +1079,7 @@ struct XbeeTestState {
     ru_sender: ScheduledSender,
     ad_sender: ScheduledSender,
     rd_sender: ScheduledSender,
+    polling: Option<PollingModeState>,
     base_output: DisplayedOutput,
     remote_output: DisplayedOutput,
     base_input: ObservedInput,
@@ -738,54 +1094,73 @@ impl XbeeTestState {
         log_path_display: String,
         started_at: Instant,
     ) -> Result<Self, String> {
+        let mut base_input_kinds = vec![
+            XbeeTestFrameKind::Format(OutputFormat::PacketJfV1),
+            XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral),
+        ];
+        let mut remote_input_kinds = vec![
+            XbeeTestFrameKind::Format(OutputFormat::PacketAcV6),
+            XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral),
+        ];
+        if settings.mode == XbeeTestMode::Polling {
+            base_input_kinds.insert(0, XbeeTestFrameKind::PollResponse);
+            remote_input_kinds.insert(0, XbeeTestFrameKind::PollGreeting);
+        }
+
         Ok(Self {
             base_port: settings.base_port.clone(),
             remote_port: settings.remote_port.clone(),
             mode: settings.mode,
+            poll_rate_hz: settings.poll_rate_hz,
+            base_real_percent: settings.base_real_percent,
+            remote_real_percent: settings.remote_real_percent,
             log_path_display,
             logging_enabled: settings.logging_enabled,
             display_fps: 0.0,
             au_sender: ScheduledSender::new(
                 BASE_AU_OUTPUT_ID,
                 REMOTE_PORT_ID,
-                OutputFormat::PacketAcV6,
+                XbeeTestFrameKind::Format(OutputFormat::PacketAcV6),
                 settings.au_rate_hz,
                 started_at,
             )?,
             ru_sender: ScheduledSender::new(
                 BASE_RU_OUTPUT_ID,
                 REMOTE_PORT_ID,
-                OutputFormat::RoverUpGeneral,
+                XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral),
                 settings.ru_rate_hz,
                 started_at,
             )?,
             ad_sender: ScheduledSender::new(
                 REMOTE_AD_OUTPUT_ID,
                 BASE_PORT_ID,
-                OutputFormat::PacketJfV1,
+                XbeeTestFrameKind::Format(OutputFormat::PacketJfV1),
                 settings.ad_rate_hz,
                 started_at,
             )?,
             rd_sender: ScheduledSender::new(
                 REMOTE_RD_OUTPUT_ID,
                 BASE_PORT_ID,
-                OutputFormat::RoverDownGeneral,
+                XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral),
                 settings.rd_rate_hz,
                 started_at,
             )?,
+            polling: (settings.mode == XbeeTestMode::Polling)
+                .then(|| PollingModeState::new(settings, started_at))
+                .transpose()?,
             base_output: DisplayedOutput::new(settings.base_port.port.clone()),
             remote_output: DisplayedOutput::new(settings.remote_port.port.clone()),
             base_input: ObservedInput::new(
                 BASE_PORT_ID,
                 settings.base_port.port.clone(),
                 REMOTE_PORT_ID,
-                vec![OutputFormat::PacketJfV1, OutputFormat::RoverDownGeneral],
+                base_input_kinds,
             ),
             remote_input: ObservedInput::new(
                 REMOTE_PORT_ID,
                 settings.remote_port.port.clone(),
                 BASE_PORT_ID,
-                vec![OutputFormat::PacketAcV6, OutputFormat::RoverUpGeneral],
+                remote_input_kinds,
             ),
             last_status_update: started_at
                 .checked_sub(STATUS_INTERVAL)
@@ -800,41 +1175,21 @@ impl XbeeTestState {
             BASE_PORT_ID => {
                 let batch = self.base_input.observe(&frame.bytes, now);
                 if batch.valid_packet_count > 0 {
-                    session.record_input_sample(
-                        &self.base_input.input_port,
-                        batch.valid_byte_len,
-                        batch.valid_packet_count,
-                    );
-                    for (format, (byte_len, packet_count)) in batch.per_format_totals {
-                        session.record_input_format_sample(
-                            &self.base_input.input_port,
-                            format.display_name(),
-                            byte_len,
-                            packet_count,
-                        );
-                    }
+                    Self::record_observed_input_batch(session, &self.base_input.input_port, &batch);
                 }
             }
             REMOTE_PORT_ID => {
                 let batch = self.remote_input.observe(&frame.bytes, now);
                 if batch.valid_packet_count > 0 {
-                    session.record_input_sample(
+                    Self::record_observed_input_batch(
+                        session,
                         &self.remote_input.input_port,
-                        batch.valid_byte_len,
-                        batch.valid_packet_count,
+                        &batch,
                     );
-                    for (&format, &(byte_len, packet_count)) in &batch.per_format_totals {
-                        session.record_input_format_sample(
-                            &self.remote_input.input_port,
-                            format.display_name(),
-                            byte_len,
-                            packet_count,
-                        );
-                    }
                     if self.mode == XbeeTestMode::PingPong {
                         let ac_count = batch
-                            .per_format_totals
-                            .get(&OutputFormat::PacketAcV6)
+                            .per_kind_totals
+                            .get(&XbeeTestFrameKind::Format(OutputFormat::PacketAcV6))
                             .map(|(_, packet_count)| *packet_count)
                             .unwrap_or(0);
                         for _ in 0..ac_count {
@@ -845,8 +1200,8 @@ impl XbeeTestState {
                             );
                         }
                         let up_count = batch
-                            .per_format_totals
-                            .get(&OutputFormat::RoverUpGeneral)
+                            .per_kind_totals
+                            .get(&XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral))
                             .map(|(_, packet_count)| *packet_count)
                             .unwrap_or(0);
                         for _ in 0..up_count {
@@ -855,6 +1210,17 @@ impl XbeeTestState {
                                 &mut self.base_input,
                                 &mut self.remote_output,
                             );
+                        }
+                    } else if self.mode == XbeeTestMode::Polling {
+                        let reply_count = self
+                            .polling
+                            .as_mut()
+                            .map(|polling| {
+                                polling.consume_ready_remote_replies(&batch.per_kind_totals)
+                            })
+                            .unwrap_or(0);
+                        for _ in 0..reply_count {
+                            self.send_polling_remote_reply(session);
                         }
                     }
                 }
@@ -865,31 +1231,57 @@ impl XbeeTestState {
 
     fn on_tick(&mut self, session: &mut SessionRuntime) -> Result<(), String> {
         let now = Instant::now();
-        self.au_sender.send_due_packets(
-            now,
-            session,
-            &mut self.remote_input,
-            &mut self.base_output,
-        );
-        self.ru_sender.send_due_packets(
-            now,
-            session,
-            &mut self.remote_input,
-            &mut self.base_output,
-        );
-        if self.mode == XbeeTestMode::Flood {
-            self.ad_sender.send_due_packets(
-                now,
-                session,
-                &mut self.base_input,
-                &mut self.remote_output,
-            );
-            self.rd_sender.send_due_packets(
-                now,
-                session,
-                &mut self.base_input,
-                &mut self.remote_output,
-            );
+        match self.mode {
+            XbeeTestMode::Flood => {
+                self.au_sender.send_due_packets(
+                    now,
+                    session,
+                    &mut self.remote_input,
+                    &mut self.base_output,
+                );
+                self.ru_sender.send_due_packets(
+                    now,
+                    session,
+                    &mut self.remote_input,
+                    &mut self.base_output,
+                );
+                self.ad_sender.send_due_packets(
+                    now,
+                    session,
+                    &mut self.base_input,
+                    &mut self.remote_output,
+                );
+                self.rd_sender.send_due_packets(
+                    now,
+                    session,
+                    &mut self.base_input,
+                    &mut self.remote_output,
+                );
+            }
+            XbeeTestMode::PingPong => {
+                self.au_sender.send_due_packets(
+                    now,
+                    session,
+                    &mut self.remote_input,
+                    &mut self.base_output,
+                );
+                self.ru_sender.send_due_packets(
+                    now,
+                    session,
+                    &mut self.remote_input,
+                    &mut self.base_output,
+                );
+            }
+            XbeeTestMode::Polling => {
+                let due_polls = self
+                    .polling
+                    .as_mut()
+                    .map(|polling| polling.take_due_polls(now))
+                    .unwrap_or(0);
+                for _ in 0..due_polls {
+                    self.send_poll_cycle(session);
+                }
+            }
         }
 
         self.flush_display_queues(session)?;
@@ -904,6 +1296,86 @@ impl XbeeTestState {
             }
         }
         Ok(())
+    }
+
+    fn send_poll_cycle(&mut self, session: &mut SessionRuntime) {
+        let send_real = self
+            .polling
+            .as_mut()
+            .map(PollingModeState::base_send_real)
+            .unwrap_or(false);
+
+        if send_real {
+            let sent_au =
+                self.au_sender
+                    .send_once(session, &mut self.remote_input, &mut self.base_output);
+            let sent_ru =
+                self.ru_sender
+                    .send_once(session, &mut self.remote_input, &mut self.base_output);
+            if let Some(polling) = self.polling.as_mut() {
+                polling.note_base_real_cycle(sent_au || sent_ru);
+            }
+        } else {
+            let sent = {
+                let polling = self.polling.as_mut().expect("polling state exists");
+                polling.base_poll_sender.send_once(
+                    session,
+                    &mut self.remote_input,
+                    &mut self.base_output,
+                )
+            };
+            if let Some(polling) = self.polling.as_mut() {
+                polling.note_base_greeting_cycle(sent);
+            }
+        }
+    }
+
+    fn send_polling_remote_reply(&mut self, session: &mut SessionRuntime) {
+        let send_real = self
+            .polling
+            .as_mut()
+            .map(PollingModeState::remote_send_real)
+            .unwrap_or(false);
+
+        if send_real {
+            let sent_ad =
+                self.ad_sender
+                    .send_once(session, &mut self.base_input, &mut self.remote_output);
+            let sent_rd =
+                self.rd_sender
+                    .send_once(session, &mut self.base_input, &mut self.remote_output);
+            if let Some(polling) = self.polling.as_mut() {
+                polling.note_remote_response_cycle(sent_ad || sent_rd, true);
+            }
+        } else {
+            let sent = {
+                let polling = self.polling.as_mut().expect("polling state exists");
+                polling.remote_poll_sender.send_once(
+                    session,
+                    &mut self.base_input,
+                    &mut self.remote_output,
+                )
+            };
+            if let Some(polling) = self.polling.as_mut() {
+                polling.note_remote_response_cycle(sent, false);
+            }
+        }
+    }
+
+    fn record_observed_input_batch(
+        session: &mut SessionRuntime,
+        input_port: &str,
+        batch: &ObservedInputBatch,
+    ) {
+        session.record_input_sample(input_port, batch.valid_byte_len, batch.valid_packet_count);
+        for (&kind, &(byte_len, packet_count)) in &batch.per_kind_totals {
+            session.record_input_format_sample(
+                input_port,
+                kind.display_name(),
+                byte_len,
+                packet_count,
+            );
+        }
     }
 
     fn flush_display_queues(&mut self, session: &mut SessionRuntime) -> Result<(), String> {
@@ -952,47 +1424,102 @@ impl XbeeTestState {
     fn build_header_lines(&self) -> Vec<String> {
         let remote_targets = self.remote_target_rates();
         let base_targets = self.base_target_rates();
-        let mut lines = vec![
-            format!(
-                "mode={}  display={:.1} fps",
-                self.mode.as_str(),
-                self.display_fps
+        let mut lines = vec![format!(
+            "mode={}  display={:.1} fps",
+            self.mode.as_str(),
+            self.display_fps
+        )];
+
+        if let Some(polling) = &self.polling {
+            lines.push(format!(
+                "poll={} Hz  base-real={}%%  remote-real={}%%  base(light={}, real={})  remote(light={}, real={})  pending(light={}, real={})",
+                self.poll_rate_hz,
+                self.base_real_percent,
+                self.remote_real_percent,
+                polling.base_greeting_cycles,
+                polling.base_real_cycles,
+                polling
+                    .remote_response_cycles
+                    .saturating_sub(polling.remote_real_cycles),
+                polling.remote_real_cycles,
+                polling.pending_greeting_replies,
+                polling.pending_real_replies
+            ));
+        }
+
+        lines.push(match self.mode {
+            XbeeTestMode::Polling => format!(
+                "{BASE_PORT_ID}: {} @ {} baud  tx=PollGreeting|AU+RU  rx=PollResponse|AD+RD",
+                self.base_port.port, self.base_port.baud_rate,
             ),
-            format!(
+            _ => format!(
                 "{BASE_PORT_ID}: {} @ {} baud  tx=AU+RU  rx=AD+RD",
                 self.base_port.port, self.base_port.baud_rate,
             ),
-            format!(
+        });
+        lines.push(match self.mode {
+            XbeeTestMode::Polling => format!(
+                "{REMOTE_PORT_ID}: {} @ {} baud  tx=PollResponse|AD+RD  rx=PollGreeting|AU+RU",
+                self.remote_port.port, self.remote_port.baud_rate,
+            ),
+            _ => format!(
                 "{REMOTE_PORT_ID}: {} @ {} baud  tx=AD+RD  rx=AU+RU",
                 self.remote_port.port, self.remote_port.baud_rate,
             ),
-            self.au_sender.status_line(),
-            self.ru_sender.status_line(),
-        ];
-        lines.extend(self.remote_input.status_lines(&remote_targets));
-        lines.push(match self.mode {
-            XbeeTestMode::Flood => self.ad_sender.status_line(),
-            XbeeTestMode::PingPong => format!(
-                "{} -> {}  format={}  trigger=au-rx  sent={}  tx_err={}",
-                self.ad_sender.output_id,
-                self.ad_sender.target_input_id,
-                xbee_test_format_label(self.ad_sender.format),
-                self.ad_sender.sent_packets,
-                self.ad_sender.write_errors
-            ),
         });
-        lines.push(match self.mode {
-            XbeeTestMode::Flood => self.rd_sender.status_line(),
-            XbeeTestMode::PingPong => format!(
-                "{} -> {}  format={}  trigger=ru-rx  sent={}  tx_err={}",
-                self.rd_sender.output_id,
-                self.rd_sender.target_input_id,
-                xbee_test_format_label(self.rd_sender.format),
-                self.rd_sender.sent_packets,
-                self.rd_sender.write_errors
-            ),
-        });
-        lines.extend(self.base_input.status_lines(&base_targets));
+
+        match self.mode {
+            XbeeTestMode::Flood | XbeeTestMode::PingPong => {
+                lines.push(self.au_sender.status_line());
+                lines.push(self.ru_sender.status_line());
+                lines.extend(self.remote_input.status_lines(&remote_targets));
+                lines.push(match self.mode {
+                    XbeeTestMode::Flood => self.ad_sender.status_line(),
+                    XbeeTestMode::PingPong => {
+                        self.triggered_sender_line(&self.ad_sender, "trigger=au-rx")
+                    }
+                    XbeeTestMode::Polling => unreachable!(),
+                });
+                lines.push(match self.mode {
+                    XbeeTestMode::Flood => self.rd_sender.status_line(),
+                    XbeeTestMode::PingPong => {
+                        self.triggered_sender_line(&self.rd_sender, "trigger=ru-rx")
+                    }
+                    XbeeTestMode::Polling => unreachable!(),
+                });
+                lines.extend(self.base_input.status_lines(&base_targets));
+            }
+            XbeeTestMode::Polling => {
+                let polling = self.polling.as_ref().expect("polling state exists");
+                lines.push(Self::generated_sender_line(
+                    &polling.base_poll_sender,
+                    &format!("role=base-greeting  target={} Hz", self.poll_rate_hz),
+                ));
+                lines.push(Self::scheduled_sender_line(
+                    &self.au_sender,
+                    "role=base-real",
+                ));
+                lines.push(Self::scheduled_sender_line(
+                    &self.ru_sender,
+                    "role=base-real",
+                ));
+                lines.extend(self.remote_input.status_lines(&remote_targets));
+                lines.push(Self::generated_sender_line(
+                    &polling.remote_poll_sender,
+                    "role=remote-response",
+                ));
+                lines.push(Self::scheduled_sender_line(
+                    &self.ad_sender,
+                    "role=remote-real",
+                ));
+                lines.push(Self::scheduled_sender_line(
+                    &self.rd_sender,
+                    "role=remote-real",
+                ));
+                lines.extend(self.base_input.status_lines(&base_targets));
+            }
+        }
+
         lines.extend([
             format!(
                 "display backlog  out(base={}, remote={})  in(base={}, remote={})  overflow={}",
@@ -1015,47 +1542,159 @@ impl XbeeTestState {
         lines
     }
 
+    fn triggered_sender_line(&self, sender: &ScheduledSender, detail: &str) -> String {
+        let mut line = format!(
+            "{} -> {}  format={}  {}  sent={}  tx_err={}",
+            sender.output_id(),
+            sender.target_input_id(),
+            xbee_test_format_label(sender.kind()),
+            detail,
+            sender.sent_packets(),
+            sender.write_errors()
+        );
+        if let Some(error) = sender.last_error() {
+            line.push_str("  last_error=");
+            line.push_str(error);
+        }
+        line
+    }
+
+    fn scheduled_sender_line(sender: &ScheduledSender, detail: &str) -> String {
+        let mut line = format!(
+            "{} -> {}  format={}  {}  sent={}  tx_err={}",
+            sender.output_id(),
+            sender.target_input_id(),
+            xbee_test_format_label(sender.kind()),
+            detail,
+            sender.sent_packets(),
+            sender.write_errors()
+        );
+        if let Some(error) = sender.last_error() {
+            line.push_str("  last_error=");
+            line.push_str(error);
+        }
+        line
+    }
+
+    fn generated_sender_line(sender: &GeneratedSender, detail: &str) -> String {
+        let mut line = format!(
+            "{} -> {}  format={}  {}  sent={}  tx_err={}",
+            sender.output_id,
+            sender.target_input_id,
+            xbee_test_format_label(sender.kind),
+            detail,
+            sender.sent_packets,
+            sender.write_errors
+        );
+        if let Some(error) = &sender.last_error {
+            line.push_str("  last_error=");
+            line.push_str(error);
+        }
+        line
+    }
+
     fn run_result(self, log_path: PathBuf) -> XbeeTestRunResult {
         XbeeTestRunResult {
             base_port: self.base_port,
             remote_port: self.remote_port,
             mode: self.mode,
-            au_rate_hz: self.au_sender.target_rate_hz,
-            ru_rate_hz: self.ru_sender.target_rate_hz,
-            ad_rate_hz: self.ad_sender.target_rate_hz,
-            rd_rate_hz: self.rd_sender.target_rate_hz,
-            au_stats: self.remote_input.stats(OutputFormat::PacketAcV6),
-            ru_stats: self.remote_input.stats(OutputFormat::RoverUpGeneral),
-            ad_stats: self.base_input.stats(OutputFormat::PacketJfV1),
-            rd_stats: self.base_input.stats(OutputFormat::RoverDownGeneral),
+            poll_rate_hz: self.poll_rate_hz,
+            base_real_percent: self.base_real_percent,
+            remote_real_percent: self.remote_real_percent,
+            greeting_stats: self.remote_input.stats(XbeeTestFrameKind::PollGreeting),
+            response_stats: self.base_input.stats(XbeeTestFrameKind::PollResponse),
+            au_rate_hz: self.au_sender.target_rate_hz(),
+            ru_rate_hz: self.ru_sender.target_rate_hz(),
+            ad_rate_hz: self.ad_sender.target_rate_hz(),
+            rd_rate_hz: self.rd_sender.target_rate_hz(),
+            au_stats: self
+                .remote_input
+                .stats(XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)),
+            ru_stats: self
+                .remote_input
+                .stats(XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral)),
+            ad_stats: self
+                .base_input
+                .stats(XbeeTestFrameKind::Format(OutputFormat::PacketJfV1)),
+            rd_stats: self
+                .base_input
+                .stats(XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral)),
             logging_enabled: self.logging_enabled,
             log_path,
         }
     }
 
-    fn remote_target_rates(&self) -> BTreeMap<OutputFormat, u32> {
-        BTreeMap::from([
-            (OutputFormat::PacketAcV6, self.au_sender.target_rate_hz),
-            (OutputFormat::RoverUpGeneral, self.ru_sender.target_rate_hz),
-        ])
+    fn remote_target_rates(&self) -> BTreeMap<XbeeTestFrameKind, f64> {
+        match self.mode {
+            XbeeTestMode::Flood | XbeeTestMode::PingPong => BTreeMap::from([
+                (
+                    XbeeTestFrameKind::Format(OutputFormat::PacketAcV6),
+                    self.au_sender.target_rate_hz() as f64,
+                ),
+                (
+                    XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral),
+                    self.ru_sender.target_rate_hz() as f64,
+                ),
+            ]),
+            XbeeTestMode::Polling => {
+                let real_rate = self.poll_rate_hz as f64 * self.base_real_percent as f64 / 100.0;
+                BTreeMap::from([
+                    (
+                        XbeeTestFrameKind::PollGreeting,
+                        self.poll_rate_hz as f64 - real_rate,
+                    ),
+                    (
+                        XbeeTestFrameKind::Format(OutputFormat::PacketAcV6),
+                        real_rate,
+                    ),
+                    (
+                        XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral),
+                        real_rate,
+                    ),
+                ])
+            }
+        }
     }
 
-    fn base_target_rates(&self) -> BTreeMap<OutputFormat, u32> {
+    fn base_target_rates(&self) -> BTreeMap<XbeeTestFrameKind, f64> {
         match self.mode {
             XbeeTestMode::Flood => BTreeMap::from([
-                (OutputFormat::PacketJfV1, self.ad_sender.target_rate_hz),
                 (
-                    OutputFormat::RoverDownGeneral,
-                    self.rd_sender.target_rate_hz,
+                    XbeeTestFrameKind::Format(OutputFormat::PacketJfV1),
+                    self.ad_sender.target_rate_hz() as f64,
+                ),
+                (
+                    XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral),
+                    self.rd_sender.target_rate_hz() as f64,
                 ),
             ]),
             XbeeTestMode::PingPong => BTreeMap::from([
-                (OutputFormat::PacketJfV1, self.au_sender.target_rate_hz),
                 (
-                    OutputFormat::RoverDownGeneral,
-                    self.ru_sender.target_rate_hz,
+                    XbeeTestFrameKind::Format(OutputFormat::PacketJfV1),
+                    self.au_sender.target_rate_hz() as f64,
+                ),
+                (
+                    XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral),
+                    self.ru_sender.target_rate_hz() as f64,
                 ),
             ]),
+            XbeeTestMode::Polling => {
+                let real_rate = self.poll_rate_hz as f64 * self.remote_real_percent as f64 / 100.0;
+                BTreeMap::from([
+                    (
+                        XbeeTestFrameKind::PollResponse,
+                        self.poll_rate_hz as f64 - real_rate,
+                    ),
+                    (
+                        XbeeTestFrameKind::Format(OutputFormat::PacketJfV1),
+                        real_rate,
+                    ),
+                    (
+                        XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral),
+                        real_rate,
+                    ),
+                ])
+            }
         }
     }
 }
@@ -1100,6 +1739,37 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
                     result.au_rate_hz,
                     result.ru_rate_hz
                 ),
+                XbeeTestMode::Polling => println!(
+                    "mode={} base={}@{} remote={}@{} poll={}Hz base-real={}%% remote-real={}%%",
+                    result.mode.as_str(),
+                    result.base_port.port,
+                    result.base_port.baud_rate,
+                    result.remote_port.port,
+                    result.remote_port.baud_rate,
+                    result.poll_rate_hz,
+                    result.base_real_percent,
+                    result.remote_real_percent
+                ),
+            }
+            if result.mode == XbeeTestMode::Polling {
+                println!(
+                    "  PollGreeting base->remote: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                    result.greeting_stats.matched_packets,
+                    result.greeting_stats.error_rate_percent(),
+                    result.greeting_stats.missing_packets,
+                    result.greeting_stats.invalid_packets,
+                    result.greeting_stats.unexpected_packets,
+                    result.greeting_stats.queue_overflow_packets
+                );
+                println!(
+                    "  PollResponse remote->base: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                    result.response_stats.matched_packets,
+                    result.response_stats.error_rate_percent(),
+                    result.response_stats.missing_packets,
+                    result.response_stats.invalid_packets,
+                    result.response_stats.unexpected_packets,
+                    result.response_stats.queue_overflow_packets
+                );
             }
             println!(
                 "  AU base->remote: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
@@ -1152,6 +1822,68 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 fn run_with_options(cli_options: XbeeTestCliOptions) -> Result<XbeeTestRunResult, String> {
     let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
     let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
+    let mut outputs = vec![
+        SessionOutputSpec {
+            id: BASE_AU_OUTPUT_ID.to_owned(),
+            port: settings.base_port.port.clone(),
+            baud_rate: settings.base_port.baud_rate,
+            format_name: OutputFormat::PacketAcV6.as_str().to_owned(),
+            display_mode: PortDisplayMode::Hex,
+        },
+        SessionOutputSpec {
+            id: BASE_RU_OUTPUT_ID.to_owned(),
+            port: settings.base_port.port.clone(),
+            baud_rate: settings.base_port.baud_rate,
+            format_name: OutputFormat::RoverUpGeneral.as_str().to_owned(),
+            display_mode: PortDisplayMode::Hex,
+        },
+        SessionOutputSpec {
+            id: REMOTE_AD_OUTPUT_ID.to_owned(),
+            port: settings.remote_port.port.clone(),
+            baud_rate: settings.remote_port.baud_rate,
+            format_name: OutputFormat::PacketJfV1.as_str().to_owned(),
+            display_mode: PortDisplayMode::Hex,
+        },
+        SessionOutputSpec {
+            id: REMOTE_RD_OUTPUT_ID.to_owned(),
+            port: settings.remote_port.port.clone(),
+            baud_rate: settings.remote_port.baud_rate,
+            format_name: OutputFormat::RoverDownGeneral.as_str().to_owned(),
+            display_mode: PortDisplayMode::Hex,
+        },
+    ];
+    if settings.mode == XbeeTestMode::Polling {
+        outputs.push(SessionOutputSpec {
+            id: BASE_POLL_OUTPUT_ID.to_owned(),
+            port: settings.base_port.port.clone(),
+            baud_rate: settings.base_port.baud_rate,
+            format_name: XbeeTestFrameKind::PollGreeting
+                .session_format_name()
+                .to_owned(),
+            display_mode: PortDisplayMode::Hex,
+        });
+        outputs.push(SessionOutputSpec {
+            id: REMOTE_POLL_OUTPUT_ID.to_owned(),
+            port: settings.remote_port.port.clone(),
+            baud_rate: settings.remote_port.baud_rate,
+            format_name: XbeeTestFrameKind::PollResponse
+                .session_format_name()
+                .to_owned(),
+            display_mode: PortDisplayMode::Hex,
+        });
+    }
+    let mut base_known_formats = vec![
+        OutputFormat::PacketJfV1.display_name().to_owned(),
+        OutputFormat::RoverDownGeneral.display_name().to_owned(),
+    ];
+    let mut remote_known_formats = vec![
+        OutputFormat::PacketAcV6.display_name().to_owned(),
+        OutputFormat::RoverUpGeneral.display_name().to_owned(),
+    ];
+    if settings.mode == XbeeTestMode::Polling {
+        base_known_formats.insert(0, String::from(POLL_RESPONSE_FORMAT_NAME));
+        remote_known_formats.insert(0, String::from(POLL_GREETING_FORMAT_NAME));
+    }
 
     let mut session = SessionRuntime::new(SessionSpec {
         title: String::from("acs xbee-test"),
@@ -1174,61 +1906,24 @@ fn run_with_options(cli_options: XbeeTestCliOptions) -> Result<XbeeTestRunResult
                 line_break_mode: LineBreakMode::Packet,
             },
         ],
-        outputs: vec![
-            SessionOutputSpec {
-                id: BASE_AU_OUTPUT_ID.to_owned(),
-                port: settings.base_port.port.clone(),
-                baud_rate: settings.base_port.baud_rate,
-                format_name: OutputFormat::PacketAcV6.as_str().to_owned(),
-                display_mode: PortDisplayMode::Hex,
-            },
-            SessionOutputSpec {
-                id: BASE_RU_OUTPUT_ID.to_owned(),
-                port: settings.base_port.port.clone(),
-                baud_rate: settings.base_port.baud_rate,
-                format_name: OutputFormat::RoverUpGeneral.as_str().to_owned(),
-                display_mode: PortDisplayMode::Hex,
-            },
-            SessionOutputSpec {
-                id: REMOTE_AD_OUTPUT_ID.to_owned(),
-                port: settings.remote_port.port.clone(),
-                baud_rate: settings.remote_port.baud_rate,
-                format_name: OutputFormat::PacketJfV1.as_str().to_owned(),
-                display_mode: PortDisplayMode::Hex,
-            },
-            SessionOutputSpec {
-                id: REMOTE_RD_OUTPUT_ID.to_owned(),
-                port: settings.remote_port.port.clone(),
-                baud_rate: settings.remote_port.baud_rate,
-                format_name: OutputFormat::RoverDownGeneral.as_str().to_owned(),
-                display_mode: PortDisplayMode::Hex,
-            },
-        ],
+        outputs,
     })?;
     session.set_output_packet_rate_enabled(&settings.base_port.port, true);
     session.set_output_packet_rate_enabled(&settings.remote_port.port, true);
     session.set_input_packet_rate_enabled(&settings.base_port.port, true);
     session.set_input_packet_rate_enabled(&settings.remote_port.port, true);
-    session.set_input_known_formats(
-        &settings.base_port.port,
-        vec![
-            OutputFormat::PacketJfV1.display_name().to_owned(),
-            OutputFormat::RoverDownGeneral.display_name().to_owned(),
-        ],
-    );
-    session.set_input_known_formats(
-        &settings.remote_port.port,
-        vec![
-            OutputFormat::PacketAcV6.display_name().to_owned(),
-            OutputFormat::RoverUpGeneral.display_name().to_owned(),
-        ],
-    );
+    session.set_input_known_formats(&settings.base_port.port, base_known_formats);
+    session.set_input_known_formats(&settings.remote_port.port, remote_known_formats);
     session.set_manual_input_recording(BASE_PORT_ID, true);
     session.set_manual_input_recording(REMOTE_PORT_ID, true);
     session.set_manual_output_recording(BASE_AU_OUTPUT_ID, true);
     session.set_manual_output_recording(BASE_RU_OUTPUT_ID, true);
     session.set_manual_output_recording(REMOTE_AD_OUTPUT_ID, true);
     session.set_manual_output_recording(REMOTE_RD_OUTPUT_ID, true);
+    if settings.mode == XbeeTestMode::Polling {
+        session.set_manual_output_recording(BASE_POLL_OUTPUT_ID, true);
+        session.set_manual_output_recording(REMOTE_POLL_OUTPUT_ID, true);
+    }
 
     let log_path = session.log_path().to_path_buf();
     let started_at = Instant::now();
@@ -1309,6 +2004,18 @@ fn build_settings(
         .map(XbeeTestMode::parse)
         .transpose()?
         .unwrap_or(XbeeTestMode::Flood);
+    let poll_rate_hz = cli_options
+        .poll_rate_hz
+        .or(file_config.xbee_test.poll_rate_hz)
+        .unwrap_or(DEFAULT_RATE_HZ);
+    let base_real_percent = cli_options
+        .base_real_percent
+        .or(file_config.xbee_test.base_real_percent)
+        .unwrap_or(DEFAULT_REAL_PERCENT);
+    let remote_real_percent = cli_options
+        .remote_real_percent
+        .or(file_config.xbee_test.remote_real_percent)
+        .unwrap_or(DEFAULT_REAL_PERCENT);
 
     let au_rate_hz = cli_options
         .au_rate_hz
@@ -1332,12 +2039,26 @@ fn build_settings(
     if ru_rate_hz == 0 {
         return Err(String::from("--ru-rate must be greater than 0"));
     }
+    if mode == XbeeTestMode::Polling && poll_rate_hz == 0 {
+        return Err(String::from("--poll-rate must be greater than 0"));
+    }
     if mode == XbeeTestMode::Flood && ad_rate_hz == 0 {
         return Err(String::from("--ad-rate must be greater than 0"));
     }
     if mode == XbeeTestMode::Flood && rd_rate_hz == 0 {
         return Err(String::from("--rd-rate must be greater than 0"));
     }
+    if base_real_percent > 100 {
+        return Err(String::from(
+            "--base-real-percent must be between 0 and 100",
+        ));
+    }
+    if remote_real_percent > 100 {
+        return Err(String::from(
+            "--remote-real-percent must be between 0 and 100",
+        ));
+    }
+    let poll_rate_hz = poll_rate_hz.max(1);
     let ad_rate_hz = ad_rate_hz.max(1);
     let rd_rate_hz = rd_rate_hz.max(1);
 
@@ -1357,6 +2078,9 @@ fn build_settings(
             baud_rate: remote_binding.baud.unwrap_or_else(default_baud_rate),
         },
         mode,
+        poll_rate_hz,
+        base_real_percent,
+        remote_real_percent,
         au_rate_hz,
         ru_rate_hz,
         ad_rate_hz,
@@ -1376,6 +2100,18 @@ fn parse_xbee_test_args(args: Vec<String>) -> Result<XbeeTestCliOptions, String>
                 &mut iter, "--port",
             )?)?),
             "--mode" => options.mode = Some(next_value(&mut iter, "--mode")?),
+            "--poll-rate" => {
+                let value = next_value(&mut iter, "--poll-rate")?;
+                options.poll_rate_hz = Some(parse_u32_arg("--poll-rate", &value)?);
+            }
+            "--base-real-percent" => {
+                let value = next_value(&mut iter, "--base-real-percent")?;
+                options.base_real_percent = Some(parse_u32_arg("--base-real-percent", &value)?);
+            }
+            "--remote-real-percent" => {
+                let value = next_value(&mut iter, "--remote-real-percent")?;
+                options.remote_real_percent = Some(parse_u32_arg("--remote-real-percent", &value)?);
+            }
             "--au-rate" => {
                 let value = next_value(&mut iter, "--au-rate")?;
                 options.au_rate_hz = Some(parse_u32_arg("--au-rate", &value)?);
@@ -1489,7 +2225,8 @@ fn matches_rover_down_packet(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExpectedPacketTracker, OutputFormat, PacketDefinition, PacketStreamDecoder, XbeeTestMode,
+        ExpectedPacketTracker, OutputFormat, PacketDefinition, PacketStreamDecoder,
+        XbeeTestFrameKind, XbeeTestMode, build_poll_frame, matches_poll_frame,
         parse_xbee_test_args, parse_xbee_test_port_binding,
     };
     use std::path::PathBuf;
@@ -1503,6 +2240,12 @@ mod tests {
             String::from("remote=/dev/ttyUSB1@115200"),
             String::from("--mode"),
             String::from("ping-pong"),
+            String::from("--poll-rate"),
+            String::from("100"),
+            String::from("--base-real-percent"),
+            String::from("15"),
+            String::from("--remote-real-percent"),
+            String::from("25"),
             String::from("--au-rate"),
             String::from("100"),
             String::from("--ru-rate"),
@@ -1525,6 +2268,9 @@ mod tests {
         assert_eq!(options.ports[1].id, "remote");
         assert_eq!(options.ports[1].baud, Some(115_200));
         assert_eq!(options.mode.as_deref(), Some("ping-pong"));
+        assert_eq!(options.poll_rate_hz, Some(100));
+        assert_eq!(options.base_real_percent, Some(15));
+        assert_eq!(options.remote_real_percent, Some(25));
         assert_eq!(options.au_rate_hz, Some(100));
         assert_eq!(options.ru_rate_hz, Some(90));
         assert_eq!(options.ad_rate_hz, Some(80));
@@ -1555,6 +2301,14 @@ mod tests {
             XbeeTestMode::parse("pingpong").expect("mode"),
             XbeeTestMode::PingPong
         );
+        assert_eq!(
+            XbeeTestMode::parse("polling").expect("mode"),
+            XbeeTestMode::Polling
+        );
+        assert_eq!(
+            XbeeTestMode::parse("poll").expect("mode"),
+            XbeeTestMode::Polling
+        );
     }
 
     #[test]
@@ -1565,7 +2319,8 @@ mod tests {
         let payload = generator.next_payload().expect("payload");
         let mut corrupted = payload.clone();
         corrupted[15] ^= 0x01;
-        let mut decoder = PacketStreamDecoder::new(OutputFormat::PacketJfV1);
+        let mut decoder =
+            PacketStreamDecoder::new(XbeeTestFrameKind::Format(OutputFormat::PacketJfV1));
         let mut input = corrupted;
         input.extend_from_slice(&payload);
         let batch = decoder.push(&input);
@@ -1600,5 +2355,15 @@ mod tests {
         assert!(super::packet_is_valid(&payload, definition));
         payload[2] ^= 0x01;
         assert!(!super::packet_is_valid(&payload, definition));
+    }
+
+    #[test]
+    fn poll_frame_uses_crc16_ccitt_false() {
+        let payload = build_poll_frame(b"HI", 7);
+        assert!(matches_poll_frame(&payload, b"HI"));
+
+        let mut corrupted = payload;
+        corrupted[4] ^= 0x01;
+        assert!(!matches_poll_frame(&corrupted, b"HI"));
     }
 }

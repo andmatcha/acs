@@ -8,7 +8,7 @@
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
 - `acs route`: シリアル入力を設定に応じてシリアル出力へ振り分ける
 - `acs send`: 指定形式のダミーデータを継続してシリアルポートへ送信する
-- `acs xbee-test`: `base` / `remote` の 2 ポート間で AU(PacketACv6) / RU(RoverUpGeneral) と AD(PacketJFv1) / RD(RoverDownGeneral) の往復試験を行う。`flood` / `ping-pong` を切り替えられ、ヘッダに実際の表示更新 fps も表示する
+- `acs xbee-test`: `base` / `remote` の 2 ポート間で AU(PacketACv6) / RU(RoverUpGeneral) と AD(PacketJFv1) / RD(RoverDownGeneral) の往復試験を行う。`flood` / `ping-pong` / `polling` を切り替えられ、ヘッダに実際の表示更新 fps も表示する
 
 ## グローバルインストール
 
@@ -100,6 +100,7 @@ acs send -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100 -o up=/dev/ttyUSB0@921600,
 acs send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1@115200,packetacv6+packetjfv1
 acs xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --au-rate 100 --ru-rate 100 --ad-rate 100 --rd-rate 100
 acs xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --au-rate 100 --ru-rate 50
+acs xbee-test --mode polling --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --poll-rate 100 --base-real-percent 10 --remote-real-percent 20
 acs --version
 ```
 
@@ -108,6 +109,7 @@ acs --version
 - 詳しいオプションや表示形式は `acs help <command>` を参照してください。
 - `acs xbee-test` は表示更新が遅い場合も受信レートとエラー率の集計を優先し、packet 表示は別キューで追いかけます。
 - `acs xbee-test` は `AU(PacketACv6) + RU(RoverUpGeneral)` と `AD(PacketJFv1) + RD(RoverDownGeneral)` をそれぞれ混在送信でき、各 format の送受信 Hz と照合結果を表示します。
+- `acs xbee-test --mode polling` は `PollGreeting` / `PollResponse` を基本にしつつ、`base` 側と `remote` 側で独立した確率で実パケット対へ差し替えます。
 - `acs send` は同一ポートの mixed-format 受信でも packet を再同期し、format ごとの受信 Hz をヘッダに表示します。
 - `acs send --monitor` は `packetacv6+packetjfv1` のように複数 format を指定でき、それぞれの built-in 既定表示で表示します。
 - `acs send --no-log` と `acs xbee-test --no-log` はログファイル作成を止め、I/O 負荷を減らします。
