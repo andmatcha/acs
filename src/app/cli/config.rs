@@ -60,7 +60,9 @@ pub(crate) struct XbeeTestConfig {
     pub ports: Vec<XbeeTestPortConfig>,
     pub mode: Option<String>,
     pub ac_rate_hz: Option<u32>,
+    pub up_rate_hz: Option<u32>,
     pub jf_rate_hz: Option<u32>,
+    pub down_rate_hz: Option<u32>,
     pub log_dir: Option<PathBuf>,
 }
 
@@ -195,7 +197,9 @@ impl XbeeTestConfig {
         merge_xbee_test_ports(&mut self.ports, other.ports);
         merge_option(&mut self.mode, other.mode);
         merge_option(&mut self.ac_rate_hz, other.ac_rate_hz);
+        merge_option(&mut self.up_rate_hz, other.up_rate_hz);
         merge_option(&mut self.jf_rate_hz, other.jf_rate_hz);
+        merge_option(&mut self.down_rate_hz, other.down_rate_hz);
         merge_option(&mut self.log_dir, other.log_dir);
     }
 }
@@ -470,7 +474,9 @@ fn parse_xbee_test_config(
         ports: optional_xbee_test_ports(object, "ports")?,
         mode: optional_string(object, "mode")?,
         ac_rate_hz: optional_u32(object, "ac_rate")?,
+        up_rate_hz: optional_u32(object, "up_rate")?,
         jf_rate_hz: optional_u32(object, "jf_rate")?,
+        down_rate_hz: optional_u32(object, "down_rate")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -1896,7 +1902,9 @@ mod tests {
                 ],
                 "mode": "ping-pong",
                 "ac_rate": 100,
-                "jf_rate": 80
+                "up_rate": 90,
+                "jf_rate": 80,
+                "down_rate": 70
               }
             }
             "#,
@@ -1922,7 +1930,9 @@ mod tests {
         );
         assert_eq!(config.xbee_test.mode.as_deref(), Some("ping-pong"));
         assert_eq!(config.xbee_test.ac_rate_hz, Some(100));
+        assert_eq!(config.xbee_test.up_rate_hz, Some(90));
         assert_eq!(config.xbee_test.jf_rate_hz, Some(80));
+        assert_eq!(config.xbee_test.down_rate_hz, Some(70));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

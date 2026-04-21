@@ -244,7 +244,7 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     println!("Usage: {bin_name} xbee-test [OPTIONS]");
     println!();
     println!(
-        "Sends PacketACv6 from `base` to `rover` and PacketJFv1 from `rover` to `base` at independent rates."
+        "Sends PacketACv6 + RoverUpGeneral from `base` to `rover`, and PacketJFv1 + RoverDownGeneral from `rover` to `base`."
     );
     println!(
         "Each port is monitored simultaneously, and the dashboard shows per-port TX/RX packet rates plus matched/error statistics."
@@ -263,10 +263,19 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
         "      --ac-rate <HZ>         PacketACv6 send rate from `base` to `rover` (default: 100)"
     );
     println!(
+        "      --up-rate <HZ>         RoverUpGeneral send rate from `base` to `rover` (default: 100)"
+    );
+    println!(
         "      --jf-rate <HZ>         PacketJFv1 send rate from `rover` to `base` (default: 100)"
     );
     println!(
         "                              Ignored in `ping-pong`; JF is sent once per valid AC receive"
+    );
+    println!(
+        "      --down-rate <HZ>       RoverDownGeneral send rate from `rover` to `base` (default: 100)"
+    );
+    println!(
+        "                              Ignored in `ping-pong`; RoverDown is sent once per valid RoverUp receive"
     );
     println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
@@ -285,10 +294,10 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
         "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200"
     );
     println!(
-        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --jf-rate 50"
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --up-rate 50 --jf-rate 80 --down-rate 40"
     );
     println!(
-        "  {bin_name} xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100"
+        "  {bin_name} xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --up-rate 50"
     );
     println!(
         "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --no-log"

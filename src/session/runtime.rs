@@ -304,6 +304,18 @@ impl SessionRuntime {
         self.dirty = true;
     }
 
+    pub(crate) fn record_output_format_sample(
+        &mut self,
+        port: &str,
+        format_name: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.dashboard
+            .record_output_format_sample(port, format_name, byte_len, packet_count);
+        self.dirty = true;
+    }
+
     pub(crate) fn add_input_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
         self.dashboard.add_input_entry(port, bytes)?;
         self.dirty = true;

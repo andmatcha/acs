@@ -62,7 +62,9 @@
     ],
     "mode": "flood",
     "ac_rate": 100,
-    "jf_rate": 100
+    "up_rate": 100,
+    "jf_rate": 100,
+    "down_rate": 100
   },
   "monitor": {
     "ports": [],

@@ -17,6 +17,10 @@ use std::time::{Duration, Instant};
 
 const BASE_PORT_ID: &str = "base";
 const ROVER_PORT_ID: &str = "rover";
+const BASE_AC_OUTPUT_ID: &str = "base-ac";
+const BASE_UP_OUTPUT_ID: &str = "base-up";
+const ROVER_JF_OUTPUT_ID: &str = "rover-jf";
+const ROVER_DOWN_OUTPUT_ID: &str = "rover-down";
 const DEFAULT_RATE_HZ: u32 = 100;
 const LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
@@ -31,7 +35,9 @@ struct XbeeTestCliOptions {
     ports: Vec<XbeeTestPortBinding>,
     mode: Option<String>,
     ac_rate_hz: Option<u32>,
+    up_rate_hz: Option<u32>,
     jf_rate_hz: Option<u32>,
+    down_rate_hz: Option<u32>,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
     no_log: bool,
@@ -56,7 +62,9 @@ struct XbeeTestSettings {
     rover_port: ResolvedXbeeTestPort,
     mode: XbeeTestMode,
     ac_rate_hz: u32,
+    up_rate_hz: u32,
     jf_rate_hz: u32,
+    down_rate_hz: u32,
     log_dir: PathBuf,
     logging_enabled: bool,
 }
@@ -66,9 +74,13 @@ struct XbeeTestRunResult {
     rover_port: ResolvedXbeeTestPort,
     mode: XbeeTestMode,
     ac_rate_hz: u32,
+    up_rate_hz: u32,
     jf_rate_hz: u32,
+    down_rate_hz: u32,
     ac_stats: PacketMatchStats,
+    up_stats: PacketMatchStats,
     jf_stats: PacketMatchStats,
+    down_stats: PacketMatchStats,
     logging_enabled: bool,
     log_path: PathBuf,
 }
@@ -156,14 +168,14 @@ impl PacketMatchStats {
 }
 
 struct PacketStreamDecoder {
-    definition: PacketDefinition,
+    format: OutputFormat,
     buffer: Vec<u8>,
 }
 
 impl PacketStreamDecoder {
     fn new(format: OutputFormat) -> Self {
         Self {
-            definition: PacketDefinition::for_format(format),
+            format,
             buffer: Vec::new(),
         }
     }
@@ -174,12 +186,15 @@ impl PacketStreamDecoder {
         let mut invalid_packets = 0u64;
 
         loop {
-            if self.buffer.len() < self.definition.header.len() {
+            if self.buffer.len() < packet_start_len(self.format) {
                 break;
             }
 
-            let Some(header_index) = find_header(&self.buffer, &self.definition.header) else {
-                let keep_len = self.buffer.len().min(self.definition.header.len() - 1);
+            let Some(header_index) = find_packet_start(&self.buffer, self.format) else {
+                let keep_len = self
+                    .buffer
+                    .len()
+                    .min(packet_start_len(self.format).saturating_sub(1));
                 let drain_len = self.buffer.len().saturating_sub(keep_len);
                 if drain_len > 0 {
                     self.buffer.drain(..drain_len);
@@ -191,12 +206,12 @@ impl PacketStreamDecoder {
                 self.buffer.drain(..header_index);
             }
 
-            if self.buffer.len() < self.definition.packet_len {
+            if self.buffer.len() < self.format.packet_len() {
                 break;
             }
 
-            if packet_is_valid(&self.buffer[..self.definition.packet_len], self.definition) {
-                packets.push(self.buffer.drain(..self.definition.packet_len).collect());
+            if packet_matches(self.format, &self.buffer[..self.format.packet_len()]) {
+                packets.push(self.buffer.drain(..self.format.packet_len()).collect());
             } else {
                 self.buffer.drain(..1);
                 invalid_packets = invalid_packets.saturating_add(1);
@@ -208,6 +223,53 @@ impl PacketStreamDecoder {
             invalid_packets,
         }
     }
+}
+
+fn packet_start_len(format: OutputFormat) -> usize {
+    match format {
+        OutputFormat::PacketAcV6 | OutputFormat::PacketJfV1 => 2,
+        OutputFormat::RoverUpGeneral => 6,
+        OutputFormat::RoverDownGeneral => 4,
+    }
+}
+
+fn find_packet_start(buffer: &[u8], format: OutputFormat) -> Option<usize> {
+    match format {
+        OutputFormat::PacketAcV6 => find_header(buffer, b"AC"),
+        OutputFormat::PacketJfV1 => find_header(buffer, b"JF"),
+        OutputFormat::RoverUpGeneral => find_rover_up_start(buffer),
+        OutputFormat::RoverDownGeneral => find_rover_down_start(buffer),
+    }
+}
+
+fn packet_matches(format: OutputFormat, packet: &[u8]) -> bool {
+    match format {
+        OutputFormat::PacketAcV6 | OutputFormat::PacketJfV1 => {
+            packet_is_valid(packet, PacketDefinition::for_format(format))
+        }
+        OutputFormat::RoverUpGeneral => matches_rover_up_packet(packet),
+        OutputFormat::RoverDownGeneral => matches_rover_down_packet(packet),
+    }
+}
+
+fn find_rover_up_start(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(6).position(|window| {
+        window[0] == b'0'
+            && window[1] == b'x'
+            && window[2] == b'3'
+            && window[3].is_ascii_hexdigit()
+            && window[4].is_ascii_hexdigit()
+            && window[5] == b','
+    })
+}
+
+fn find_rover_down_start(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| {
+        window[0] == b'4'
+            && window[1].is_ascii_hexdigit()
+            && window[2].is_ascii_hexdigit()
+            && window[3] == b','
+    })
 }
 
 struct DecodedPacketBatch {
@@ -276,12 +338,16 @@ impl ExpectedPacketTracker {
 struct ObservedInput {
     input_id: &'static str,
     input_port: String,
+    display_queue: PacketDisplayQueue,
+    format_states: Vec<ObservedInputFormatState>,
+}
+
+struct ObservedInputFormatState {
     from_port_id: &'static str,
     format: OutputFormat,
     decoder: PacketStreamDecoder,
     tracker: ExpectedPacketTracker,
     rate_samples: VecDeque<PacketRateSample>,
-    display_queue: PacketDisplayQueue,
 }
 
 impl ObservedInput {
@@ -289,48 +355,65 @@ impl ObservedInput {
         input_id: &'static str,
         input_port: String,
         from_port_id: &'static str,
-        format: OutputFormat,
+        formats: Vec<OutputFormat>,
     ) -> Self {
         Self {
             input_id,
             input_port,
-            from_port_id,
-            format,
-            decoder: PacketStreamDecoder::new(format),
-            tracker: ExpectedPacketTracker::new(),
-            rate_samples: VecDeque::new(),
             display_queue: PacketDisplayQueue::new(),
+            format_states: formats
+                .into_iter()
+                .map(|format| ObservedInputFormatState {
+                    from_port_id,
+                    format,
+                    decoder: PacketStreamDecoder::new(format),
+                    tracker: ExpectedPacketTracker::new(),
+                    rate_samples: VecDeque::new(),
+                })
+                .collect(),
         }
     }
 
-    fn expect(&mut self, packet: Vec<u8>) {
-        self.tracker.expect(packet);
+    fn expect(&mut self, format: OutputFormat, packet: Vec<u8>) {
+        if let Some(state) = self
+            .format_states
+            .iter_mut()
+            .find(|state| state.format == format)
+        {
+            state.tracker.expect(packet);
+        }
     }
 
     fn observe(&mut self, bytes: &[u8], now: Instant) -> ObservedInputBatch {
-        let batch = self.decoder.push(bytes);
-        self.tracker.record_invalid_packets(batch.invalid_packets);
-        let mut valid_packet_count = 0usize;
-        let mut valid_byte_len = 0usize;
-        for packet in batch.packets {
-            valid_packet_count += 1;
-            valid_byte_len += packet.len();
-            self.display_queue.enqueue(packet.clone());
-            self.tracker.observe(packet);
-        }
-        if valid_packet_count > 0 {
-            self.rate_samples.push_back(PacketRateSample {
-                at: now,
-                byte_len: valid_byte_len,
-                packet_count: valid_packet_count,
-            });
-        }
-        self.prune_rate_samples(now);
+        let mut observed = ObservedInputBatch::default();
 
-        ObservedInputBatch {
-            valid_byte_len,
-            valid_packet_count,
+        for state in &mut self.format_states {
+            let batch = state.decoder.push(bytes);
+            state.tracker.record_invalid_packets(batch.invalid_packets);
+            let mut valid_packet_count = 0usize;
+            let mut valid_byte_len = 0usize;
+            for packet in batch.packets {
+                valid_packet_count += 1;
+                valid_byte_len += packet.len();
+                self.display_queue.enqueue(packet.clone());
+                state.tracker.observe(packet);
+            }
+            if valid_packet_count > 0 {
+                state.rate_samples.push_back(PacketRateSample {
+                    at: now,
+                    byte_len: valid_byte_len,
+                    packet_count: valid_packet_count,
+                });
+                observed.valid_byte_len += valid_byte_len;
+                observed.valid_packet_count += valid_packet_count;
+                observed
+                    .per_format_totals
+                    .insert(state.format, (valid_byte_len, valid_packet_count));
+            }
+            state.prune_rate_samples(now);
         }
+
+        observed
     }
 
     fn flush_display_batch(
@@ -342,6 +425,23 @@ impl ObservedInput {
             .flush_input_batch(session, &self.input_port, max_packets)
     }
 
+    fn status_lines(&self, target_rates_hz: &BTreeMap<OutputFormat, u32>) -> Vec<String> {
+        self.format_states
+            .iter()
+            .map(|state| state.status_line(self.input_id, target_rates_hz))
+            .collect()
+    }
+
+    fn stats(&self, format: OutputFormat) -> PacketMatchStats {
+        self.format_states
+            .iter()
+            .find(|state| state.format == format)
+            .map(|state| state.tracker.stats())
+            .unwrap_or_default()
+    }
+}
+
+impl ObservedInputFormatState {
     fn prune_rate_samples(&mut self, now: Instant) {
         while let Some(sample) = self.rate_samples.front() {
             if now.duration_since(sample.at) <= Duration::from_secs(1) {
@@ -365,11 +465,15 @@ impl ObservedInput {
             .sum::<usize>() as f64
     }
 
-    fn status_line(&self, target_rate_hz: u32) -> String {
+    fn status_line(&self, input_id: &str, target_rates_hz: &BTreeMap<OutputFormat, u32>) -> String {
         let stats = self.tracker.stats();
+        let target_rate_hz = target_rates_hz
+            .get(&self.format)
+            .copied()
+            .unwrap_or_default();
         format!(
-            "{} <- {}  format={}  target={} Hz  rx={:.1} Hz {:.0} B/s  matched={}  err={:.2}%  match_pending={}  disp_pending={}  miss={}  bad={}  unexp={}  overflow={}",
-            self.input_id,
+            "{} <- {}  format={}  target={} Hz  rx={:.1} Hz {:.0} B/s  matched={}  err={:.2}%  pending={}  miss={}  bad={}  unexp={}  overflow={}",
+            input_id,
             self.from_port_id,
             self.format.as_str(),
             target_rate_hz,
@@ -378,11 +482,10 @@ impl ObservedInput {
             stats.matched_packets,
             stats.error_rate_percent(),
             self.tracker.pending_packets(),
-            self.display_queue.pending_packets(),
             stats.missing_packets,
             stats.invalid_packets,
             stats.unexpected_packets,
-            stats.queue_overflow_packets + self.display_queue.overflow_packets()
+            stats.queue_overflow_packets
         )
     }
 }
@@ -393,9 +496,11 @@ struct PacketRateSample {
     packet_count: usize,
 }
 
+#[derive(Default)]
 struct ObservedInputBatch {
     valid_byte_len: usize,
     valid_packet_count: usize,
+    per_format_totals: BTreeMap<OutputFormat, (usize, usize)>,
 }
 
 struct PacketDisplayQueue {
@@ -532,8 +637,14 @@ impl ScheduledSender {
         match session.write_output(self.output_id, &payload) {
             Ok(()) => {
                 session.record_output_sample(&output.port, payload.len(), 1);
+                session.record_output_format_sample(
+                    &output.port,
+                    self.format.display_name(),
+                    payload.len(),
+                    1,
+                );
                 output.display_queue.enqueue(payload.clone());
-                input.expect(payload);
+                input.expect(self.format, payload);
                 self.sent_packets = self.sent_packets.saturating_add(1);
                 self.last_error = None;
             }
@@ -601,7 +712,9 @@ struct XbeeTestState {
     logging_enabled: bool,
     display_fps: f64,
     ac_sender: ScheduledSender,
+    up_sender: ScheduledSender,
     jf_sender: ScheduledSender,
+    down_sender: ScheduledSender,
     base_output: DisplayedOutput,
     rover_output: DisplayedOutput,
     base_input: ObservedInput,
@@ -624,17 +737,31 @@ impl XbeeTestState {
             logging_enabled: settings.logging_enabled,
             display_fps: 0.0,
             ac_sender: ScheduledSender::new(
-                BASE_PORT_ID,
+                BASE_AC_OUTPUT_ID,
                 ROVER_PORT_ID,
                 OutputFormat::PacketAcV6,
                 settings.ac_rate_hz,
                 started_at,
             )?,
-            jf_sender: ScheduledSender::new(
+            up_sender: ScheduledSender::new(
+                BASE_UP_OUTPUT_ID,
                 ROVER_PORT_ID,
+                OutputFormat::RoverUpGeneral,
+                settings.up_rate_hz,
+                started_at,
+            )?,
+            jf_sender: ScheduledSender::new(
+                ROVER_JF_OUTPUT_ID,
                 BASE_PORT_ID,
                 OutputFormat::PacketJfV1,
                 settings.jf_rate_hz,
+                started_at,
+            )?,
+            down_sender: ScheduledSender::new(
+                ROVER_DOWN_OUTPUT_ID,
+                BASE_PORT_ID,
+                OutputFormat::RoverDownGeneral,
+                settings.down_rate_hz,
                 started_at,
             )?,
             base_output: DisplayedOutput::new(settings.base_port.port.clone()),
@@ -643,13 +770,13 @@ impl XbeeTestState {
                 BASE_PORT_ID,
                 settings.base_port.port.clone(),
                 ROVER_PORT_ID,
-                OutputFormat::PacketJfV1,
+                vec![OutputFormat::PacketJfV1, OutputFormat::RoverDownGeneral],
             ),
             rover_input: ObservedInput::new(
                 ROVER_PORT_ID,
                 settings.rover_port.port.clone(),
                 BASE_PORT_ID,
-                OutputFormat::PacketAcV6,
+                vec![OutputFormat::PacketAcV6, OutputFormat::RoverUpGeneral],
             ),
             last_status_update: started_at
                 .checked_sub(STATUS_INTERVAL)
@@ -669,6 +796,14 @@ impl XbeeTestState {
                         batch.valid_byte_len,
                         batch.valid_packet_count,
                     );
+                    for (format, (byte_len, packet_count)) in batch.per_format_totals {
+                        session.record_input_format_sample(
+                            &self.base_input.input_port,
+                            format.display_name(),
+                            byte_len,
+                            packet_count,
+                        );
+                    }
                 }
             }
             ROVER_PORT_ID => {
@@ -679,9 +814,34 @@ impl XbeeTestState {
                         batch.valid_byte_len,
                         batch.valid_packet_count,
                     );
+                    for (&format, &(byte_len, packet_count)) in &batch.per_format_totals {
+                        session.record_input_format_sample(
+                            &self.rover_input.input_port,
+                            format.display_name(),
+                            byte_len,
+                            packet_count,
+                        );
+                    }
                     if self.mode == XbeeTestMode::PingPong {
-                        for _ in 0..batch.valid_packet_count {
+                        let ac_count = batch
+                            .per_format_totals
+                            .get(&OutputFormat::PacketAcV6)
+                            .map(|(_, packet_count)| *packet_count)
+                            .unwrap_or(0);
+                        for _ in 0..ac_count {
                             self.jf_sender.send_once(
+                                session,
+                                &mut self.base_input,
+                                &mut self.rover_output,
+                            );
+                        }
+                        let up_count = batch
+                            .per_format_totals
+                            .get(&OutputFormat::RoverUpGeneral)
+                            .map(|(_, packet_count)| *packet_count)
+                            .unwrap_or(0);
+                        for _ in 0..up_count {
+                            self.down_sender.send_once(
                                 session,
                                 &mut self.base_input,
                                 &mut self.rover_output,
@@ -698,8 +858,16 @@ impl XbeeTestState {
         let now = Instant::now();
         self.ac_sender
             .send_due_packets(now, session, &mut self.rover_input, &mut self.base_output);
+        self.up_sender
+            .send_due_packets(now, session, &mut self.rover_input, &mut self.base_output);
         if self.mode == XbeeTestMode::Flood {
             self.jf_sender.send_due_packets(
+                now,
+                session,
+                &mut self.base_input,
+                &mut self.rover_output,
+            );
+            self.down_sender.send_due_packets(
                 now,
                 session,
                 &mut self.base_input,
@@ -765,43 +933,60 @@ impl XbeeTestState {
     }
 
     fn build_header_lines(&self) -> Vec<String> {
-        vec![
+        let rover_targets = self.rover_target_rates();
+        let base_targets = self.base_target_rates();
+        let mut lines = vec![
             format!(
                 "mode={}  display={:.1} fps",
                 self.mode.as_str(),
                 self.display_fps
             ),
             format!(
-                "{BASE_PORT_ID}: {} @ {} baud  tx={}  rx={}",
+                "{BASE_PORT_ID}: {} @ {} baud  tx={}+{}  rx={}+{}",
                 self.base_port.port,
                 self.base_port.baud_rate,
                 OutputFormat::PacketAcV6.as_str(),
-                OutputFormat::PacketJfV1.as_str()
+                OutputFormat::RoverUpGeneral.as_str(),
+                OutputFormat::PacketJfV1.as_str(),
+                OutputFormat::RoverDownGeneral.as_str()
             ),
             format!(
-                "{ROVER_PORT_ID}: {} @ {} baud  tx={}  rx={}",
+                "{ROVER_PORT_ID}: {} @ {} baud  tx={}+{}  rx={}+{}",
                 self.rover_port.port,
                 self.rover_port.baud_rate,
                 OutputFormat::PacketJfV1.as_str(),
-                OutputFormat::PacketAcV6.as_str()
+                OutputFormat::RoverDownGeneral.as_str(),
+                OutputFormat::PacketAcV6.as_str(),
+                OutputFormat::RoverUpGeneral.as_str()
             ),
             self.ac_sender.status_line(),
-            self.rover_input.status_line(self.ac_sender.target_rate_hz),
-            match self.mode {
-                XbeeTestMode::Flood => self.jf_sender.status_line(),
-                XbeeTestMode::PingPong => format!(
-                    "{} -> {}  format={}  trigger=ac-rx  sent={}  tx_err={}",
-                    self.jf_sender.output_id,
-                    self.jf_sender.target_input_id,
-                    self.jf_sender.format.as_str(),
-                    self.jf_sender.sent_packets,
-                    self.jf_sender.write_errors
-                ),
-            },
-            self.base_input.status_line(match self.mode {
-                XbeeTestMode::Flood => self.jf_sender.target_rate_hz,
-                XbeeTestMode::PingPong => self.ac_sender.target_rate_hz,
-            }),
+            self.up_sender.status_line(),
+        ];
+        lines.extend(self.rover_input.status_lines(&rover_targets));
+        lines.push(match self.mode {
+            XbeeTestMode::Flood => self.jf_sender.status_line(),
+            XbeeTestMode::PingPong => format!(
+                "{} -> {}  format={}  trigger=ac-rx  sent={}  tx_err={}",
+                self.jf_sender.output_id,
+                self.jf_sender.target_input_id,
+                self.jf_sender.format.as_str(),
+                self.jf_sender.sent_packets,
+                self.jf_sender.write_errors
+            ),
+        });
+        lines.push(match self.mode {
+            XbeeTestMode::Flood => self.down_sender.status_line(),
+            XbeeTestMode::PingPong => format!(
+                "{} -> {}  format={}  trigger=up-rx  sent={}  tx_err={}",
+                self.down_sender.output_id,
+                self.down_sender.target_input_id,
+                self.down_sender.format.as_str(),
+                self.down_sender.sent_packets,
+                self.down_sender.write_errors
+            ),
+        });
+        lines.extend(self.base_input.status_lines(&base_targets));
+        lines.extend([
             format!(
                 "display backlog  out(base={}, rover={})  in(base={}, rover={})  overflow={}",
                 self.base_output.pending_packets(),
@@ -819,7 +1004,8 @@ impl XbeeTestState {
                 String::from("log: disabled (--no-log)")
             },
             String::from(SPACE_HINT),
-        ]
+        ]);
+        lines
     }
 
     fn run_result(self, log_path: PathBuf) -> XbeeTestRunResult {
@@ -828,11 +1014,41 @@ impl XbeeTestState {
             rover_port: self.rover_port,
             mode: self.mode,
             ac_rate_hz: self.ac_sender.target_rate_hz,
+            up_rate_hz: self.up_sender.target_rate_hz,
             jf_rate_hz: self.jf_sender.target_rate_hz,
-            ac_stats: self.rover_input.tracker.stats(),
-            jf_stats: self.base_input.tracker.stats(),
+            down_rate_hz: self.down_sender.target_rate_hz,
+            ac_stats: self.rover_input.stats(OutputFormat::PacketAcV6),
+            up_stats: self.rover_input.stats(OutputFormat::RoverUpGeneral),
+            jf_stats: self.base_input.stats(OutputFormat::PacketJfV1),
+            down_stats: self.base_input.stats(OutputFormat::RoverDownGeneral),
             logging_enabled: self.logging_enabled,
             log_path,
+        }
+    }
+
+    fn rover_target_rates(&self) -> BTreeMap<OutputFormat, u32> {
+        BTreeMap::from([
+            (OutputFormat::PacketAcV6, self.ac_sender.target_rate_hz),
+            (OutputFormat::RoverUpGeneral, self.up_sender.target_rate_hz),
+        ])
+    }
+
+    fn base_target_rates(&self) -> BTreeMap<OutputFormat, u32> {
+        match self.mode {
+            XbeeTestMode::Flood => BTreeMap::from([
+                (OutputFormat::PacketJfV1, self.jf_sender.target_rate_hz),
+                (
+                    OutputFormat::RoverDownGeneral,
+                    self.down_sender.target_rate_hz,
+                ),
+            ]),
+            XbeeTestMode::PingPong => BTreeMap::from([
+                (OutputFormat::PacketJfV1, self.ac_sender.target_rate_hz),
+                (
+                    OutputFormat::RoverDownGeneral,
+                    self.up_sender.target_rate_hz,
+                ),
+            ]),
         }
     }
 }
@@ -856,23 +1072,26 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
         Ok(result) => {
             match result.mode {
                 XbeeTestMode::Flood => println!(
-                    "mode={} base={}@{} rover={}@{} ac={}Hz jf={}Hz",
+                    "mode={} base={}@{} rover={}@{} ac={}Hz up={}Hz jf={}Hz down={}Hz",
                     result.mode.as_str(),
                     result.base_port.port,
                     result.base_port.baud_rate,
                     result.rover_port.port,
                     result.rover_port.baud_rate,
                     result.ac_rate_hz,
-                    result.jf_rate_hz
+                    result.up_rate_hz,
+                    result.jf_rate_hz,
+                    result.down_rate_hz
                 ),
                 XbeeTestMode::PingPong => println!(
-                    "mode={} base={}@{} rover={}@{} ac={}Hz jf=reply-to-ac",
+                    "mode={} base={}@{} rover={}@{} ac={}Hz up={}Hz jf=reply-to-ac down=reply-to-up",
                     result.mode.as_str(),
                     result.base_port.port,
                     result.base_port.baud_rate,
                     result.rover_port.port,
                     result.rover_port.baud_rate,
-                    result.ac_rate_hz
+                    result.ac_rate_hz,
+                    result.up_rate_hz
                 ),
             }
             println!(
@@ -885,6 +1104,15 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
                 result.ac_stats.queue_overflow_packets
             );
             println!(
+                "  UP base->rover: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                result.up_stats.matched_packets,
+                result.up_stats.error_rate_percent(),
+                result.up_stats.missing_packets,
+                result.up_stats.invalid_packets,
+                result.up_stats.unexpected_packets,
+                result.up_stats.queue_overflow_packets
+            );
+            println!(
                 "  JF rover->base: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
                 result.jf_stats.matched_packets,
                 result.jf_stats.error_rate_percent(),
@@ -892,6 +1120,15 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
                 result.jf_stats.invalid_packets,
                 result.jf_stats.unexpected_packets,
                 result.jf_stats.queue_overflow_packets
+            );
+            println!(
+                "  DOWN rover->base: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                result.down_stats.matched_packets,
+                result.down_stats.error_rate_percent(),
+                result.down_stats.missing_packets,
+                result.down_stats.invalid_packets,
+                result.down_stats.unexpected_packets,
+                result.down_stats.queue_overflow_packets
             );
             if result.logging_enabled {
                 println!("log saved to {}", result.log_path.display());
@@ -932,17 +1169,31 @@ fn run_with_options(cli_options: XbeeTestCliOptions) -> Result<XbeeTestRunResult
         ],
         outputs: vec![
             SessionOutputSpec {
-                id: BASE_PORT_ID.to_owned(),
+                id: BASE_AC_OUTPUT_ID.to_owned(),
                 port: settings.base_port.port.clone(),
                 baud_rate: settings.base_port.baud_rate,
                 format_name: OutputFormat::PacketAcV6.as_str().to_owned(),
                 display_mode: PortDisplayMode::Hex,
             },
             SessionOutputSpec {
-                id: ROVER_PORT_ID.to_owned(),
+                id: BASE_UP_OUTPUT_ID.to_owned(),
+                port: settings.base_port.port.clone(),
+                baud_rate: settings.base_port.baud_rate,
+                format_name: OutputFormat::RoverUpGeneral.as_str().to_owned(),
+                display_mode: PortDisplayMode::Hex,
+            },
+            SessionOutputSpec {
+                id: ROVER_JF_OUTPUT_ID.to_owned(),
                 port: settings.rover_port.port.clone(),
                 baud_rate: settings.rover_port.baud_rate,
                 format_name: OutputFormat::PacketJfV1.as_str().to_owned(),
+                display_mode: PortDisplayMode::Hex,
+            },
+            SessionOutputSpec {
+                id: ROVER_DOWN_OUTPUT_ID.to_owned(),
+                port: settings.rover_port.port.clone(),
+                baud_rate: settings.rover_port.baud_rate,
+                format_name: OutputFormat::RoverDownGeneral.as_str().to_owned(),
                 display_mode: PortDisplayMode::Hex,
             },
         ],
@@ -951,10 +1202,26 @@ fn run_with_options(cli_options: XbeeTestCliOptions) -> Result<XbeeTestRunResult
     session.set_output_packet_rate_enabled(&settings.rover_port.port, true);
     session.set_input_packet_rate_enabled(&settings.base_port.port, true);
     session.set_input_packet_rate_enabled(&settings.rover_port.port, true);
+    session.set_input_known_formats(
+        &settings.base_port.port,
+        vec![
+            OutputFormat::PacketJfV1.display_name().to_owned(),
+            OutputFormat::RoverDownGeneral.display_name().to_owned(),
+        ],
+    );
+    session.set_input_known_formats(
+        &settings.rover_port.port,
+        vec![
+            OutputFormat::PacketAcV6.display_name().to_owned(),
+            OutputFormat::RoverUpGeneral.display_name().to_owned(),
+        ],
+    );
     session.set_manual_input_recording(BASE_PORT_ID, true);
     session.set_manual_input_recording(ROVER_PORT_ID, true);
-    session.set_manual_output_recording(BASE_PORT_ID, true);
-    session.set_manual_output_recording(ROVER_PORT_ID, true);
+    session.set_manual_output_recording(BASE_AC_OUTPUT_ID, true);
+    session.set_manual_output_recording(BASE_UP_OUTPUT_ID, true);
+    session.set_manual_output_recording(ROVER_JF_OUTPUT_ID, true);
+    session.set_manual_output_recording(ROVER_DOWN_OUTPUT_ID, true);
 
     let log_path = session.log_path().to_path_buf();
     let started_at = Instant::now();
@@ -1040,17 +1307,32 @@ fn build_settings(
         .ac_rate_hz
         .or(file_config.xbee_test.ac_rate_hz)
         .unwrap_or(DEFAULT_RATE_HZ);
+    let up_rate_hz = cli_options
+        .up_rate_hz
+        .or(file_config.xbee_test.up_rate_hz)
+        .unwrap_or(DEFAULT_RATE_HZ);
     let jf_rate_hz = cli_options
         .jf_rate_hz
         .or(file_config.xbee_test.jf_rate_hz)
         .unwrap_or(DEFAULT_RATE_HZ);
+    let down_rate_hz = cli_options
+        .down_rate_hz
+        .or(file_config.xbee_test.down_rate_hz)
+        .unwrap_or(DEFAULT_RATE_HZ);
     if ac_rate_hz == 0 {
         return Err(String::from("--ac-rate must be greater than 0"));
+    }
+    if up_rate_hz == 0 {
+        return Err(String::from("--up-rate must be greater than 0"));
     }
     if mode == XbeeTestMode::Flood && jf_rate_hz == 0 {
         return Err(String::from("--jf-rate must be greater than 0"));
     }
+    if mode == XbeeTestMode::Flood && down_rate_hz == 0 {
+        return Err(String::from("--down-rate must be greater than 0"));
+    }
     let jf_rate_hz = jf_rate_hz.max(1);
+    let down_rate_hz = down_rate_hz.max(1);
 
     let log_dir = cli_options
         .log_dir
@@ -1069,7 +1351,9 @@ fn build_settings(
         },
         mode,
         ac_rate_hz,
+        up_rate_hz,
         jf_rate_hz,
+        down_rate_hz,
         log_dir,
         logging_enabled: !cli_options.no_log,
     })
@@ -1089,9 +1373,17 @@ fn parse_xbee_test_args(args: Vec<String>) -> Result<XbeeTestCliOptions, String>
                 let value = next_value(&mut iter, "--ac-rate")?;
                 options.ac_rate_hz = Some(parse_u32_arg("--ac-rate", &value)?);
             }
+            "--up-rate" => {
+                let value = next_value(&mut iter, "--up-rate")?;
+                options.up_rate_hz = Some(parse_u32_arg("--up-rate", &value)?);
+            }
             "--jf-rate" => {
                 let value = next_value(&mut iter, "--jf-rate")?;
                 options.jf_rate_hz = Some(parse_u32_arg("--jf-rate", &value)?);
+            }
+            "--down-rate" => {
+                let value = next_value(&mut iter, "--down-rate")?;
+                options.down_rate_hz = Some(parse_u32_arg("--down-rate", &value)?);
             }
             "--config" => {
                 options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
@@ -1158,6 +1450,35 @@ fn packet_is_valid(packet: &[u8], definition: PacketDefinition) -> bool {
     expected_crc == actual_crc
 }
 
+fn matches_rover_up_packet(bytes: &[u8]) -> bool {
+    bytes.len() == OutputFormat::RoverUpGeneral.packet_len()
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            0 => *byte == b'0',
+            1 => *byte == b'x',
+            2 => *byte == b'3',
+            3 | 4 => byte.is_ascii_hexdigit(),
+            5 => *byte == b',',
+            6..=9 => byte.is_ascii_digit(),
+            10 => *byte == b'\r',
+            11 => *byte == b'\n',
+            _ => false,
+        })
+}
+
+fn matches_rover_down_packet(bytes: &[u8]) -> bool {
+    bytes.len() == OutputFormat::RoverDownGeneral.packet_len()
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            0 => *byte == b'4',
+            1 | 2 => byte.is_ascii_hexdigit(),
+            3 => *byte == b',',
+            4 | 5 | 7 | 8 => byte.is_ascii_digit(),
+            6 => *byte == b'.',
+            9 => *byte == b'\r',
+            10 => *byte == b'\n',
+            _ => false,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1177,8 +1498,12 @@ mod tests {
             String::from("ping-pong"),
             String::from("--ac-rate"),
             String::from("100"),
+            String::from("--up-rate"),
+            String::from("90"),
             String::from("--jf-rate"),
             String::from("80"),
+            String::from("--down-rate"),
+            String::from("70"),
             String::from("--config"),
             String::from("config"),
             String::from("--log-dir"),
@@ -1194,7 +1519,9 @@ mod tests {
         assert_eq!(options.ports[1].baud, Some(115_200));
         assert_eq!(options.mode.as_deref(), Some("ping-pong"));
         assert_eq!(options.ac_rate_hz, Some(100));
+        assert_eq!(options.up_rate_hz, Some(90));
         assert_eq!(options.jf_rate_hz, Some(80));
+        assert_eq!(options.down_rate_hz, Some(70));
         assert_eq!(options.config_path, Some(PathBuf::from("config")));
         assert_eq!(options.log_dir, Some(PathBuf::from("tmp/logs")));
         assert!(options.no_log);
