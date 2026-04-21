@@ -1424,49 +1424,44 @@ impl XbeeTestState {
     fn build_header_lines(&self) -> Vec<String> {
         let remote_targets = self.remote_target_rates();
         let base_targets = self.base_target_rates();
-        let mut lines = vec![format!(
-            "mode={}  display={:.1} fps",
-            self.mode.as_str(),
-            self.display_fps
-        )];
-
-        if let Some(polling) = &self.polling {
-            lines.push(format!(
-                "poll={} Hz  base-real={}%%  remote-real={}%%  base(light={}, real={})  remote(light={}, real={})  pending(light={}, real={})",
-                self.poll_rate_hz,
-                self.base_real_percent,
-                self.remote_real_percent,
-                polling.base_greeting_cycles,
-                polling.base_real_cycles,
-                polling
-                    .remote_response_cycles
-                    .saturating_sub(polling.remote_real_cycles),
-                polling.remote_real_cycles,
-                polling.pending_greeting_replies,
-                polling.pending_real_replies
-            ));
-        }
-
-        lines.push(match self.mode {
-            XbeeTestMode::Polling => format!(
-                "{BASE_PORT_ID}: {} @ {} baud  tx=PollGreeting|AU+RU  rx=PollResponse|AD+RD",
-                self.base_port.port, self.base_port.baud_rate,
-            ),
-            _ => format!(
-                "{BASE_PORT_ID}: {} @ {} baud  tx=AU+RU  rx=AD+RD",
-                self.base_port.port, self.base_port.baud_rate,
-            ),
-        });
-        lines.push(match self.mode {
-            XbeeTestMode::Polling => format!(
-                "{REMOTE_PORT_ID}: {} @ {} baud  tx=PollResponse|AD+RD  rx=PollGreeting|AU+RU",
-                self.remote_port.port, self.remote_port.baud_rate,
-            ),
-            _ => format!(
-                "{REMOTE_PORT_ID}: {} @ {} baud  tx=AD+RD  rx=AU+RU",
-                self.remote_port.port, self.remote_port.baud_rate,
-            ),
-        });
+        let mut lines = match self.mode {
+            XbeeTestMode::Polling => {
+                let polling = self.polling.as_ref().expect("polling state exists");
+                vec![
+                    format!(
+                        "mode=polling  poll={}Hz  fps={:.1}  real(base={}%% remote={}%%)  pending={}/{}",
+                        self.poll_rate_hz,
+                        self.display_fps,
+                        self.base_real_percent,
+                        self.remote_real_percent,
+                        polling.pending_greeting_replies,
+                        polling.pending_real_replies
+                    ),
+                    format!(
+                        "base={}@{}  remote={}@{}",
+                        self.base_port.port,
+                        self.base_port.baud_rate,
+                        self.remote_port.port,
+                        self.remote_port.baud_rate
+                    ),
+                ]
+            }
+            _ => vec![
+                format!(
+                    "mode={}  display={:.1} fps",
+                    self.mode.as_str(),
+                    self.display_fps
+                ),
+                format!(
+                    "{BASE_PORT_ID}: {} @ {} baud  tx=AU+RU  rx=AD+RD",
+                    self.base_port.port, self.base_port.baud_rate,
+                ),
+                format!(
+                    "{REMOTE_PORT_ID}: {} @ {} baud  tx=AD+RD  rx=AU+RU",
+                    self.remote_port.port, self.remote_port.baud_rate,
+                ),
+            ],
+        };
 
         match self.mode {
             XbeeTestMode::Flood | XbeeTestMode::PingPong => {
