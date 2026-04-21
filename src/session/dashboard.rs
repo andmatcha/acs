@@ -1,14 +1,15 @@
-use crate::port_display::PortDisplayMode;
+use crate::port_display::{LineBreakMode, PortDisplayMode};
 use crate::serial::SerialLineBuffer;
 use crate::session::logger::CommandLogger;
 use crate::ui::text_dashboard::{TextDashboard, TextDashboardAction};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub(crate) struct SessionDashboard {
     dashboard: TextDashboard,
     logger: CommandLogger,
     line_buffer: SerialLineBuffer,
-    raw_input: bool,
+    input_line_break_modes: BTreeMap<String, LineBreakMode>,
     paused: bool,
     status: String,
 }
@@ -16,12 +17,16 @@ pub(crate) struct SessionDashboard {
 impl SessionDashboard {
     pub(crate) fn new(
         title: impl Into<String>,
-        raw_input: bool,
         command_name: &str,
         log_dir: &Path,
+        logging_enabled: bool,
     ) -> Result<Self, String> {
-        let logger = CommandLogger::create(command_name, log_dir)
-            .map_err(|error| format!("failed to create log file: {error}"))?;
+        let logger = if logging_enabled {
+            CommandLogger::create(command_name, log_dir)
+                .map_err(|error| format!("failed to create log file: {error}"))?
+        } else {
+            CommandLogger::disabled(command_name)
+        };
         let dashboard = TextDashboard::new(title)
             .map_err(|error| format!("failed to initialize dashboard: {error}"))?;
 
@@ -29,7 +34,7 @@ impl SessionDashboard {
             dashboard,
             logger,
             line_buffer: SerialLineBuffer::default(),
-            raw_input,
+            input_line_break_modes: BTreeMap::new(),
             paused: false,
             status: String::from("running"),
         })
@@ -48,24 +53,42 @@ impl SessionDashboard {
         port: &str,
         baud_rate: u32,
         display_mode: PortDisplayMode,
+        line_break_mode: LineBreakMode,
     ) {
         self.dashboard
             .set_input_status(port, format!("baud={baud_rate}"));
         self.dashboard.set_input_baud_rate(port, baud_rate);
         self.dashboard.set_input_display_mode(port, display_mode);
+        self.input_line_break_modes
+            .insert(port.to_string(), line_break_mode);
     }
 
     pub(crate) fn configure_output_port(
         &mut self,
         port: &str,
         baud_rate: u32,
-        format_name: &str,
         display_mode: PortDisplayMode,
     ) {
         self.dashboard
-            .set_output_status(port, format!("baud={baud_rate} format={format_name}"));
+            .set_output_status(port, format!("baud={baud_rate}"));
         self.dashboard.set_output_baud_rate(port, baud_rate);
         self.dashboard.set_output_display_mode(port, display_mode);
+    }
+
+    pub(crate) fn set_output_known_formats(&mut self, port: &str, formats: Vec<String>) {
+        self.dashboard.set_output_known_formats(port, formats);
+    }
+
+    pub(crate) fn set_input_known_formats(&mut self, port: &str, formats: Vec<String>) {
+        self.dashboard.set_input_known_formats(port, formats);
+    }
+
+    pub(crate) fn set_output_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
+        self.dashboard.set_output_packet_rate_enabled(port, enabled);
+    }
+
+    pub(crate) fn set_input_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
+        self.dashboard.set_input_packet_rate_enabled(port, enabled);
     }
 
     pub(crate) fn set_output_status(&mut self, port: &str, status: impl Into<String>) {
@@ -76,7 +99,11 @@ impl SessionDashboard {
         self.dashboard.set_input_status(port, status);
     }
 
-    pub(crate) fn handle_dashboard_action(&mut self) -> Result<(), String> {
+    pub(crate) fn set_interactive_mode(&mut self, enabled: bool) {
+        self.dashboard.set_interactive_mode(enabled);
+    }
+
+    pub(crate) fn handle_dashboard_action(&mut self) -> Result<Option<String>, String> {
         let action = self
             .dashboard
             .poll_action()
@@ -92,19 +119,33 @@ impl SessionDashboard {
                 });
                 self.render()?;
             }
+            Some(TextDashboardAction::InputChanged) => {
+                self.render()?;
+            }
+            Some(TextDashboardAction::Submit(text)) => {
+                self.render()?;
+                return Ok(Some(text));
+            }
             None => {}
         }
 
-        Ok(())
+        Ok(None)
     }
 
     pub(crate) fn is_paused(&self) -> bool {
         self.paused
     }
 
-    pub(crate) fn record_output(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
-        self.dashboard.record_output_bytes(port, bytes);
-        self.dashboard.add_output(port, bytes);
+    pub(crate) fn record_output_with_options(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) -> Result<(), String> {
+        self.dashboard.record_output_sample(port, bytes.len(), 1);
+        self.dashboard
+            .add_output_with_options(port, bytes, display_mode, preserve_line_breaks);
         self.logger
             .log_output(port, bytes)
             .map_err(|error| format!("failed to write log: {error}"))
@@ -113,7 +154,13 @@ impl SessionDashboard {
     pub(crate) fn record_input(&mut self, port: &str, bytes: &[u8]) -> Result<bool, String> {
         self.dashboard.record_input_bytes(port, bytes);
 
-        if self.raw_input {
+        let line_break = self
+            .input_line_break_modes
+            .get(port)
+            .copied()
+            .unwrap_or_default();
+
+        if line_break == LineBreakMode::Packet {
             self.dashboard.add_input(port, bytes);
             self.logger
                 .log_input(port, bytes)
@@ -141,13 +188,90 @@ impl SessionDashboard {
         Ok(true)
     }
 
-    pub(crate) fn flush_pending_input_lines(&mut self) -> Result<bool, String> {
-        if self.raw_input {
-            return Ok(false);
-        }
+    pub(crate) fn record_input_sample(&mut self, port: &str, byte_len: usize, packet_count: usize) {
+        self.dashboard
+            .record_input_sample(port, byte_len, packet_count);
+    }
 
+    pub(crate) fn record_input_format_sample(
+        &mut self,
+        port: &str,
+        format_name: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.dashboard
+            .record_input_format_sample(port, format_name, byte_len, packet_count);
+    }
+
+    pub(crate) fn record_output_sample(
+        &mut self,
+        port: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.dashboard
+            .record_output_sample(port, byte_len, packet_count);
+    }
+
+    pub(crate) fn record_output_format_sample(
+        &mut self,
+        port: &str,
+        format_name: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.dashboard
+            .record_output_format_sample(port, format_name, byte_len, packet_count);
+    }
+
+    pub(crate) fn add_input_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
+        self.add_input_entry_with_options(port, bytes, None, false)
+    }
+
+    pub(crate) fn add_input_entry_with_options(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) -> Result<(), String> {
+        self.dashboard
+            .add_input_with_options(port, bytes, display_mode, preserve_line_breaks);
+        self.logger
+            .log_input(port, bytes)
+            .map_err(|error| format!("failed to write log: {error}"))
+    }
+
+    pub(crate) fn add_output_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
+        self.add_output_entry_with_options(port, bytes, None, false)
+    }
+
+    pub(crate) fn add_output_entry_with_options(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) -> Result<(), String> {
+        self.dashboard
+            .add_output_with_options(port, bytes, display_mode, preserve_line_breaks);
+        self.logger
+            .log_output(port, bytes)
+            .map_err(|error| format!("failed to write log: {error}"))
+    }
+
+    pub(crate) fn flush_pending_input_lines(&mut self) -> Result<bool, String> {
         let mut changed = false;
         for line in self.line_buffer.drain_pending_lines() {
+            let line_break = self
+                .input_line_break_modes
+                .get(&line.port)
+                .copied()
+                .unwrap_or_default();
+            if line_break == LineBreakMode::Packet {
+                continue;
+            }
             self.dashboard.add_input(&line.port, &line.bytes);
             self.logger
                 .log_input(&line.port, &line.bytes)

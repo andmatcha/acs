@@ -17,7 +17,6 @@ const WAIT_INTERVAL: Duration = Duration::from_millis(50);
 struct MonitorCliOptions {
     ports: Vec<PortSpec>,
     baud: Option<u32>,
-    raw: bool,
     display: PortDisplayConfig,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
@@ -25,7 +24,6 @@ struct MonitorCliOptions {
 
 struct MonitorSettings {
     inputs: Vec<SessionInputSpec>,
-    raw: bool,
     log_dir: PathBuf,
 }
 
@@ -62,8 +60,8 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
     let mut session = SessionRuntime::new(SessionSpec {
         title: String::from("acs monitor"),
         command_name: String::from("monitor"),
-        raw_input: settings.raw,
         log_dir: settings.log_dir.clone(),
+        logging_enabled: true,
         inputs: settings.inputs.clone(),
         outputs: Vec::new(),
     })?;
@@ -79,7 +77,6 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
     signal::install_handler();
     session.set_header_lines(vec![
         format!("ports: {port_summary}"),
-        format!("input mode: {}", if settings.raw { "raw" } else { "line" }),
         format!("log: {log_path_display}"),
         String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
     ]);
@@ -101,12 +98,18 @@ fn build_settings(
         .baud
         .or(file_config.monitor.baud)
         .unwrap_or_else(default_baud_rate);
-    let raw = cli_options.raw || file_config.monitor.raw.unwrap_or(false);
     let mut display = file_config.monitor.display;
     if !using_cli_ports {
         for port in &requested_ports {
             if let Some(mode) = port.display_mode {
                 display.set_input(port.port.clone(), mode);
+            }
+            if let Some(mode) = port.line_break_mode {
+                display.set_line_break_for_stream(
+                    Some(crate::port_display::PortDisplayStream::Input),
+                    port.port.clone(),
+                    mode,
+                );
             }
         }
     }
@@ -116,6 +119,7 @@ fn build_settings(
         vec![SessionInputSpec {
             id: port.clone(),
             display_mode: display.resolve_input(&port),
+            line_break_mode: display.resolve_line_break_input(&port),
             port,
             baud_rate: default_baud,
         }]
@@ -135,6 +139,9 @@ fn build_settings(
                 display_mode: port_spec
                     .display_mode
                     .unwrap_or(display.resolve_input(&port)),
+                line_break_mode: port_spec
+                    .line_break_mode
+                    .unwrap_or(display.resolve_line_break_input(&port)),
                 baud_rate: port_spec.baud.unwrap_or(default_baud),
                 port,
             });
@@ -147,11 +154,7 @@ fn build_settings(
         .or(file_config.log_dir)
         .unwrap_or_else(|| default_log_dir(config_lookup));
 
-    Ok(MonitorSettings {
-        inputs,
-        raw,
-        log_dir,
-    })
+    Ok(MonitorSettings { inputs, log_dir })
 }
 
 fn parse_monitor_args(args: Vec<String>) -> Result<MonitorCliOptions, String> {
@@ -168,15 +171,10 @@ fn parse_monitor_args(args: Vec<String>) -> Result<MonitorCliOptions, String> {
                 let value = next_value(&mut iter, "--baud")?;
                 options.baud = Some(parse_u32_arg("--baud", &value)?);
             }
-            "--raw" => options.raw = true,
             "--display" => {
                 let value = next_value(&mut iter, "--display")?;
                 let assignment = parse_display_assignment(&value)?;
-                options.display.set_for_stream(
-                    assignment.stream,
-                    assignment.target,
-                    assignment.mode,
-                );
+                assignment.apply_to(&mut options.display);
             }
             "--config" => {
                 options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))

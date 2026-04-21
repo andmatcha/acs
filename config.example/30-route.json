@@ -1,11 +1,10 @@
 {
   "route": {
     "baud": 115200,
-    "raw": true,
     "display": {
       "default": "hex+ascii",
       "input": {
-        "default": "hex+ascii"
+        "default": "hex+ascii+packet"
       },
       "output": {
         "default": "hex+ascii"

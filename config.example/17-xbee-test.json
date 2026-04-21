@@ -1,0 +1,24 @@
+{
+  "xbee_test": {
+    "ports": [
+      {
+        "id": "base",
+        "port": "/dev/ttyUSB0",
+        "baud": 921600
+      },
+      {
+        "id": "remote",
+        "port": "/dev/ttyUSB1",
+        "baud": 115200
+      }
+    ],
+    "mode": "polling",
+    "poll_rate": 100,
+    "base_real_percent": 10,
+    "remote_real_percent": 20,
+    "au_rate": 100,
+    "ru_rate": 100,
+    "ad_rate": 100,
+    "rd_rate": 100
+  }
+}

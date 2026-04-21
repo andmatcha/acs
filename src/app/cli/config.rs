@@ -5,7 +5,9 @@ use crate::pipeline::{
     ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineSpec, RouterModuleConfig,
     TagRoutingRule, TransformChainConfig, TransformModuleConfig,
 };
-use crate::port_display::{PortDisplayConfig, PortDisplayMode};
+use crate::port_display::{
+    LineBreakMode, PortDisplayConfig, PortDisplayMode, PortDisplayStream, parse_display_value,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +19,8 @@ pub(crate) struct AppConfig {
     pub log_dir: Option<PathBuf>,
     pub control: ControlConfig,
     pub send: SendConfig,
+    pub xbee_mock: XbeeMockConfig,
+    pub xbee_test: XbeeTestConfig,
     pub monitor: MonitorConfig,
     pub route: RouteConfig,
 }
@@ -27,7 +31,6 @@ pub(crate) struct ControlConfig {
     pub baud: Option<u32>,
     pub controller: Option<String>,
     pub format: Option<String>,
-    pub raw: Option<bool>,
     pub display: PortDisplayConfig,
     pub monitor_ports: Vec<PortSpec>,
     pub log_dir: Option<PathBuf>,
@@ -37,7 +40,6 @@ pub(crate) struct ControlConfig {
 pub(crate) struct MonitorConfig {
     pub ports: Vec<PortSpec>,
     pub baud: Option<u32>,
-    pub raw: Option<bool>,
     pub display: PortDisplayConfig,
     pub log_dir: Option<PathBuf>,
 }
@@ -45,10 +47,41 @@ pub(crate) struct MonitorConfig {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct SendConfig {
     pub port: Option<PortSpec>,
+    pub outputs: Vec<SendOutputConfig>,
     pub baud: Option<u32>,
+    pub rate_hz: Option<u32>,
     pub format: Option<String>,
     pub display: PortDisplayConfig,
-    pub monitor_ports: Vec<PortSpec>,
+    pub monitor_ports: Vec<SendMonitorConfig>,
+    pub log_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct XbeeTestConfig {
+    pub ports: Vec<XbeeTestPortConfig>,
+    pub mode: Option<String>,
+    pub poll_rate_hz: Option<u32>,
+    pub base_real_percent: Option<u32>,
+    pub remote_real_percent: Option<u32>,
+    pub au_rate_hz: Option<u32>,
+    pub ru_rate_hz: Option<u32>,
+    pub ad_rate_hz: Option<u32>,
+    pub rd_rate_hz: Option<u32>,
+    pub log_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct XbeeMockConfig {
+    pub role: Option<String>,
+    pub port: Option<XbeeMockPortConfig>,
+    pub mode: Option<String>,
+    pub poll_rate_hz: Option<u32>,
+    pub base_real_percent: Option<u32>,
+    pub remote_real_percent: Option<u32>,
+    pub au_rate_hz: Option<u32>,
+    pub ru_rate_hz: Option<u32>,
+    pub ad_rate_hz: Option<u32>,
+    pub rd_rate_hz: Option<u32>,
     pub log_dir: Option<PathBuf>,
 }
 
@@ -60,9 +93,41 @@ pub(crate) struct RouteConfig {
     pub template: Option<String>,
     pub templates: BTreeMap<String, RouteTemplateConfig>,
     pub baud: Option<u32>,
-    pub raw: Option<bool>,
     pub display: PortDisplayConfig,
     pub log_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SendOutputConfig {
+    pub id: String,
+    pub port: String,
+    pub baud: Option<u32>,
+    pub rate_hz: Option<u32>,
+    pub format: Option<String>,
+    pub display_mode: Option<PortDisplayMode>,
+    pub line_break_mode: Option<LineBreakMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SendMonitorConfig {
+    pub port: String,
+    pub baud: Option<u32>,
+    pub format: Option<String>,
+    pub display_mode: Option<PortDisplayMode>,
+    pub line_break_mode: Option<LineBreakMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct XbeeTestPortConfig {
+    pub id: String,
+    pub port: String,
+    pub baud: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct XbeeMockPortConfig {
+    pub port: String,
+    pub baud: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +143,7 @@ pub(crate) struct RouteInputConfig {
     pub port: String,
     pub baud: Option<u32>,
     pub display_mode: Option<PortDisplayMode>,
+    pub line_break_mode: Option<LineBreakMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +177,8 @@ impl AppConfig {
         merge_option(&mut self.log_dir, other.log_dir);
         self.control.merge_from(other.control);
         self.send.merge_from(other.send);
+        self.xbee_mock.merge_from(other.xbee_mock);
+        self.xbee_test.merge_from(other.xbee_test);
         self.monitor.merge_from(other.monitor);
         self.route.merge_from(other.route);
     }
@@ -122,7 +190,6 @@ impl ControlConfig {
         merge_option(&mut self.baud, other.baud);
         merge_option(&mut self.controller, other.controller);
         merge_option(&mut self.format, other.format);
-        merge_option(&mut self.raw, other.raw);
         self.display.merge_from(other.display);
         merge_port_specs(&mut self.monitor_ports, other.monitor_ports);
         merge_option(&mut self.log_dir, other.log_dir);
@@ -133,7 +200,6 @@ impl MonitorConfig {
     fn merge_from(&mut self, other: MonitorConfig) {
         merge_port_specs(&mut self.ports, other.ports);
         merge_option(&mut self.baud, other.baud);
-        merge_option(&mut self.raw, other.raw);
         self.display.merge_from(other.display);
         merge_option(&mut self.log_dir, other.log_dir);
     }
@@ -142,10 +208,43 @@ impl MonitorConfig {
 impl SendConfig {
     fn merge_from(&mut self, other: SendConfig) {
         merge_option(&mut self.port, other.port);
+        merge_send_outputs(&mut self.outputs, other.outputs);
         merge_option(&mut self.baud, other.baud);
+        merge_option(&mut self.rate_hz, other.rate_hz);
         merge_option(&mut self.format, other.format);
         self.display.merge_from(other.display);
-        merge_port_specs(&mut self.monitor_ports, other.monitor_ports);
+        merge_send_monitors(&mut self.monitor_ports, other.monitor_ports);
+        merge_option(&mut self.log_dir, other.log_dir);
+    }
+}
+
+impl XbeeTestConfig {
+    fn merge_from(&mut self, other: XbeeTestConfig) {
+        merge_xbee_test_ports(&mut self.ports, other.ports);
+        merge_option(&mut self.mode, other.mode);
+        merge_option(&mut self.poll_rate_hz, other.poll_rate_hz);
+        merge_option(&mut self.base_real_percent, other.base_real_percent);
+        merge_option(&mut self.remote_real_percent, other.remote_real_percent);
+        merge_option(&mut self.au_rate_hz, other.au_rate_hz);
+        merge_option(&mut self.ru_rate_hz, other.ru_rate_hz);
+        merge_option(&mut self.ad_rate_hz, other.ad_rate_hz);
+        merge_option(&mut self.rd_rate_hz, other.rd_rate_hz);
+        merge_option(&mut self.log_dir, other.log_dir);
+    }
+}
+
+impl XbeeMockConfig {
+    fn merge_from(&mut self, other: XbeeMockConfig) {
+        merge_option(&mut self.role, other.role);
+        merge_option(&mut self.port, other.port);
+        merge_option(&mut self.mode, other.mode);
+        merge_option(&mut self.poll_rate_hz, other.poll_rate_hz);
+        merge_option(&mut self.base_real_percent, other.base_real_percent);
+        merge_option(&mut self.remote_real_percent, other.remote_real_percent);
+        merge_option(&mut self.au_rate_hz, other.au_rate_hz);
+        merge_option(&mut self.ru_rate_hz, other.ru_rate_hz);
+        merge_option(&mut self.ad_rate_hz, other.ad_rate_hz);
+        merge_option(&mut self.rd_rate_hz, other.rd_rate_hz);
         merge_option(&mut self.log_dir, other.log_dir);
     }
 }
@@ -160,7 +259,6 @@ impl RouteConfig {
             self.templates.insert(template.id.clone(), template);
         }
         merge_option(&mut self.baud, other.baud);
-        merge_option(&mut self.raw, other.raw);
         self.display.merge_from(other.display);
         merge_option(&mut self.log_dir, other.log_dir);
     }
@@ -208,6 +306,39 @@ fn merge_route_outputs(target: &mut Vec<RouteOutputConfig>, outputs: Vec<RouteOu
     }
 }
 
+fn merge_send_outputs(target: &mut Vec<SendOutputConfig>, outputs: Vec<SendOutputConfig>) {
+    for output in outputs {
+        if let Some(existing) = target.iter_mut().find(|existing| existing.id == output.id) {
+            *existing = output;
+        } else {
+            target.push(output);
+        }
+    }
+}
+
+fn merge_send_monitors(target: &mut Vec<SendMonitorConfig>, monitors: Vec<SendMonitorConfig>) {
+    for monitor in monitors {
+        if let Some(existing) = target
+            .iter_mut()
+            .find(|existing| existing.port == monitor.port)
+        {
+            *existing = monitor;
+        } else {
+            target.push(monitor);
+        }
+    }
+}
+
+fn merge_xbee_test_ports(target: &mut Vec<XbeeTestPortConfig>, ports: Vec<XbeeTestPortConfig>) {
+    for port in ports {
+        if let Some(existing) = target.iter_mut().find(|existing| existing.id == port.id) {
+            *existing = port;
+        } else {
+            target.push(port);
+        }
+    }
+}
+
 pub(crate) fn load_config(path: &Path) -> Result<AppConfig, String> {
     if path.is_dir() {
         return load_config_dir(path);
@@ -233,6 +364,10 @@ fn load_config_file(path: &Path) -> Result<AppConfig, String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let send = parse_send_config(root.get("send"), base_dir)
         .map_err(|error| format!("{}: {error}", path.display()))?;
+    let xbee_mock = parse_xbee_mock_config(root.get("xbee_mock"), base_dir)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let xbee_test = parse_xbee_test_config(root.get("xbee_test"), base_dir)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
     let monitor = parse_monitor_config(root.get("monitor"), base_dir)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let route = parse_route_config(root.get("route"), base_dir)
@@ -242,6 +377,8 @@ fn load_config_file(path: &Path) -> Result<AppConfig, String> {
         log_dir: top_level_log_dir,
         control,
         send,
+        xbee_mock,
+        xbee_test,
         monitor,
         route,
     })
@@ -315,14 +452,15 @@ fn parse_control_config(
         return Ok(ControlConfig::default());
     };
     let object = expect_object(value, "control")?;
+    let mut display = legacy_input_display_config(optional_bool(object, "raw")?);
+    display.merge_from(optional_display_config(object, "display")?);
 
     Ok(ControlConfig {
         port: optional_port_spec(object, "port")?,
         baud: optional_u32(object, "baud")?,
         controller: optional_string(object, "controller")?,
         format: optional_string(object, "format")?,
-        raw: optional_bool(object, "raw")?,
-        display: optional_display_config(object, "display")?,
+        display,
         monitor_ports: optional_port_spec_list(object, "monitor_ports")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
@@ -336,6 +474,8 @@ fn parse_monitor_config(
         return Ok(MonitorConfig::default());
     };
     let object = expect_object(value, "monitor")?;
+    let mut display = legacy_input_display_config(optional_bool(object, "raw")?);
+    display.merge_from(optional_display_config(object, "display")?);
     let mut ports = optional_port_spec_list(object, "ports")?;
     if ports.is_empty()
         && let Some(port) = optional_port_spec(object, "port")?
@@ -346,8 +486,7 @@ fn parse_monitor_config(
     Ok(MonitorConfig {
         ports,
         baud: optional_u32(object, "baud")?,
-        raw: optional_bool(object, "raw")?,
-        display: optional_display_config(object, "display")?,
+        display,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -360,10 +499,59 @@ fn parse_send_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<SendC
 
     Ok(SendConfig {
         port: optional_port_spec(object, "port")?,
+        outputs: optional_send_outputs(object, "outputs")?,
         baud: optional_u32(object, "baud")?,
+        rate_hz: optional_u32(object, "rate")?,
         format: optional_string(object, "format")?,
         display: optional_display_config(object, "display")?,
-        monitor_ports: optional_port_spec_list(object, "monitor_ports")?,
+        monitor_ports: optional_send_monitors(object, "monitor_ports")?,
+        log_dir: optional_path(object, "log_dir", base_dir)?,
+    })
+}
+
+fn parse_xbee_mock_config(
+    value: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<XbeeMockConfig, String> {
+    let Some(value) = value else {
+        return Ok(XbeeMockConfig::default());
+    };
+    let object = expect_object(value, "xbee_mock")?;
+
+    Ok(XbeeMockConfig {
+        role: optional_string(object, "role")?,
+        port: optional_xbee_mock_port(object, "port")?,
+        mode: optional_string(object, "mode")?,
+        poll_rate_hz: optional_u32(object, "poll_rate")?,
+        base_real_percent: optional_u32(object, "base_real_percent")?,
+        remote_real_percent: optional_u32(object, "remote_real_percent")?,
+        au_rate_hz: optional_u32(object, "au_rate")?,
+        ru_rate_hz: optional_u32(object, "ru_rate")?,
+        ad_rate_hz: optional_u32(object, "ad_rate")?,
+        rd_rate_hz: optional_u32(object, "rd_rate")?,
+        log_dir: optional_path(object, "log_dir", base_dir)?,
+    })
+}
+
+fn parse_xbee_test_config(
+    value: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<XbeeTestConfig, String> {
+    let Some(value) = value else {
+        return Ok(XbeeTestConfig::default());
+    };
+    let object = expect_object(value, "xbee_test")?;
+
+    Ok(XbeeTestConfig {
+        ports: optional_xbee_test_ports(object, "ports")?,
+        mode: optional_string(object, "mode")?,
+        poll_rate_hz: optional_u32(object, "poll_rate")?,
+        base_real_percent: optional_u32(object, "base_real_percent")?,
+        remote_real_percent: optional_u32(object, "remote_real_percent")?,
+        au_rate_hz: optional_u32(object, "au_rate")?,
+        ru_rate_hz: optional_u32(object, "ru_rate")?,
+        ad_rate_hz: optional_u32(object, "ad_rate")?,
+        rd_rate_hz: optional_u32(object, "rd_rate")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -373,6 +561,8 @@ fn parse_route_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<Rout
         return Ok(RouteConfig::default());
     };
     let object = expect_object(value, "route")?;
+    let mut display = legacy_input_display_config(optional_bool(object, "raw")?);
+    display.merge_from(optional_display_config(object, "display")?);
 
     Ok(RouteConfig {
         inputs: optional_route_inputs(object, "inputs")?,
@@ -381,10 +571,25 @@ fn parse_route_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<Rout
         template: optional_string(object, "template")?,
         templates: optional_route_templates(object.get("templates"))?,
         baud: optional_u32(object, "baud")?,
-        raw: optional_bool(object, "raw")?,
-        display: optional_display_config(object, "display")?,
+        display,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
+}
+
+fn legacy_input_display_config(raw: Option<bool>) -> PortDisplayConfig {
+    let mut display = PortDisplayConfig::default();
+    if let Some(raw) = raw {
+        display.set_line_break_for_stream(
+            Some(PortDisplayStream::Input),
+            "default",
+            if raw {
+                LineBreakMode::Packet
+            } else {
+                LineBreakMode::Line
+            },
+        );
+    }
+    display
 }
 
 fn optional_string(object: &JsonObject, key: &str) -> Result<Option<String>, String> {
@@ -460,7 +665,13 @@ fn optional_display_config(object: &JsonObject, key: &str) -> Result<PortDisplay
                     let JsonValue::String(mode) = scope_value else {
                         return Err(format!("`{key}.{target}.{scope_target}` must be string"));
                     };
-                    config.set_input(scope_target.clone(), PortDisplayMode::parse(mode)?);
+                    apply_display_value(
+                        &mut config,
+                        Some(PortDisplayStream::Input),
+                        scope_target,
+                        mode,
+                        &format!("{key}.{target}.{scope_target}"),
+                    )?;
                 }
             }
             ("output" | "tx", JsonValue::Object(scope)) => {
@@ -468,17 +679,46 @@ fn optional_display_config(object: &JsonObject, key: &str) -> Result<PortDisplay
                     let JsonValue::String(mode) = scope_value else {
                         return Err(format!("`{key}.{target}.{scope_target}` must be string"));
                     };
-                    config.set_output(scope_target.clone(), PortDisplayMode::parse(mode)?);
+                    apply_display_value(
+                        &mut config,
+                        Some(PortDisplayStream::Output),
+                        scope_target,
+                        mode,
+                        &format!("{key}.{target}.{scope_target}"),
+                    )?;
                 }
             }
             (_, JsonValue::String(mode)) => {
-                config.set_both(target.clone(), PortDisplayMode::parse(mode)?);
+                apply_display_value(&mut config, None, target, mode, &format!("{key}.{target}"))?;
             }
             _ => return Err(format!("`{key}.{target}` must be string or object")),
         }
     }
 
     Ok(config)
+}
+
+fn apply_display_value(
+    config: &mut PortDisplayConfig,
+    stream: Option<PortDisplayStream>,
+    target: &str,
+    mode: &str,
+    key_path: &str,
+) -> Result<(), String> {
+    let (display_mode, line_break_mode) =
+        parse_display_value(mode).map_err(|error| format!("`{key_path}`: {error}"))?;
+    if display_mode.is_none() && line_break_mode.is_none() {
+        return Err(format!(
+            "`{key_path}` must be one of hex/ascii/utf8/hex+ascii/hex+utf8/line/packet"
+        ));
+    }
+    if let Some(display_mode) = display_mode {
+        config.set_for_stream(stream, target.to_owned(), display_mode);
+    }
+    if let Some(line_break_mode) = line_break_mode {
+        config.set_line_break_for_stream(stream, target.to_owned(), line_break_mode);
+    }
+    Ok(())
 }
 
 fn optional_port_spec(object: &JsonObject, key: &str) -> Result<Option<PortSpec>, String> {
@@ -524,12 +764,16 @@ fn parse_port_spec_value(value: &JsonValue, key: &str) -> Result<Option<PortSpec
 }
 
 fn parse_port_spec_text(value: &str, key: &str) -> Result<PortSpec, String> {
-    let (port_and_baud, display_mode) = match value.rsplit_once(',') {
-        Some((port_and_baud, mode)) => match PortDisplayMode::parse(mode) {
-            Ok(mode) => (port_and_baud, Some(mode)),
-            Err(_) => (value, None),
+    let (port_and_baud, display_mode, line_break_mode) = match value.rsplit_once(',') {
+        Some((port_and_baud, mode)) => match parse_display_value(mode) {
+            Ok((display_mode, line_break_mode))
+                if display_mode.is_some() || line_break_mode.is_some() =>
+            {
+                (port_and_baud, display_mode, line_break_mode)
+            }
+            _ => (value, None, None),
         },
-        None => (value, None),
+        None => (value, None, None),
     };
 
     let (port, baud) = match port_and_baud.rsplit_once('@') {
@@ -551,6 +795,7 @@ fn parse_port_spec_text(value: &str, key: &str) -> Result<PortSpec, String> {
         port: port.to_owned(),
         baud,
         display_mode,
+        line_break_mode,
     })
 }
 
@@ -567,8 +812,13 @@ fn parse_port_spec_object(object: &JsonObject, _key: &str) -> Result<Option<Port
         port: trimmed.to_owned(),
         baud: optional_u32(object, "baud")?,
         display_mode: optional_string(object, "display")?
-            .map(|mode| PortDisplayMode::parse(&mode))
-            .transpose()?,
+            .map(|mode| parse_display_value(&mode).map(|(display_mode, _)| display_mode))
+            .transpose()?
+            .flatten(),
+        line_break_mode: optional_string(object, "display")?
+            .map(|mode| parse_display_value(&mode).map(|(_, line_break_mode)| line_break_mode))
+            .transpose()?
+            .flatten(),
     }))
 }
 
@@ -603,13 +853,15 @@ fn optional_route_inputs(object: &JsonObject, key: &str) -> Result<Vec<RouteInpu
 
     for value in values {
         let entry = expect_object(value, key)?;
+        let display = optional_string(entry, "display")?
+            .map(|mode| parse_display_value(&mode))
+            .transpose()?;
         inputs.push(RouteInputConfig {
             id: required_string(entry, "id")?,
             port: required_string(entry, "port")?,
             baud: optional_u32(entry, "baud")?,
-            display_mode: optional_string(entry, "display")?
-                .map(|mode| PortDisplayMode::parse(&mode))
-                .transpose()?,
+            display_mode: display.and_then(|(display_mode, _)| display_mode),
+            line_break_mode: display.and_then(|(_, line_break_mode)| line_break_mode),
         });
     }
 
@@ -628,17 +880,274 @@ fn optional_route_outputs(
 
     for value in values {
         let entry = expect_object(value, key)?;
+        let display = optional_string(entry, "display")?
+            .map(|mode| parse_display_value(&mode))
+            .transpose()?;
         outputs.push(RouteOutputConfig {
             id: required_string(entry, "id")?,
             port: required_string(entry, "port")?,
             baud: optional_u32(entry, "baud")?,
-            display_mode: optional_string(entry, "display")?
-                .map(|mode| PortDisplayMode::parse(&mode))
-                .transpose()?,
+            display_mode: display.and_then(|(display_mode, _)| display_mode),
         });
     }
 
     Ok(outputs)
+}
+
+fn optional_send_outputs(object: &JsonObject, key: &str) -> Result<Vec<SendOutputConfig>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(Vec::new());
+    };
+    let values = expect_array(value, key)?;
+    let mut outputs = Vec::new();
+
+    for value in values {
+        let entry = expect_object(value, key)?;
+        let display = optional_string(entry, "display")?
+            .map(|mode| parse_display_value(&mode))
+            .transpose()?;
+        outputs.push(SendOutputConfig {
+            id: optional_string(entry, "id")?
+                .unwrap_or_else(|| required_string(entry, "port").expect("port exists")),
+            port: required_string(entry, "port")?,
+            baud: optional_u32(entry, "baud")?,
+            rate_hz: optional_u32(entry, "rate")?,
+            format: optional_string(entry, "format")?,
+            display_mode: display.and_then(|(display_mode, _)| display_mode),
+            line_break_mode: display.and_then(|(_, line_break_mode)| line_break_mode),
+        });
+    }
+
+    Ok(outputs)
+}
+
+fn optional_send_monitors(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Vec<SendMonitorConfig>, String> {
+    match object.get(key) {
+        None | Some(JsonValue::Null) => Ok(Vec::new()),
+        Some(JsonValue::String(_)) | Some(JsonValue::Object(_)) => {
+            parse_send_monitor_value(object.get(key).expect("value exists"), key)
+                .map(|value| value.into_iter().collect())
+        }
+        Some(JsonValue::Array(values)) => values
+            .iter()
+            .filter_map(|value| match parse_send_monitor_value(value, key) {
+                Ok(Some(spec)) => Some(Ok(spec)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect(),
+        Some(_) => Err(type_error(key, "string, object, or array")),
+    }
+}
+
+fn parse_send_monitor_value(
+    value: &JsonValue,
+    key: &str,
+) -> Result<Option<SendMonitorConfig>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(parse_send_monitor_text(trimmed, key)?))
+        }
+        JsonValue::Object(object) => parse_send_monitor_object(object, key),
+        _ => Err(type_error(key, "string or object")),
+    }
+}
+
+fn parse_send_monitor_text(value: &str, key: &str) -> Result<SendMonitorConfig, String> {
+    let (port_text, format) = if let Some((port_text, format_name)) = value.rsplit_once(',') {
+        if OutputFormat::parse(format_name).is_ok() {
+            (port_text, Some(format_name.to_owned()))
+        } else {
+            (value, None)
+        }
+    } else {
+        (value, None)
+    };
+
+    let port_spec = parse_port_spec_text(port_text, key)?;
+    Ok(SendMonitorConfig {
+        port: port_spec.port,
+        baud: port_spec.baud,
+        format,
+        display_mode: port_spec.display_mode,
+        line_break_mode: port_spec.line_break_mode,
+    })
+}
+
+fn parse_send_monitor_object(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Option<SendMonitorConfig>, String> {
+    let Some(port_spec) = parse_port_spec_object(object, key)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(SendMonitorConfig {
+        port: port_spec.port,
+        baud: port_spec.baud,
+        format: optional_string(object, "format")?,
+        display_mode: port_spec.display_mode,
+        line_break_mode: port_spec.line_break_mode,
+    }))
+}
+
+fn optional_xbee_mock_port(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Option<XbeeMockPortConfig>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(parse_xbee_mock_port_text(trimmed, key)?))
+        }
+        JsonValue::Object(object) => parse_xbee_mock_port_object(object, key),
+        _ => Err(type_error(key, "string or object")),
+    }
+}
+
+fn parse_xbee_mock_port_text(value: &str, key: &str) -> Result<XbeeMockPortConfig, String> {
+    let port_spec = parse_port_spec_text(value, key)?;
+    if port_spec.display_mode.is_some() || port_spec.line_break_mode.is_some() {
+        return Err(format!(
+            "`{key}` must not specify display mode; xbee_mock uses fixed hex packet display"
+        ));
+    }
+
+    Ok(XbeeMockPortConfig {
+        port: port_spec.port,
+        baud: port_spec.baud,
+    })
+}
+
+fn parse_xbee_mock_port_object(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Option<XbeeMockPortConfig>, String> {
+    let Some(port_spec) = parse_port_spec_object(object, key)? else {
+        return Ok(None);
+    };
+    if port_spec.display_mode.is_some() || port_spec.line_break_mode.is_some() {
+        return Err(format!(
+            "`{key}` must not specify display mode; xbee_mock uses fixed hex packet display"
+        ));
+    }
+
+    Ok(Some(XbeeMockPortConfig {
+        port: port_spec.port,
+        baud: port_spec.baud,
+    }))
+}
+
+fn optional_xbee_test_ports(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Vec<XbeeTestPortConfig>, String> {
+    match object.get(key) {
+        None | Some(JsonValue::Null) => Ok(Vec::new()),
+        Some(JsonValue::String(_)) | Some(JsonValue::Object(_)) => {
+            parse_xbee_test_port_value(object.get(key).expect("value exists"), key)
+                .map(|value| value.into_iter().collect())
+        }
+        Some(JsonValue::Array(values)) => values
+            .iter()
+            .filter_map(|value| match parse_xbee_test_port_value(value, key) {
+                Ok(Some(spec)) => Some(Ok(spec)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect(),
+        Some(_) => Err(type_error(key, "string, object, or array")),
+    }
+}
+
+fn parse_xbee_test_port_value(
+    value: &JsonValue,
+    key: &str,
+) -> Result<Option<XbeeTestPortConfig>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(parse_xbee_test_port_text(trimmed, key)?))
+        }
+        JsonValue::Object(object) => parse_xbee_test_port_object(object, key),
+        _ => Err(type_error(key, "string or object")),
+    }
+}
+
+fn parse_xbee_test_port_text(value: &str, key: &str) -> Result<XbeeTestPortConfig, String> {
+    let Some((id, port_text)) = value.split_once('=') else {
+        return Err(format!(
+            "`{key}` entry must be `base=PORT[@BAUD]` or `remote=PORT[@BAUD]`"
+        ));
+    };
+
+    let port_spec = parse_port_spec_text(port_text, key)?;
+    if port_spec.display_mode.is_some() || port_spec.line_break_mode.is_some() {
+        return Err(format!(
+            "`{key}` entry must not specify display mode; xbee_test uses fixed hex packet display"
+        ));
+    }
+
+    Ok(XbeeTestPortConfig {
+        id: normalize_xbee_test_port_id(id)?,
+        port: port_spec.port,
+        baud: port_spec.baud,
+    })
+}
+
+fn parse_xbee_test_port_object(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Option<XbeeTestPortConfig>, String> {
+    let id = optional_string(object, "id")?.unwrap_or_default();
+    let id = id.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+
+    let port = optional_string(object, "path")?
+        .or(optional_string(object, "port")?)
+        .unwrap_or_default();
+    let port = port.trim();
+    if port.is_empty() {
+        return Err(format!("`{key}.port` is required"));
+    }
+
+    Ok(Some(XbeeTestPortConfig {
+        id: normalize_xbee_test_port_id(id)?,
+        port: port.to_owned(),
+        baud: optional_u32(object, "baud")?,
+    }))
+}
+
+fn normalize_xbee_test_port_id(value: &str) -> Result<String, String> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "base" | "remote" => Ok(value),
+        _ => Err(format!(
+            "xbee_test port id must be `base` or `remote`, got `{value}`"
+        )),
+    }
 }
 
 fn optional_pipeline_spec(object: &JsonObject, key: &str) -> Result<PipelineSpec, String> {
@@ -1122,11 +1631,13 @@ impl<'a> JsonParser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{JsonParser, load_config};
+    use super::{
+        JsonParser, SendMonitorConfig, XbeeMockPortConfig, XbeeTestPortConfig, load_config,
+    };
     use crate::app::cli::common::PortSpec;
     use crate::output::OutputFormat;
     use crate::pipeline::TransformModuleConfig;
-    use crate::port_display::PortDisplayMode;
+    use crate::port_display::{LineBreakMode, PortDisplayMode};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1219,6 +1730,7 @@ mod tests {
               "log_dir": "logs",
               "send": {
                 "format": "packetjfv1",
+                "rate": 100,
                 "monitor_ports": ["/dev/ttyUSB2"]
               },
               "monitor": {
@@ -1280,12 +1792,16 @@ mod tests {
 
         assert_eq!(config.log_dir, Some(temp_dir.join("logs")));
         assert_eq!(config.send.format, Some(String::from("packetjfv1")));
+        assert_eq!(config.send.rate_hz, Some(100));
+        assert!(config.xbee_test.ports.is_empty());
         assert_eq!(
             config.send.monitor_ports,
-            vec![PortSpec {
+            vec![SendMonitorConfig {
                 port: String::from("/dev/ttyUSB2"),
                 baud: None,
+                format: None,
                 display_mode: None,
+                line_break_mode: None,
             }]
         );
         assert_eq!(
@@ -1294,6 +1810,7 @@ mod tests {
                 port: String::from("/dev/ttyUSB0"),
                 baud: None,
                 display_mode: None,
+                line_break_mode: None,
             }]
         );
         assert_eq!(config.route.baud, Some(115200));
@@ -1353,6 +1870,7 @@ mod tests {
                 port: String::from("/dev/ttyUSB0"),
                 baud: Some(921_600),
                 display_mode: Some(PortDisplayMode::Hex),
+                line_break_mode: None,
             })
         );
         assert_eq!(
@@ -1361,6 +1879,7 @@ mod tests {
                 port: String::from("/dev/ttyUSB1"),
                 baud: Some(115_200),
                 display_mode: Some(PortDisplayMode::Utf8),
+                line_break_mode: None,
             }]
         );
         assert_eq!(
@@ -1369,6 +1888,7 @@ mod tests {
                 port: String::from("/dev/ttyUSB2"),
                 baud: Some(460_800),
                 display_mode: Some(PortDisplayMode::HexAscii),
+                line_break_mode: None,
             }]
         );
         assert_eq!(config.route.inputs[0].baud, Some(230_400));
@@ -1380,6 +1900,262 @@ mod tests {
         assert_eq!(
             config.route.outputs[0].display_mode,
             Some(PortDisplayMode::Hex)
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_accepts_send_outputs_with_per_output_settings() {
+        let temp_dir = make_temp_dir("acs_config_send_outputs");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "send": {
+                "outputs": [
+                  {
+                    "id": "main",
+                    "port": "/dev/ttyUSB0",
+                    "baud": 921600,
+                    "rate": 100,
+                    "format": "packetacv6",
+                    "display": "hex+packet"
+                  },
+                  {
+                    "id": "sub",
+                    "port": "/dev/ttyUSB1",
+                    "baud": 115200,
+                    "rate": 10,
+                    "format": "packetjfv1",
+                    "display": "utf8+line"
+                  }
+                ]
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).unwrap();
+
+        assert_eq!(config.send.outputs.len(), 2);
+        assert_eq!(config.send.outputs[0].id, "main");
+        assert_eq!(config.send.outputs[0].rate_hz, Some(100));
+        assert_eq!(config.send.outputs[0].format.as_deref(), Some("packetacv6"));
+        assert_eq!(
+            config.send.outputs[0].display_mode,
+            Some(PortDisplayMode::Hex)
+        );
+        assert_eq!(
+            config.send.outputs[0].line_break_mode,
+            Some(LineBreakMode::Packet)
+        );
+        assert_eq!(config.send.outputs[1].id, "sub");
+        assert_eq!(config.send.outputs[1].rate_hz, Some(10));
+        assert_eq!(config.send.outputs[1].format.as_deref(), Some("packetjfv1"));
+        assert_eq!(
+            config.send.outputs[1].display_mode,
+            Some(PortDisplayMode::Utf8)
+        );
+        assert_eq!(
+            config.send.outputs[1].line_break_mode,
+            Some(LineBreakMode::Line)
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_accepts_send_monitor_formats() {
+        let temp_dir = make_temp_dir("acs_config_send_monitors");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "send": {
+                "monitor_ports": [
+                  "/dev/ttyUSB9@115200,utf8+line,packetjfv1",
+                  { "port": "/dev/ttyUSB8", "baud": 921600, "display": "hex+packet", "format": "packetacv6" }
+                ]
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).unwrap();
+
+        assert_eq!(config.send.monitor_ports.len(), 2);
+        assert_eq!(config.send.monitor_ports[0].port, "/dev/ttyUSB9");
+        assert_eq!(
+            config.send.monitor_ports[0].format.as_deref(),
+            Some("packetjfv1")
+        );
+        assert_eq!(
+            config.send.monitor_ports[0].display_mode,
+            Some(PortDisplayMode::Utf8)
+        );
+        assert_eq!(
+            config.send.monitor_ports[0].line_break_mode,
+            Some(LineBreakMode::Line)
+        );
+        assert_eq!(config.send.monitor_ports[1].port, "/dev/ttyUSB8");
+        assert_eq!(
+            config.send.monitor_ports[1].format.as_deref(),
+            Some("packetacv6")
+        );
+        assert_eq!(
+            config.send.monitor_ports[1].display_mode,
+            Some(PortDisplayMode::Hex)
+        );
+        assert_eq!(
+            config.send.monitor_ports[1].line_break_mode,
+            Some(LineBreakMode::Packet)
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_accepts_xbee_test_ports_and_rates() {
+        let temp_dir = make_temp_dir("acs_config_xbee_test");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "xbee_test": {
+                "ports": [
+                  "base=/dev/ttyUSB0@921600",
+                  { "id": "remote", "port": "/dev/ttyUSB1", "baud": 115200 }
+                ],
+                "mode": "polling",
+                "poll_rate": 100,
+                "base_real_percent": 15,
+                "remote_real_percent": 25,
+                "au_rate": 100,
+                "ru_rate": 90,
+                "ad_rate": 80,
+                "rd_rate": 70
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).unwrap();
+
+        assert_eq!(
+            config.xbee_test.ports,
+            vec![
+                XbeeTestPortConfig {
+                    id: String::from("base"),
+                    port: String::from("/dev/ttyUSB0"),
+                    baud: Some(921_600),
+                },
+                XbeeTestPortConfig {
+                    id: String::from("remote"),
+                    port: String::from("/dev/ttyUSB1"),
+                    baud: Some(115_200),
+                }
+            ]
+        );
+        assert_eq!(config.xbee_test.mode.as_deref(), Some("polling"));
+        assert_eq!(config.xbee_test.poll_rate_hz, Some(100));
+        assert_eq!(config.xbee_test.base_real_percent, Some(15));
+        assert_eq!(config.xbee_test.remote_real_percent, Some(25));
+        assert_eq!(config.xbee_test.au_rate_hz, Some(100));
+        assert_eq!(config.xbee_test.ru_rate_hz, Some(90));
+        assert_eq!(config.xbee_test.ad_rate_hz, Some(80));
+        assert_eq!(config.xbee_test.rd_rate_hz, Some(70));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_accepts_xbee_mock_port_and_rates() {
+        let temp_dir = make_temp_dir("acs_config_xbee_mock");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "xbee_mock": {
+                "role": "remote",
+                "port": { "port": "/dev/ttyUSB2", "baud": 460800 },
+                "mode": "polling",
+                "poll_rate": 100,
+                "base_real_percent": 10,
+                "remote_real_percent": 20,
+                "au_rate": 100,
+                "ru_rate": 90,
+                "ad_rate": 80,
+                "rd_rate": 70
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).unwrap();
+
+        assert_eq!(config.xbee_mock.role.as_deref(), Some("remote"));
+        assert_eq!(
+            config.xbee_mock.port,
+            Some(XbeeMockPortConfig {
+                port: String::from("/dev/ttyUSB2"),
+                baud: Some(460_800),
+            })
+        );
+        assert_eq!(config.xbee_mock.mode.as_deref(), Some("polling"));
+        assert_eq!(config.xbee_mock.poll_rate_hz, Some(100));
+        assert_eq!(config.xbee_mock.base_real_percent, Some(10));
+        assert_eq!(config.xbee_mock.remote_real_percent, Some(20));
+        assert_eq!(config.xbee_mock.au_rate_hz, Some(100));
+        assert_eq!(config.xbee_mock.ru_rate_hz, Some(90));
+        assert_eq!(config.xbee_mock.ad_rate_hz, Some(80));
+        assert_eq!(config.xbee_mock.rd_rate_hz, Some(70));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_maps_legacy_raw_to_packet_line_break() {
+        let temp_dir = make_temp_dir("acs_config_legacy_raw");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "monitor": {
+                "raw": true
+              },
+              "control": {
+                "raw": false
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).unwrap();
+
+        assert_eq!(
+            config
+                .monitor
+                .display
+                .resolve_line_break_input("/dev/ttyUSB0"),
+            LineBreakMode::Packet
+        );
+        assert_eq!(
+            config
+                .control
+                .display
+                .resolve_line_break_input("/dev/ttyUSB0"),
+            LineBreakMode::Line
         );
 
         let _ = fs::remove_dir_all(&temp_dir);

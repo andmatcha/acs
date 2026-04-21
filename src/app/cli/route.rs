@@ -26,7 +26,6 @@ struct RouteCliOptions {
     template: Option<String>,
     list_templates: bool,
     baud: Option<u32>,
-    raw: bool,
     display: PortDisplayConfig,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
@@ -38,6 +37,7 @@ struct RoutePortBinding {
     port: String,
     baud: Option<u32>,
     display_mode: Option<crate::port_display::PortDisplayMode>,
+    line_break_mode: Option<crate::port_display::LineBreakMode>,
 }
 
 struct RouteSettings {
@@ -154,7 +154,6 @@ fn build_settings(
         .baud
         .or(route_config.baud)
         .unwrap_or_else(default_baud_rate);
-    let raw = cli_options.raw || route_config.raw.unwrap_or(false);
     let mut display = route_config.display.clone();
     display.merge_from(cli_options.display);
 
@@ -185,8 +184,8 @@ fn build_settings(
         session: SessionSpec {
             title: String::from("acs route"),
             command_name: String::from("route"),
-            raw_input: raw,
             log_dir,
+            logging_enabled: true,
             inputs,
             outputs,
         },
@@ -209,21 +208,24 @@ fn normalize_inputs(
                 input.port.clone(),
                 input.baud.unwrap_or(default_baud),
                 input.display_mode,
+                input.line_break_mode,
             )
         })
         .collect::<Vec<_>>();
 
     for binding in cli_inputs {
-        if let Some(existing) = merged.iter_mut().find(|(id, _, _, _)| id == &binding.id) {
+        if let Some(existing) = merged.iter_mut().find(|(id, _, _, _, _)| id == &binding.id) {
             existing.1 = binding.port.clone();
             existing.2 = binding.baud.unwrap_or(default_baud);
             existing.3 = binding.display_mode;
+            existing.4 = binding.line_break_mode;
         } else {
             merged.push((
                 binding.id.clone(),
                 binding.port.clone(),
                 binding.baud.unwrap_or(default_baud),
                 binding.display_mode,
+                binding.line_break_mode,
             ));
         }
     }
@@ -233,7 +235,7 @@ fn normalize_inputs(
     }
 
     let mut resolved = Vec::new();
-    for (id, port, baud_rate, display_mode) in merged {
+    for (id, port, baud_rate, display_mode, line_break_mode) in merged {
         if resolved
             .iter()
             .any(|input: &SessionInputSpec| input.id == id)
@@ -244,6 +246,7 @@ fn normalize_inputs(
         resolved.push(SessionInputSpec {
             id,
             display_mode: display_mode.unwrap_or(display.resolve_input(&port)),
+            line_break_mode: line_break_mode.unwrap_or(display.resolve_line_break_input(&port)),
             port,
             baud_rate,
         });
@@ -607,15 +610,10 @@ fn parse_route_args(args: Vec<String>) -> Result<RouteCliOptions, String> {
                 let value = next_value(&mut iter, "--baud")?;
                 options.baud = Some(parse_u32_arg("--baud", &value)?);
             }
-            "--raw" => options.raw = true,
             "--display" => {
                 let value = next_value(&mut iter, "--display")?;
                 let assignment = parse_display_assignment(&value)?;
-                options.display.set_for_stream(
-                    assignment.stream,
-                    assignment.target,
-                    assignment.mode,
-                );
+                assignment.apply_to(&mut options.display);
             }
             "--config" => {
                 options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
@@ -649,6 +647,7 @@ fn parse_route_port_binding(value: &str) -> Result<RoutePortBinding, String> {
             port: port_spec.port,
             baud: port_spec.baud,
             display_mode: port_spec.display_mode,
+            line_break_mode: port_spec.line_break_mode,
         });
     }
 
@@ -663,6 +662,7 @@ fn parse_route_port_binding(value: &str) -> Result<RoutePortBinding, String> {
         port: port_spec.port,
         baud: port_spec.baud,
         display_mode: port_spec.display_mode,
+        line_break_mode: port_spec.line_break_mode,
     })
 }
 
@@ -674,7 +674,7 @@ mod tests {
         ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineSpec,
         RouterModuleConfig, TransformChainConfig, TransformModuleConfig,
     };
-    use crate::port_display::PortDisplayMode;
+    use crate::port_display::{LineBreakMode, PortDisplayMode};
     use crate::session::runtime::{SessionInputSpec, SessionOutputSpec};
     use std::collections::BTreeMap;
 
@@ -719,12 +719,14 @@ mod tests {
                     port: String::from("/dev/ttyUSB0"),
                     baud_rate: 115200,
                     display_mode: PortDisplayMode::HexUtf8,
+                    line_break_mode: LineBreakMode::Line,
                 },
                 SessionInputSpec {
                     id: String::from("in_b"),
                     port: String::from("/dev/ttyUSB1"),
                     baud_rate: 115200,
                     display_mode: PortDisplayMode::HexUtf8,
+                    line_break_mode: LineBreakMode::Line,
                 },
             ],
             &[SessionOutputSpec {
@@ -748,31 +750,33 @@ mod tests {
 
     #[test]
     fn config_defined_template_overrides_builtin_template() {
-        let mut route_config = RouteConfig::default();
-        route_config.templates = BTreeMap::from([(
-            String::from("merge"),
-            RouteTemplateConfig {
-                id: String::from("merge"),
-                description: Some(String::from("custom merge")),
-                pipelines: PipelineSpec {
-                    pipelines: vec![PipelineDefinition {
-                        id: String::from("custom_merge"),
-                        inputs: Vec::new(),
-                        filter: FilterModuleConfig::AllowAll,
-                        transform: TransformChainConfig {
-                            modules: vec![TransformModuleConfig::JoinLatest {
-                                separator: vec![b','],
-                                require_all: true,
-                            }],
-                        },
-                        classify: ClassifyModuleConfig::None,
-                        router: RouterModuleConfig::Broadcast {
-                            outputs: Vec::new(),
-                        },
-                    }],
+        let route_config = RouteConfig {
+            templates: BTreeMap::from([(
+                String::from("merge"),
+                RouteTemplateConfig {
+                    id: String::from("merge"),
+                    description: Some(String::from("custom merge")),
+                    pipelines: PipelineSpec {
+                        pipelines: vec![PipelineDefinition {
+                            id: String::from("custom_merge"),
+                            inputs: Vec::new(),
+                            filter: FilterModuleConfig::AllowAll,
+                            transform: TransformChainConfig {
+                                modules: vec![TransformModuleConfig::JoinLatest {
+                                    separator: vec![b','],
+                                    require_all: true,
+                                }],
+                            },
+                            classify: ClassifyModuleConfig::None,
+                            router: RouterModuleConfig::Broadcast {
+                                outputs: Vec::new(),
+                            },
+                        }],
+                    },
                 },
-            },
-        )]);
+            )]),
+            ..RouteConfig::default()
+        };
 
         let resolved = resolve_pipeline_spec(&route_config, Some("merge"), &[], &[]).unwrap();
 
@@ -790,18 +794,21 @@ mod tests {
                     port: String::from("/dev/ttyUSB0"),
                     baud_rate: 115200,
                     display_mode: PortDisplayMode::HexUtf8,
+                    line_break_mode: LineBreakMode::Line,
                 },
                 SessionInputSpec {
                     id: String::from("in_b"),
                     port: String::from("/dev/ttyUSB1"),
                     baud_rate: 115200,
                     display_mode: PortDisplayMode::HexUtf8,
+                    line_break_mode: LineBreakMode::Line,
                 },
                 SessionInputSpec {
                     id: String::from("in_c"),
                     port: String::from("/dev/ttyUSB2"),
                     baud_rate: 115200,
                     display_mode: PortDisplayMode::HexUtf8,
+                    line_break_mode: LineBreakMode::Line,
                 },
             ],
             &[

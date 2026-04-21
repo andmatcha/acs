@@ -14,6 +14,8 @@ const HISTORY_LIMIT: usize = 10;
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 const RESET: &str = "\x1b[0m";
 const REVERSE: &str = "\x1b[7m";
+const FG_CYAN: &str = "\x1b[36m";
+const FG_GREEN: &str = "\x1b[32m";
 const ENTER_ALTERNATE_SCREEN: &str = "\x1b[?1049h";
 const LEAVE_ALTERNATE_SCREEN: &str = "\x1b[?1049l";
 const CLEAR_SCREEN: &str = "\x1b[2J";
@@ -35,8 +37,11 @@ struct Section {
     status: String,
     baud_rate: Option<u32>,
     display_mode: PortDisplayMode,
+    packet_rate_enabled: bool,
+    known_formats: Vec<String>,
     entries: VecDeque<Entry>,
     rate_samples: VecDeque<RateSample>,
+    format_rate_samples: BTreeMap<String, VecDeque<RateSample>>,
 }
 
 struct Entry {
@@ -44,11 +49,14 @@ struct Entry {
     hex: String,
     ascii: String,
     utf8: String,
+    display_mode_override: Option<PortDisplayMode>,
+    preserve_line_breaks: bool,
 }
 
 struct RateSample {
     at: Instant,
     byte_len: usize,
+    packet_count: usize,
 }
 
 pub struct TextDashboard {
@@ -59,11 +67,15 @@ pub struct TextDashboard {
     stdout: io::Stdout,
     #[cfg(unix)]
     terminal_input_guard: Option<TerminalInputGuard>,
+    interactive_mode: bool,
+    input_buffer: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextDashboardAction {
     TogglePause,
+    InputChanged,
+    Submit(String),
 }
 
 impl TextDashboard {
@@ -86,11 +98,17 @@ impl TextDashboard {
             stdout,
             #[cfg(unix)]
             terminal_input_guard,
+            interactive_mode: false,
+            input_buffer: String::new(),
         })
     }
 
     pub fn set_header_lines(&mut self, lines: Vec<String>) {
         self.header_lines = lines;
+    }
+
+    pub fn set_interactive_mode(&mut self, enabled: bool) {
+        self.interactive_mode = enabled;
     }
 
     pub fn set_output_status(&mut self, port: &str, status: impl Into<String>) {
@@ -117,23 +135,92 @@ impl TextDashboard {
         self.section_mut(SectionKind::Input, port).display_mode = display_mode;
     }
 
-    pub fn record_output_bytes(&mut self, port: &str, bytes: &[u8]) {
+    pub fn set_output_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
         self.section_mut(SectionKind::Output, port)
-            .record_rate_sample(bytes.len());
+            .packet_rate_enabled = enabled;
+    }
+
+    pub fn set_input_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
+        self.section_mut(SectionKind::Input, port)
+            .packet_rate_enabled = enabled;
     }
 
     pub fn record_input_bytes(&mut self, port: &str, bytes: &[u8]) {
-        self.section_mut(SectionKind::Input, port)
-            .record_rate_sample(bytes.len());
+        self.record_input_sample(port, bytes.len(), 0);
     }
 
-    pub fn add_output(&mut self, port: &str, bytes: &[u8]) {
+    pub fn record_output_sample(&mut self, port: &str, byte_len: usize, packet_count: usize) {
         self.section_mut(SectionKind::Output, port)
-            .push_entry(bytes);
+            .record_rate_sample(byte_len, packet_count);
+    }
+
+    pub fn record_output_format_sample(
+        &mut self,
+        port: &str,
+        format_name: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.section_mut(SectionKind::Output, port)
+            .record_format_rate_sample(format_name, byte_len, packet_count);
+    }
+
+    pub fn record_input_sample(&mut self, port: &str, byte_len: usize, packet_count: usize) {
+        self.section_mut(SectionKind::Input, port)
+            .record_rate_sample(byte_len, packet_count);
+    }
+
+    pub fn record_input_format_sample(
+        &mut self,
+        port: &str,
+        format_name: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.section_mut(SectionKind::Input, port)
+            .record_format_rate_sample(format_name, byte_len, packet_count);
+    }
+
+    pub fn set_output_known_formats(&mut self, port: &str, formats: Vec<String>) {
+        self.section_mut(SectionKind::Output, port)
+            .set_known_formats(formats);
+    }
+
+    pub fn set_input_known_formats(&mut self, port: &str, formats: Vec<String>) {
+        self.section_mut(SectionKind::Input, port)
+            .set_known_formats(formats);
     }
 
     pub fn add_input(&mut self, port: &str, bytes: &[u8]) {
-        self.section_mut(SectionKind::Input, port).push_entry(bytes);
+        self.add_input_with_options(port, bytes, None, false);
+    }
+
+    pub fn add_output_with_options(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) {
+        self.section_mut(SectionKind::Output, port).push_entry(
+            bytes,
+            display_mode,
+            preserve_line_breaks,
+        );
+    }
+
+    pub fn add_input_with_options(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) {
+        self.section_mut(SectionKind::Input, port).push_entry(
+            bytes,
+            display_mode,
+            preserve_line_breaks,
+        );
     }
 
     pub fn render(&mut self, status: Option<&str>) -> io::Result<()> {
@@ -165,34 +252,47 @@ impl TextDashboard {
             }
             heading.push_str("  ");
             heading.push_str(&section.rate_label());
+            let format_rate_label = section.format_rate_label();
+            if !format_rate_label.is_empty() {
+                heading.push_str("  ");
+                heading.push_str(&format_rate_label);
+            }
             lines.push(format_heading_line(&heading, terminal_width));
 
             if section.entries.is_empty() {
                 lines.push(String::from("(no data)"));
             } else {
                 for entry in &section.entries {
+                    let display_mode = entry.display_mode_override.unwrap_or(section.display_mode);
+                    if entry.preserve_line_breaks
+                        && matches!(display_mode, PortDisplayMode::Ascii | PortDisplayMode::Utf8)
+                    {
+                        append_multiline_entry(&mut lines, &entry.timestamp, display_mode, entry);
+                        continue;
+                    }
+
                     let mut line = String::new();
                     line.push_str(&entry.timestamp);
                     line.push_str(" | ");
-                    match section.display_mode {
+                    match display_mode {
                         PortDisplayMode::Hex => {
                             line.push_str(&entry.hex);
                         }
                         PortDisplayMode::Ascii => {
-                            line.push_str(&entry.ascii);
+                            line.push_str(&paint_text(&entry.ascii, FG_CYAN));
                         }
                         PortDisplayMode::Utf8 => {
-                            line.push_str(&entry.utf8);
+                            line.push_str(&paint_text(&entry.utf8, FG_GREEN));
                         }
                         PortDisplayMode::HexAscii => {
                             line.push_str(&entry.hex);
                             line.push_str(" | ");
-                            line.push_str(&entry.ascii);
+                            line.push_str(&paint_text(&entry.ascii, FG_CYAN));
                         }
                         PortDisplayMode::HexUtf8 => {
                             line.push_str(&entry.hex);
                             line.push_str(" | ");
-                            line.push_str(&entry.utf8);
+                            line.push_str(&paint_text(&entry.utf8, FG_GREEN));
                         }
                     }
                     lines.push(line);
@@ -202,20 +302,50 @@ impl TextDashboard {
             lines.push(String::new());
         }
 
+        if self.interactive_mode {
+            lines.push(format!("> {}", self.input_buffer));
+        }
+
         let frame = format_screen_delta(&lines, &self.previous_lines);
-        if frame.is_empty() {
+
+        if frame.is_empty() && !self.interactive_mode {
             return Ok(());
         }
 
-        write!(self.stdout, "{frame}")?;
-        self.stdout.flush().inspect(|_| self.previous_lines = lines)
+        if !frame.is_empty() {
+            write!(self.stdout, "{frame}")?;
+        }
+
+        if self.interactive_mode {
+            let input_row = lines.len();
+            let input_col = 3 + self.input_buffer.chars().count();
+            write!(self.stdout, "{SHOW_CURSOR}\x1b[{input_row};{input_col}H")?;
+        }
+
+        self.stdout.flush()?;
+        if !frame.is_empty() {
+            self.previous_lines = lines;
+        }
+        Ok(())
     }
 
     pub fn poll_action(&mut self) -> io::Result<Option<TextDashboardAction>> {
         #[cfg(unix)]
         {
-            if let Some(guard) = self.terminal_input_guard.as_mut() {
-                return guard.poll_action();
+            if let Some(guard) = self.terminal_input_guard.as_mut()
+                && let Some(bytes) = guard.read_raw()?
+            {
+                if self.interactive_mode {
+                    return Ok(process_interactive_input(&bytes, &mut self.input_buffer));
+                } else {
+                    let mut action = None;
+                    for b in &bytes {
+                        if *b == b' ' {
+                            action = Some(TextDashboardAction::TogglePause);
+                        }
+                    }
+                    return Ok(action);
+                }
             }
         }
 
@@ -231,8 +361,11 @@ impl TextDashboard {
                 status: String::new(),
                 baud_rate: None,
                 display_mode: PortDisplayMode::HexUtf8,
+                packet_rate_enabled: false,
+                known_formats: Vec::new(),
                 entries: VecDeque::new(),
                 rate_samples: VecDeque::new(),
+                format_rate_samples: BTreeMap::new(),
             })
     }
 }
@@ -280,7 +413,7 @@ impl TerminalInputGuard {
         }))
     }
 
-    fn poll_action(&mut self) -> io::Result<Option<TextDashboardAction>> {
+    fn read_raw(&mut self) -> io::Result<Option<Vec<u8>>> {
         let fd = self.stdin.as_raw_fd();
         let mut buffer = [0u8; 32];
         let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
@@ -290,15 +423,7 @@ impl TerminalInputGuard {
         if count == 0 {
             return Ok(None);
         }
-
-        let mut action = None;
-        for byte in &buffer[..count as usize] {
-            if *byte == b' ' {
-                action = Some(TextDashboardAction::TogglePause);
-            }
-        }
-
-        Ok(action)
+        Ok(Some(buffer[..count as usize].to_vec()))
     }
 }
 
@@ -315,6 +440,60 @@ impl Drop for TerminalInputGuard {
     }
 }
 
+fn process_interactive_input(
+    bytes: &[u8],
+    input_buffer: &mut String,
+) -> Option<TextDashboardAction> {
+    let mut changed = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x0D || b == 0x0A {
+            // Enter: submit and clear buffer
+            let text = std::mem::take(input_buffer);
+            return Some(TextDashboardAction::Submit(text));
+        } else if b == 0x7F || b == 0x08 {
+            // Backspace / DEL
+            input_buffer.pop();
+            changed = true;
+            i += 1;
+        } else if b < 0x20 {
+            // Other control chars: skip
+            i += 1;
+        } else {
+            // Printable ASCII or start of multi-byte UTF-8
+            let seq_len = utf8_sequence_len(b);
+            let end = (i + seq_len).min(bytes.len());
+            if let Ok(s) = std::str::from_utf8(&bytes[i..end]) {
+                for c in s.chars() {
+                    input_buffer.push(c);
+                }
+                changed = true;
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    if changed {
+        Some(TextDashboardAction::InputChanged)
+    } else {
+        None
+    }
+}
+
+fn utf8_sequence_len(first_byte: u8) -> usize {
+    if first_byte < 0x80 {
+        1
+    } else if first_byte < 0xE0 {
+        2
+    } else if first_byte < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
 #[cfg(unix)]
 fn disable_terminal_input_echo(termios: &mut libc::termios) {
     termios.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON);
@@ -323,21 +502,29 @@ fn disable_terminal_input_echo(termios: &mut libc::termios) {
 }
 
 impl Section {
-    fn push_entry(&mut self, bytes: &[u8]) {
+    fn push_entry(
+        &mut self,
+        bytes: &[u8],
+        display_mode_override: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) {
         // 新しいデータを先頭へ積み、各ポート直近 10 件だけを残す。
         self.entries.push_front(Entry {
             timestamp: now_display_timestamp(),
             hex: format_bytes_hex(bytes),
             ascii: format_bytes_ascii(bytes),
             utf8: format_bytes_utf8(bytes),
+            display_mode_override,
+            preserve_line_breaks,
         });
         self.entries.truncate(HISTORY_LIMIT);
     }
 
-    fn record_rate_sample(&mut self, byte_len: usize) {
+    fn record_rate_sample(&mut self, byte_len: usize, packet_count: usize) {
         self.rate_samples.push_back(RateSample {
             at: Instant::now(),
             byte_len,
+            packet_count,
         });
     }
 
@@ -348,6 +535,15 @@ impl Section {
             }
             self.rate_samples.pop_front();
         }
+
+        for samples in self.format_rate_samples.values_mut() {
+            while let Some(sample) = samples.front() {
+                if now.duration_since(sample.at) <= RATE_WINDOW {
+                    break;
+                }
+                samples.pop_front();
+            }
+        }
     }
 
     fn rate_label(&self) -> String {
@@ -357,10 +553,29 @@ impl Section {
             .map(|sample| sample.byte_len)
             .sum::<usize>() as f64
             / RATE_WINDOW.as_secs_f64();
+        let packets_per_second = self
+            .rate_samples
+            .iter()
+            .map(|sample| sample.packet_count)
+            .sum::<usize>() as f64
+            / RATE_WINDOW.as_secs_f64();
         let name = match self.kind {
             SectionKind::Output => "tx",
             SectionKind::Input => "rx",
         };
+        if self.packet_rate_enabled {
+            return match self.baud_rate {
+                Some(baud_rate) => format!(
+                    "{name}={packets_per_second:.1} Hz {} ({})",
+                    format_rate(bytes_per_second),
+                    format_utilization(bytes_per_second, baud_rate)
+                ),
+                None => format!(
+                    "{name}={packets_per_second:.1} Hz {}",
+                    format_rate(bytes_per_second)
+                ),
+            };
+        }
         match self.baud_rate {
             Some(baud_rate) => format!(
                 "{name}={} ({})",
@@ -369,6 +584,72 @@ impl Section {
             ),
             None => format!("{name}={}", format_rate(bytes_per_second)),
         }
+    }
+
+    fn set_known_formats(&mut self, formats: Vec<String>) {
+        self.known_formats.clear();
+        for format in formats {
+            if !self.known_formats.contains(&format) {
+                self.known_formats.push(format);
+            }
+        }
+    }
+
+    fn record_format_rate_sample(
+        &mut self,
+        format_name: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        if !self
+            .known_formats
+            .iter()
+            .any(|format| format == format_name)
+        {
+            self.known_formats.push(format_name.to_owned());
+        }
+        self.format_rate_samples
+            .entry(format_name.to_owned())
+            .or_default()
+            .push_back(RateSample {
+                at: Instant::now(),
+                byte_len,
+                packet_count,
+            });
+    }
+
+    fn format_rate_label(&self) -> String {
+        self.known_formats
+            .iter()
+            .filter_map(|format_name| {
+                let packets_per_second = self
+                    .format_rate_samples
+                    .get(format_name)
+                    .map(|samples| {
+                        samples
+                            .iter()
+                            .map(|sample| sample.packet_count)
+                            .sum::<usize>() as f64
+                            / RATE_WINDOW.as_secs_f64()
+                    })
+                    .or_else(|| {
+                        (self.known_formats.len() == 1).then(|| {
+                            self.rate_samples
+                                .iter()
+                                .map(|sample| sample.packet_count)
+                                .sum::<usize>() as f64
+                                / RATE_WINDOW.as_secs_f64()
+                        })
+                    })
+                    .unwrap_or_default();
+                if self.packet_rate_enabled || packets_per_second > 0.0 {
+                    Some(format!("{format_name} {packets_per_second:.1}Hz"))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -420,6 +701,61 @@ fn format_status_line(status: Option<&str>) -> String {
         Some(status) => format!("status: {status}"),
         None => String::from("status: running"),
     }
+}
+
+fn paint_text(text: &str, color: &str) -> String {
+    format!("{color}{text}{RESET}")
+}
+
+fn append_multiline_entry(
+    lines: &mut Vec<String>,
+    timestamp: &str,
+    display_mode: PortDisplayMode,
+    entry: &Entry,
+) {
+    let raw_lines = match display_mode {
+        PortDisplayMode::Ascii => bytes_text_lines(&entry.ascii, true),
+        PortDisplayMode::Utf8 => bytes_text_lines(&entry.utf8, false),
+        _ => unreachable!("multiline entry only supports ascii/utf8"),
+    };
+    let prefix = format!("{timestamp} | ");
+    let continuation_prefix = format!("{} | ", " ".repeat(timestamp.chars().count()));
+    let color = match display_mode {
+        PortDisplayMode::Ascii => FG_CYAN,
+        PortDisplayMode::Utf8 => FG_GREEN,
+        _ => RESET,
+    };
+
+    if raw_lines.is_empty() {
+        lines.push(format!("{prefix}{}", paint_text("\"\"", color)));
+        return;
+    }
+
+    for (index, line) in raw_lines.iter().enumerate() {
+        let prefix = if index == 0 {
+            prefix.as_str()
+        } else {
+            continuation_prefix.as_str()
+        };
+        lines.push(format!("{prefix}{}", paint_text(line, color)));
+    }
+}
+
+fn bytes_text_lines(text: &str, ascii_wrapped: bool) -> Vec<String> {
+    let raw = if ascii_wrapped || text.starts_with('"') && text.ends_with('"') {
+        text.trim_matches('"')
+    } else {
+        text
+    };
+    let normalized = raw
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n");
+    normalized
+        .split('\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_owned())
+        .collect()
 }
 
 fn format_screen_delta(lines: &[String], previous_lines: &[String]) -> String {
@@ -510,9 +846,13 @@ fn terminal_width_from_ioctl() -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLEAR_LINE_END, CLEAR_TO_SCREEN_END, HOME_CURSOR, RESET, REVERSE, format_heading_line,
-        format_screen_delta, format_status_line,
+        CLEAR_LINE_END, CLEAR_TO_SCREEN_END, Entry, FG_CYAN, FG_GREEN, HOME_CURSOR, RESET, REVERSE,
+        RateSample, Section, SectionKind, append_multiline_entry, bytes_text_lines,
+        format_heading_line, format_screen_delta, format_status_line, paint_text,
     };
+    use crate::port_display::PortDisplayMode;
+    use std::collections::{BTreeMap, VecDeque};
+    use std::time::Instant;
 
     #[test]
     fn format_heading_line_pads_to_terminal_width() {
@@ -571,5 +911,101 @@ mod tests {
             &[String::from("title"), String::from("body")],
         );
         assert_eq!(frame, format!("\x1b[2;1H{CLEAR_TO_SCREEN_END}"));
+    }
+
+    #[test]
+    fn rate_label_shows_hz_when_packet_rate_enabled() {
+        let section = Section {
+            kind: SectionKind::Output,
+            port: String::from("tty"),
+            status: String::new(),
+            baud_rate: Some(115_200),
+            display_mode: PortDisplayMode::HexUtf8,
+            packet_rate_enabled: true,
+            known_formats: Vec::new(),
+            entries: VecDeque::new(),
+            rate_samples: VecDeque::from([RateSample {
+                at: Instant::now(),
+                byte_len: 39,
+                packet_count: 2,
+            }]),
+            format_rate_samples: BTreeMap::new(),
+        };
+
+        let label = section.rate_label();
+        assert!(label.contains("2.0 Hz"));
+        assert!(label.contains("39 B/s"));
+    }
+
+    #[test]
+    fn paint_text_wraps_ascii_and_utf8_colors() {
+        assert_eq!(
+            paint_text("\"abc\"", FG_CYAN),
+            format!("{FG_CYAN}\"abc\"{RESET}")
+        );
+        assert_eq!(
+            paint_text("\"abc\"", FG_GREEN),
+            format!("{FG_GREEN}\"abc\"{RESET}")
+        );
+    }
+
+    #[test]
+    fn format_rate_label_lists_known_formats() {
+        let mut format_samples = BTreeMap::new();
+        format_samples.insert(
+            String::from("PacketACv6"),
+            VecDeque::from([RateSample {
+                at: Instant::now(),
+                byte_len: 39,
+                packet_count: 2,
+            }]),
+        );
+        format_samples.insert(
+            String::from("RoverUpGeneral"),
+            VecDeque::from([RateSample {
+                at: Instant::now(),
+                byte_len: 110,
+                packet_count: 1,
+            }]),
+        );
+        let section = Section {
+            kind: SectionKind::Input,
+            port: String::from("tty"),
+            status: String::new(),
+            baud_rate: Some(115_200),
+            display_mode: PortDisplayMode::Ascii,
+            packet_rate_enabled: true,
+            known_formats: vec![String::from("PacketACv6"), String::from("RoverUpGeneral")],
+            entries: VecDeque::new(),
+            rate_samples: VecDeque::new(),
+            format_rate_samples: format_samples,
+        };
+
+        let label = section.format_rate_label();
+        assert!(label.contains("PacketACv6 2.0Hz"));
+        assert!(label.contains("RoverUpGeneral 1.0Hz"));
+    }
+
+    #[test]
+    fn multiline_ascii_entries_split_on_newlines() {
+        assert_eq!(
+            bytes_text_lines("\"0x300,000\\r\\n0x310,180\\r\\n\"", true),
+            vec![String::from("0x300,000"), String::from("0x310,180")]
+        );
+
+        let entry = Entry {
+            timestamp: String::from("2026-04-21 12:34:56"),
+            hex: String::new(),
+            ascii: String::from("\"0x300,000\\r\\n0x310,180\\r\\n\""),
+            utf8: String::new(),
+            display_mode_override: Some(PortDisplayMode::Ascii),
+            preserve_line_breaks: true,
+        };
+        let mut lines = Vec::new();
+        append_multiline_entry(&mut lines, &entry.timestamp, PortDisplayMode::Ascii, &entry);
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("0x300,000"));
+        assert!(lines[1].contains("0x310,180"));
     }
 }

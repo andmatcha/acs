@@ -1,5 +1,5 @@
 use super::paths::{ConfigLookup, default_log_dir as default_log_dir_for_lookup};
-use crate::port_display::PortDisplayMode;
+use crate::port_display::{LineBreakMode, PortDisplayMode, parse_display_value};
 
 pub(crate) fn default_baud_rate() -> u32 {
     115_200
@@ -28,6 +28,7 @@ pub(crate) struct PortSpec {
     pub port: String,
     pub baud: Option<u32>,
     pub display_mode: Option<PortDisplayMode>,
+    pub line_break_mode: Option<LineBreakMode>,
 }
 
 impl PortSpec {
@@ -37,6 +38,7 @@ impl PortSpec {
             port: trimmed.to_owned(),
             baud: self.baud,
             display_mode: self.display_mode,
+            line_break_mode: self.line_break_mode,
         })
     }
 }
@@ -56,12 +58,16 @@ pub(crate) fn parse_port_spec(option: &str, value: &str) -> Result<PortSpec, Str
         return Err(format!("{option} must not be empty"));
     }
 
-    let (port_and_baud, display_mode) = match value.rsplit_once(',') {
-        Some((port_and_baud, mode)) => match PortDisplayMode::parse(mode) {
-            Ok(mode) => (port_and_baud, Some(mode)),
-            Err(_) => (value, None),
+    let (port_and_baud, display_mode, line_break_mode) = match value.rsplit_once(',') {
+        Some((port_and_baud, mode)) => match parse_display_value(mode) {
+            Ok((display_mode, line_break_mode))
+                if display_mode.is_some() || line_break_mode.is_some() =>
+            {
+                (port_and_baud, display_mode, line_break_mode)
+            }
+            _ => (value, None, None),
         },
-        None => (value, None),
+        None => (value, None, None),
     };
 
     let (port, baud) = match port_and_baud.rsplit_once('@') {
@@ -85,6 +91,7 @@ pub(crate) fn parse_port_spec(option: &str, value: &str) -> Result<PortSpec, Str
         port: port.to_owned(),
         baud,
         display_mode,
+        line_break_mode,
     })
 }
 
@@ -104,7 +111,7 @@ pub(crate) fn merge_port_specs(target: &mut Vec<PortSpec>, specs: Vec<PortSpec>)
 #[cfg(test)]
 mod tests {
     use super::{PortSpec, merge_port_specs, parse_port_spec, resolve_requested_port_spec};
-    use crate::port_display::PortDisplayMode;
+    use crate::port_display::{LineBreakMode, PortDisplayMode};
 
     #[test]
     fn parse_port_spec_accepts_baud_and_display_suffixes() {
@@ -114,6 +121,7 @@ mod tests {
                 port: String::from("/dev/ttyUSB0"),
                 baud: Some(921_600),
                 display_mode: Some(PortDisplayMode::Utf8),
+                line_break_mode: None,
             }
         );
         assert_eq!(
@@ -122,6 +130,16 @@ mod tests {
                 port: String::from("/dev/ttyUSB1"),
                 baud: None,
                 display_mode: Some(PortDisplayMode::HexAscii),
+                line_break_mode: None,
+            }
+        );
+        assert_eq!(
+            parse_port_spec("--port", "/dev/ttyUSB2,hex+packet").unwrap(),
+            PortSpec {
+                port: String::from("/dev/ttyUSB2"),
+                baud: None,
+                display_mode: Some(PortDisplayMode::Hex),
+                line_break_mode: Some(LineBreakMode::Packet),
             }
         );
     }
@@ -134,17 +152,20 @@ mod tests {
                     port: String::from(" "),
                     baud: Some(115_200),
                     display_mode: None,
+                    line_break_mode: None,
                 }),
                 Some(PortSpec {
                     port: String::from("/dev/ttyUSB0"),
                     baud: Some(921_600),
                     display_mode: Some(PortDisplayMode::Hex),
+                    line_break_mode: Some(LineBreakMode::Packet),
                 })
             ),
             Some(PortSpec {
                 port: String::from("/dev/ttyUSB0"),
                 baud: Some(921_600),
                 display_mode: Some(PortDisplayMode::Hex),
+                line_break_mode: Some(LineBreakMode::Packet),
             })
         );
     }
@@ -155,6 +176,7 @@ mod tests {
             port: String::from("/dev/ttyUSB0"),
             baud: Some(115_200),
             display_mode: None,
+            line_break_mode: None,
         }];
         merge_port_specs(
             &mut specs,
@@ -162,6 +184,7 @@ mod tests {
                 port: String::from("/dev/ttyUSB0"),
                 baud: Some(921_600),
                 display_mode: Some(PortDisplayMode::Hex),
+                line_break_mode: Some(LineBreakMode::Line),
             }],
         );
 
@@ -171,6 +194,7 @@ mod tests {
                 port: String::from("/dev/ttyUSB0"),
                 baud: Some(921_600),
                 display_mode: Some(PortDisplayMode::Hex),
+                line_break_mode: Some(LineBreakMode::Line),
             }]
         );
     }

@@ -1,10 +1,14 @@
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+
+const CLEAR_CURRENT_LINE: &str = "\r\x1b[2K";
 
 pub struct ModeSoundPlayer {
     afplay_path: Option<String>,
     active_child: Option<Child>,
     sound_dir: PathBuf,
+    warning_visible: bool,
 }
 
 impl ModeSoundPlayer {
@@ -15,6 +19,7 @@ impl ModeSoundPlayer {
             sound_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("assets")
                 .join("sound"),
+            warning_visible: false,
         }
     }
 
@@ -25,10 +30,11 @@ impl ModeSoundPlayer {
 
         let sound_path = self.sound_dir.join(format!("{mode_name}.mp3"));
         if !sound_path.exists() {
-            eprintln!("sound file not found: {}", sound_path.display());
+            self.clear_warning();
             return;
         }
 
+        self.clear_warning();
         self.stop_active_child();
 
         match Command::new(&afplay_path)
@@ -39,8 +45,30 @@ impl ModeSoundPlayer {
             .spawn()
         {
             Ok(child) => self.active_child = Some(child),
-            Err(error) => eprintln!("failed to play sound {}: {}", sound_path.display(), error),
+            Err(error) => self.show_warning(format!(
+                "failed to play sound {}: {}",
+                sound_path.display(),
+                error
+            )),
         }
+    }
+
+    fn show_warning(&mut self, message: String) {
+        let mut stderr = io::stderr().lock();
+        let _ = write!(stderr, "{CLEAR_CURRENT_LINE}{message}");
+        let _ = stderr.flush();
+        self.warning_visible = true;
+    }
+
+    fn clear_warning(&mut self) {
+        if !self.warning_visible {
+            return;
+        }
+
+        let mut stderr = io::stderr().lock();
+        let _ = write!(stderr, "{CLEAR_CURRENT_LINE}");
+        let _ = stderr.flush();
+        self.warning_visible = false;
     }
 
     fn stop_active_child(&mut self) {
@@ -54,6 +82,7 @@ impl ModeSoundPlayer {
 impl Drop for ModeSoundPlayer {
     fn drop(&mut self) {
         self.stop_active_child();
+        self.clear_warning();
     }
 }
 
