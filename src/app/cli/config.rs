@@ -19,6 +19,7 @@ pub(crate) struct AppConfig {
     pub log_dir: Option<PathBuf>,
     pub control: ControlConfig,
     pub send: SendConfig,
+    pub xbee_mock: XbeeMockConfig,
     pub xbee_test: XbeeTestConfig,
     pub monitor: MonitorConfig,
     pub route: RouteConfig,
@@ -70,6 +71,21 @@ pub(crate) struct XbeeTestConfig {
 }
 
 #[derive(Debug, Default, Clone)]
+pub(crate) struct XbeeMockConfig {
+    pub role: Option<String>,
+    pub port: Option<XbeeMockPortConfig>,
+    pub mode: Option<String>,
+    pub poll_rate_hz: Option<u32>,
+    pub base_real_percent: Option<u32>,
+    pub remote_real_percent: Option<u32>,
+    pub au_rate_hz: Option<u32>,
+    pub ru_rate_hz: Option<u32>,
+    pub ad_rate_hz: Option<u32>,
+    pub rd_rate_hz: Option<u32>,
+    pub log_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone)]
 pub(crate) struct RouteConfig {
     pub inputs: Vec<RouteInputConfig>,
     pub outputs: Vec<RouteOutputConfig>,
@@ -104,6 +120,12 @@ pub(crate) struct SendMonitorConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct XbeeTestPortConfig {
     pub id: String,
+    pub port: String,
+    pub baud: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct XbeeMockPortConfig {
     pub port: String,
     pub baud: Option<u32>,
 }
@@ -155,6 +177,7 @@ impl AppConfig {
         merge_option(&mut self.log_dir, other.log_dir);
         self.control.merge_from(other.control);
         self.send.merge_from(other.send);
+        self.xbee_mock.merge_from(other.xbee_mock);
         self.xbee_test.merge_from(other.xbee_test);
         self.monitor.merge_from(other.monitor);
         self.route.merge_from(other.route);
@@ -198,6 +221,22 @@ impl SendConfig {
 impl XbeeTestConfig {
     fn merge_from(&mut self, other: XbeeTestConfig) {
         merge_xbee_test_ports(&mut self.ports, other.ports);
+        merge_option(&mut self.mode, other.mode);
+        merge_option(&mut self.poll_rate_hz, other.poll_rate_hz);
+        merge_option(&mut self.base_real_percent, other.base_real_percent);
+        merge_option(&mut self.remote_real_percent, other.remote_real_percent);
+        merge_option(&mut self.au_rate_hz, other.au_rate_hz);
+        merge_option(&mut self.ru_rate_hz, other.ru_rate_hz);
+        merge_option(&mut self.ad_rate_hz, other.ad_rate_hz);
+        merge_option(&mut self.rd_rate_hz, other.rd_rate_hz);
+        merge_option(&mut self.log_dir, other.log_dir);
+    }
+}
+
+impl XbeeMockConfig {
+    fn merge_from(&mut self, other: XbeeMockConfig) {
+        merge_option(&mut self.role, other.role);
+        merge_option(&mut self.port, other.port);
         merge_option(&mut self.mode, other.mode);
         merge_option(&mut self.poll_rate_hz, other.poll_rate_hz);
         merge_option(&mut self.base_real_percent, other.base_real_percent);
@@ -325,6 +364,8 @@ fn load_config_file(path: &Path) -> Result<AppConfig, String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let send = parse_send_config(root.get("send"), base_dir)
         .map_err(|error| format!("{}: {error}", path.display()))?;
+    let xbee_mock = parse_xbee_mock_config(root.get("xbee_mock"), base_dir)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
     let xbee_test = parse_xbee_test_config(root.get("xbee_test"), base_dir)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let monitor = parse_monitor_config(root.get("monitor"), base_dir)
@@ -336,6 +377,7 @@ fn load_config_file(path: &Path) -> Result<AppConfig, String> {
         log_dir: top_level_log_dir,
         control,
         send,
+        xbee_mock,
         xbee_test,
         monitor,
         route,
@@ -463,6 +505,30 @@ fn parse_send_config(value: Option<&JsonValue>, base_dir: &Path) -> Result<SendC
         format: optional_string(object, "format")?,
         display: optional_display_config(object, "display")?,
         monitor_ports: optional_send_monitors(object, "monitor_ports")?,
+        log_dir: optional_path(object, "log_dir", base_dir)?,
+    })
+}
+
+fn parse_xbee_mock_config(
+    value: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<XbeeMockConfig, String> {
+    let Some(value) = value else {
+        return Ok(XbeeMockConfig::default());
+    };
+    let object = expect_object(value, "xbee_mock")?;
+
+    Ok(XbeeMockConfig {
+        role: optional_string(object, "role")?,
+        port: optional_xbee_mock_port(object, "port")?,
+        mode: optional_string(object, "mode")?,
+        poll_rate_hz: optional_u32(object, "poll_rate")?,
+        base_real_percent: optional_u32(object, "base_real_percent")?,
+        remote_real_percent: optional_u32(object, "remote_real_percent")?,
+        au_rate_hz: optional_u32(object, "au_rate")?,
+        ru_rate_hz: optional_u32(object, "ru_rate")?,
+        ad_rate_hz: optional_u32(object, "ad_rate")?,
+        rd_rate_hz: optional_u32(object, "rd_rate")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -930,6 +996,61 @@ fn parse_send_monitor_object(
         format: optional_string(object, "format")?,
         display_mode: port_spec.display_mode,
         line_break_mode: port_spec.line_break_mode,
+    }))
+}
+
+fn optional_xbee_mock_port(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Option<XbeeMockPortConfig>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(parse_xbee_mock_port_text(trimmed, key)?))
+        }
+        JsonValue::Object(object) => parse_xbee_mock_port_object(object, key),
+        _ => Err(type_error(key, "string or object")),
+    }
+}
+
+fn parse_xbee_mock_port_text(value: &str, key: &str) -> Result<XbeeMockPortConfig, String> {
+    let port_spec = parse_port_spec_text(value, key)?;
+    if port_spec.display_mode.is_some() || port_spec.line_break_mode.is_some() {
+        return Err(format!(
+            "`{key}` must not specify display mode; xbee_mock uses fixed hex packet display"
+        ));
+    }
+
+    Ok(XbeeMockPortConfig {
+        port: port_spec.port,
+        baud: port_spec.baud,
+    })
+}
+
+fn parse_xbee_mock_port_object(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Option<XbeeMockPortConfig>, String> {
+    let Some(port_spec) = parse_port_spec_object(object, key)? else {
+        return Ok(None);
+    };
+    if port_spec.display_mode.is_some() || port_spec.line_break_mode.is_some() {
+        return Err(format!(
+            "`{key}` must not specify display mode; xbee_mock uses fixed hex packet display"
+        ));
+    }
+
+    Ok(Some(XbeeMockPortConfig {
+        port: port_spec.port,
+        baud: port_spec.baud,
     }))
 }
 
@@ -1510,7 +1631,9 @@ impl<'a> JsonParser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{JsonParser, SendMonitorConfig, XbeeTestPortConfig, load_config};
+    use super::{
+        JsonParser, SendMonitorConfig, XbeeMockPortConfig, XbeeTestPortConfig, load_config,
+    };
     use crate::app::cli::common::PortSpec;
     use crate::output::OutputFormat;
     use crate::pipeline::TransformModuleConfig;
@@ -1948,6 +2071,53 @@ mod tests {
         assert_eq!(config.xbee_test.ru_rate_hz, Some(90));
         assert_eq!(config.xbee_test.ad_rate_hz, Some(80));
         assert_eq!(config.xbee_test.rd_rate_hz, Some(70));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_config_accepts_xbee_mock_port_and_rates() {
+        let temp_dir = make_temp_dir("acs_config_xbee_mock");
+        let config_path = temp_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"
+            {
+              "xbee_mock": {
+                "role": "remote",
+                "port": { "port": "/dev/ttyUSB2", "baud": 460800 },
+                "mode": "polling",
+                "poll_rate": 100,
+                "base_real_percent": 10,
+                "remote_real_percent": 20,
+                "au_rate": 100,
+                "ru_rate": 90,
+                "ad_rate": 80,
+                "rd_rate": 70
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).unwrap();
+
+        assert_eq!(config.xbee_mock.role.as_deref(), Some("remote"));
+        assert_eq!(
+            config.xbee_mock.port,
+            Some(XbeeMockPortConfig {
+                port: String::from("/dev/ttyUSB2"),
+                baud: Some(460_800),
+            })
+        );
+        assert_eq!(config.xbee_mock.mode.as_deref(), Some("polling"));
+        assert_eq!(config.xbee_mock.poll_rate_hz, Some(100));
+        assert_eq!(config.xbee_mock.base_real_percent, Some(10));
+        assert_eq!(config.xbee_mock.remote_real_percent, Some(20));
+        assert_eq!(config.xbee_mock.au_rate_hz, Some(100));
+        assert_eq!(config.xbee_mock.ru_rate_hz, Some(90));
+        assert_eq!(config.xbee_mock.ad_rate_hz, Some(80));
+        assert_eq!(config.xbee_mock.rd_rate_hz, Some(70));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
