@@ -5,17 +5,11 @@ use crate::ui::text_dashboard::{TextDashboard, TextDashboardAction};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-struct PacketFramingSpec {
-    packet_len: usize,
-}
-
 pub(crate) struct SessionDashboard {
     dashboard: TextDashboard,
     logger: CommandLogger,
     line_buffer: SerialLineBuffer,
     input_line_break_modes: BTreeMap<String, LineBreakMode>,
-    input_packet_framing: BTreeMap<String, PacketFramingSpec>,
-    input_packet_buffers: BTreeMap<String, Vec<u8>>,
     paused: bool,
     status: String,
 }
@@ -41,8 +35,6 @@ impl SessionDashboard {
             logger,
             line_buffer: SerialLineBuffer::default(),
             input_line_break_modes: BTreeMap::new(),
-            input_packet_framing: BTreeMap::new(),
-            input_packet_buffers: BTreeMap::new(),
             paused: false,
             status: String::from("running"),
         })
@@ -75,19 +67,20 @@ impl SessionDashboard {
         &mut self,
         port: &str,
         baud_rate: u32,
-        format_name: &str,
         display_mode: PortDisplayMode,
     ) {
         self.dashboard
-            .set_output_status(port, format!("baud={baud_rate} format={format_name}"));
+            .set_output_status(port, format!("baud={baud_rate}"));
         self.dashboard.set_output_baud_rate(port, baud_rate);
         self.dashboard.set_output_display_mode(port, display_mode);
     }
 
-    pub(crate) fn set_input_packet_framing(&mut self, port: &str, packet_len: usize) {
-        self.input_packet_framing
-            .insert(port.to_string(), PacketFramingSpec { packet_len });
-        self.dashboard.set_input_packet_rate_enabled(port, true);
+    pub(crate) fn set_output_known_formats(&mut self, port: &str, formats: Vec<String>) {
+        self.dashboard.set_output_known_formats(port, formats);
+    }
+
+    pub(crate) fn set_input_known_formats(&mut self, port: &str, formats: Vec<String>) {
+        self.dashboard.set_input_known_formats(port, formats);
     }
 
     pub(crate) fn set_output_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
@@ -143,23 +136,22 @@ impl SessionDashboard {
         self.paused
     }
 
-    pub(crate) fn record_output(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
+    pub(crate) fn record_output_with_options(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) -> Result<(), String> {
         self.dashboard.record_output_sample(port, bytes.len(), 1);
-        self.dashboard.add_output(port, bytes);
+        self.dashboard
+            .add_output_with_options(port, bytes, display_mode, preserve_line_breaks);
         self.logger
             .log_output(port, bytes)
             .map_err(|error| format!("failed to write log: {error}"))
     }
 
     pub(crate) fn record_input(&mut self, port: &str, bytes: &[u8]) -> Result<bool, String> {
-        if let Some(packet_len) = self
-            .input_packet_framing
-            .get(port)
-            .map(|spec| spec.packet_len)
-        {
-            return self.record_fixed_packet_input(port, bytes, packet_len);
-        }
-
         self.dashboard.record_input_bytes(port, bytes);
 
         let line_break = self
@@ -188,36 +180,6 @@ impl SessionDashboard {
         Ok(changed)
     }
 
-    fn record_fixed_packet_input(
-        &mut self,
-        port: &str,
-        bytes: &[u8],
-        packet_len: usize,
-    ) -> Result<bool, String> {
-        let pending = self
-            .input_packet_buffers
-            .entry(port.to_string())
-            .or_default();
-        pending.extend_from_slice(bytes);
-
-        let mut packets = Vec::new();
-        while pending.len() >= packet_len {
-            packets.push(pending.drain(..packet_len).collect::<Vec<u8>>());
-        }
-
-        let mut changed = false;
-        for packet in packets {
-            self.dashboard.record_input_sample(port, packet.len(), 1);
-            self.dashboard.add_input(port, &packet);
-            self.logger
-                .log_input(port, &packet)
-                .map_err(|error| format!("failed to write log: {error}"))?;
-            changed = true;
-        }
-
-        Ok(changed)
-    }
-
     pub(crate) fn record_input_error(&mut self, port: &str, message: &str) -> Result<bool, String> {
         self.set_input_status(port, format!("error: {message}"));
         self.logger
@@ -231,6 +193,17 @@ impl SessionDashboard {
             .record_input_sample(port, byte_len, packet_count);
     }
 
+    pub(crate) fn record_input_format_sample(
+        &mut self,
+        port: &str,
+        format_name: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.dashboard
+            .record_input_format_sample(port, format_name, byte_len, packet_count);
+    }
+
     pub(crate) fn record_output_sample(
         &mut self,
         port: &str,
@@ -241,15 +214,48 @@ impl SessionDashboard {
             .record_output_sample(port, byte_len, packet_count);
     }
 
+    pub(crate) fn record_output_format_sample(
+        &mut self,
+        port: &str,
+        format_name: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.dashboard
+            .record_output_format_sample(port, format_name, byte_len, packet_count);
+    }
+
     pub(crate) fn add_input_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
-        self.dashboard.add_input(port, bytes);
+        self.add_input_entry_with_options(port, bytes, None, false)
+    }
+
+    pub(crate) fn add_input_entry_with_options(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) -> Result<(), String> {
+        self.dashboard
+            .add_input_with_options(port, bytes, display_mode, preserve_line_breaks);
         self.logger
             .log_input(port, bytes)
             .map_err(|error| format!("failed to write log: {error}"))
     }
 
     pub(crate) fn add_output_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
-        self.dashboard.add_output(port, bytes);
+        self.add_output_entry_with_options(port, bytes, None, false)
+    }
+
+    pub(crate) fn add_output_entry_with_options(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) -> Result<(), String> {
+        self.dashboard
+            .add_output_with_options(port, bytes, display_mode, preserve_line_breaks);
         self.logger
             .log_output(port, bytes)
             .map_err(|error| format!("failed to write log: {error}"))

@@ -151,6 +151,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "      --log-dir <DIR>        Log directory (default: {})",
         paths::default_log_help()
     );
+    println!("      --no-log               Disable log file creation for maximum throughput");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
@@ -173,6 +174,9 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("With --interactive, accepts terminal input and sends each line on Enter.");
     println!("Sent packets are displayed live like `monitor`. Stops on Ctrl-C.");
     println!("Default send rate is 50 Hz, which matches `control`'s 20 ms interval.");
+    println!(
+        "Known mixed-format input ports are decoded per format, and each format's RX Hz is shown in the header."
+    );
     println!();
     println!("Options:");
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial output port");
@@ -189,7 +193,9 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!(
         "  -i, --interactive          Read lines from terminal and send on Enter (raw UTF-8 + \\r\\n)"
     );
-    println!("  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT]> Additional serial port to monitor");
+    println!(
+        "  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]> Additional serial port to monitor"
+    );
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!(
         "                              TARGET: PORT, input:PORT, output:PORT, default, input:default, output:default"
@@ -205,6 +211,7 @@ pub(crate) fn print_send_help(bin_name: &str) {
         "      --log-dir <DIR>        Log directory (default: {})",
         paths::default_log_help()
     );
+    println!("      --no-log               Disable log file creation for maximum throughput");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
@@ -216,12 +223,16 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!(
         "  {bin_name} send --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8,packetjfv1"
     );
+    println!(
+        "  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1@115200,packetacv6+packetjfv1"
+    );
     println!("  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6 --no-log");
     println!(
         "  {bin_name} send -o main=/dev/ttyUSB0@921600,hex,packetacv6 -o sub=/dev/ttyUSB1@115200,utf8+packet,packetjfv1"
     );
     println!(
-        "  {bin_name} send -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100 -o up=/dev/ttyUSB1@115200,utf8,roverupgeneral,10"
+        "  {bin_name} send -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100 -o up=/dev/ttyUSB0@921600,utf8,roverupgeneral,10"
     );
     println!("  {bin_name} send --interactive --port /dev/ttyUSB0@115200");
     println!("  {bin_name} send -i --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");

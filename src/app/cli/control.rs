@@ -263,14 +263,11 @@ fn build_settings(
         .as_ref()
         .and_then(|port_spec| port_spec.baud)
         .unwrap_or(default_baud);
-    let output_display_mode = if using_cli_port {
-        selected_port
-            .as_ref()
-            .and_then(|port_spec| port_spec.display_mode)
-            .unwrap_or(display.resolve_output(&port))
-    } else {
-        display.resolve_output(&port)
-    };
+    let output_display_mode = selected_port
+        .as_ref()
+        .and_then(|port_spec| port_spec.display_mode)
+        .or(display.resolve_output_override(&port))
+        .unwrap_or(format.default_display_mode());
     let log_dir = cli_options
         .log_dir
         .or(config.log_dir)
@@ -283,7 +280,8 @@ fn build_settings(
         display_mode: selected_port
             .as_ref()
             .and_then(|port_spec| port_spec.display_mode)
-            .unwrap_or(display.resolve_input(&port)),
+            .or(display.resolve_input_override(&port))
+            .unwrap_or(format.default_display_mode()),
         line_break_mode: selected_port
             .as_ref()
             .and_then(|port_spec| port_spec.line_break_mode)
@@ -305,9 +303,12 @@ fn build_settings(
             display_mode: if using_cli_monitor_ports {
                 port_spec
                     .display_mode
-                    .unwrap_or(display.resolve_input(&monitor_port))
+                    .or(display.resolve_input_override(&monitor_port))
+                    .unwrap_or_default()
             } else {
-                display.resolve_input(&monitor_port)
+                display
+                    .resolve_input_override(&monitor_port)
+                    .unwrap_or_default()
             },
             line_break_mode: port_spec
                 .line_break_mode

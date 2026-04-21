@@ -95,7 +95,9 @@ acs control --port /dev/ttyUSB0 --baud 115200 --format PacketACv6
 acs monitor --port /dev/ttyUSB0
 acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
 acs send --port /dev/ttyUSB0 --format PacketJFv1 --rate 100
-acs send -o main=/dev/ttyUSB0@115200,hex,packetjfv1,100 -o sub=/dev/ttyUSB1@921600,utf8+packet,packetacv6,10
+acs send --port /dev/ttyUSB0 --format PacketACv6 --no-log
+acs send -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100 -o up=/dev/ttyUSB0@921600,utf8,roverupgeneral,10
+acs send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1@115200,packetacv6+packetjfv1
 acs xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --jf-rate 100
 acs xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100
 acs --version
@@ -105,6 +107,9 @@ acs --version
 - `--config` には JSON ファイルだけでなくディレクトリも指定できます。
 - 詳しいオプションや表示形式は `acs help <command>` を参照してください。
 - `acs xbee-test` は表示更新が遅い場合も受信レートとエラー率の集計を優先し、packet 表示は別キューで追いかけます。
+- `acs send` は同一ポートの mixed-format 受信でも packet を再同期し、format ごとの受信 Hz をヘッダに表示します。
+- `acs send --monitor` は `packetacv6+packetjfv1` のように複数 format を指定でき、それぞれの built-in 既定表示で表示します。
+- `acs send --no-log` と `acs xbee-test --no-log` はログファイル作成を止め、I/O 負荷を減らします。
 
 ## 設定ファイル
 

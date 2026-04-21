@@ -1,3 +1,4 @@
+use crate::output::OutputFormat;
 use crate::port_display::{LineBreakMode, PortDisplayMode};
 use crate::serial::{
     SerialCallback, SerialConfig, SerialEvent, SerialMonitor, SerialWriter, open_monitor_and_writer,
@@ -44,8 +45,20 @@ pub(crate) struct SessionSpec {
     pub outputs: Vec<SessionOutputSpec>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SessionConnectionKey {
+    port: String,
+    baud_rate: u32,
+}
+
 struct SessionOutputHandle {
     port: String,
+    connection_key: SessionConnectionKey,
+    display_mode: PortDisplayMode,
+    format_name: String,
+}
+
+struct SessionConnectionHandle {
     status_label: String,
     connection: SerialWriter,
 }
@@ -55,6 +68,7 @@ pub(crate) struct SessionRuntime {
     event_rx: Receiver<SessionEvent>,
     _input_monitors: Vec<SerialMonitor>,
     outputs: BTreeMap<String, SessionOutputHandle>,
+    connections: BTreeMap<SessionConnectionKey, SessionConnectionHandle>,
     manual_input_recording: BTreeSet<String>,
     manual_output_recording: BTreeSet<String>,
     render_samples: VecDeque<Instant>,
@@ -81,12 +95,36 @@ impl SessionRuntime {
                 input.line_break_mode,
             );
         }
+        let mut output_port_modes = BTreeMap::<SessionConnectionKey, PortDisplayMode>::new();
+        let mut output_port_formats = BTreeMap::<SessionConnectionKey, BTreeSet<String>>::new();
         for output in &spec.outputs {
+            let key = SessionConnectionKey {
+                port: output.port.clone(),
+                baud_rate: output.baud_rate,
+            };
+            output_port_modes
+                .entry(key.clone())
+                .or_insert(output.display_mode);
+            output_port_formats
+                .entry(key)
+                .or_default()
+                .insert(output.format_name.clone());
+        }
+        for (key, formats) in &output_port_formats {
             dashboard.configure_output_port(
-                &output.port,
-                output.baud_rate,
-                &output.format_name,
-                output.display_mode,
+                &key.port,
+                key.baud_rate,
+                output_port_modes
+                    .get(key)
+                    .copied()
+                    .unwrap_or(PortDisplayMode::Hex),
+            );
+            dashboard.set_output_known_formats(
+                &key.port,
+                formats
+                    .iter()
+                    .map(|format_name| pretty_format_name(format_name))
+                    .collect(),
             );
         }
 
@@ -94,38 +132,60 @@ impl SessionRuntime {
         let mut input_monitors = Vec::new();
         let mut shared_input_indexes = vec![false; spec.inputs.len()];
         let mut outputs = BTreeMap::new();
+        let mut connections = BTreeMap::new();
         for output in &spec.outputs {
-            let status_label = format!("baud={} format={}", output.baud_rate, output.format_name);
-            let connection = if let Some((input_index, input)) =
-                spec.inputs.iter().enumerate().find(|(index, input)| {
-                    !shared_input_indexes[*index]
-                        && input.port == output.port
-                        && input.baud_rate == output.baud_rate
-                }) {
-                let (monitor, writer) = open_monitor_and_writer(
-                    &SerialConfig {
+            let connection_key = SessionConnectionKey {
+                port: output.port.clone(),
+                baud_rate: output.baud_rate,
+            };
+            if !connections.contains_key(&connection_key) {
+                let status_label = format!(
+                    "baud={} format={}",
+                    output.baud_rate,
+                    output_port_formats
+                        .get(&connection_key)
+                        .map(|formats| formats.iter().cloned().collect::<Vec<_>>().join("+"))
+                        .unwrap_or_else(|| output.format_name.clone())
+                );
+                let connection = if let Some((input_index, input)) =
+                    spec.inputs.iter().enumerate().find(|(index, input)| {
+                        !shared_input_indexes[*index]
+                            && input.port == output.port
+                            && input.baud_rate == output.baud_rate
+                    }) {
+                    let (monitor, writer) = open_monitor_and_writer(
+                        &SerialConfig {
+                            port: output.port.clone(),
+                            baud_rate: output.baud_rate,
+                        },
+                        make_session_callback(event_tx.clone(), &input.id),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    input_monitors.push(monitor);
+                    shared_input_indexes[input_index] = true;
+                    writer
+                } else {
+                    SerialWriter::open(&SerialConfig {
                         port: output.port.clone(),
                         baud_rate: output.baud_rate,
+                    })
+                    .map_err(|error| error.to_string())?
+                };
+                connections.insert(
+                    connection_key.clone(),
+                    SessionConnectionHandle {
+                        status_label,
+                        connection,
                     },
-                    make_session_callback(event_tx.clone(), &input.id),
-                )
-                .map_err(|error| error.to_string())?;
-                input_monitors.push(monitor);
-                shared_input_indexes[input_index] = true;
-                writer
-            } else {
-                SerialWriter::open(&SerialConfig {
-                    port: output.port.clone(),
-                    baud_rate: output.baud_rate,
-                })
-                .map_err(|error| error.to_string())?
-            };
+                );
+            }
             outputs.insert(
                 output.id.clone(),
                 SessionOutputHandle {
                     port: output.port.clone(),
-                    status_label,
-                    connection,
+                    connection_key,
+                    display_mode: output.display_mode,
+                    format_name: output.format_name.clone(),
                 },
             );
         }
@@ -151,6 +211,7 @@ impl SessionRuntime {
             event_rx,
             _input_monitors: input_monitors,
             outputs,
+            connections,
             manual_input_recording: BTreeSet::new(),
             manual_output_recording: BTreeSet::new(),
             render_samples: VecDeque::new(),
@@ -169,13 +230,13 @@ impl SessionRuntime {
         self.dashboard.set_interactive_mode(enabled);
     }
 
-    pub(crate) fn set_input_packet_framing(&mut self, port: &str, packet_len: usize) {
-        self.dashboard.set_input_packet_framing(port, packet_len);
+    pub(crate) fn set_input_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
+        self.dashboard.set_input_packet_rate_enabled(port, enabled);
         self.dirty = true;
     }
 
-    pub(crate) fn set_input_packet_rate_enabled(&mut self, port: &str, enabled: bool) {
-        self.dashboard.set_input_packet_rate_enabled(port, enabled);
+    pub(crate) fn set_input_known_formats(&mut self, port: &str, formats: Vec<String>) {
+        self.dashboard.set_input_known_formats(port, formats);
         self.dirty = true;
     }
 
@@ -220,6 +281,18 @@ impl SessionRuntime {
         self.dirty = true;
     }
 
+    pub(crate) fn record_input_format_sample(
+        &mut self,
+        port: &str,
+        format_name: &str,
+        byte_len: usize,
+        packet_count: usize,
+    ) {
+        self.dashboard
+            .record_input_format_sample(port, format_name, byte_len, packet_count);
+        self.dirty = true;
+    }
+
     pub(crate) fn record_output_sample(
         &mut self,
         port: &str,
@@ -237,6 +310,23 @@ impl SessionRuntime {
         Ok(())
     }
 
+    pub(crate) fn add_input_entry_with_options(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) -> Result<(), String> {
+        self.dashboard.add_input_entry_with_options(
+            port,
+            bytes,
+            display_mode,
+            preserve_line_breaks,
+        )?;
+        self.dirty = true;
+        Ok(())
+    }
+
     pub(crate) fn add_output_entry(&mut self, port: &str, bytes: &[u8]) -> Result<(), String> {
         self.dashboard.add_output_entry(port, bytes)?;
         self.dirty = true;
@@ -244,16 +334,30 @@ impl SessionRuntime {
     }
 
     pub(crate) fn write_output(&mut self, output_id: &str, bytes: &[u8]) -> Result<(), String> {
-        let output = self
+        let (port, connection_key, display_mode, format_name) = self
             .outputs
             .get_mut(output_id)
+            .map(|output| {
+                (
+                    output.port.clone(),
+                    output.connection_key.clone(),
+                    output.display_mode,
+                    output.format_name.clone(),
+                )
+            })
             .ok_or_else(|| format!("unknown output id: {output_id}"))?;
-        output
+        self.connections
+            .get_mut(&connection_key)
+            .ok_or_else(|| format!("missing output connection for `{output_id}`"))?
             .connection
             .write_bytes(bytes)
             .map_err(|error| error.to_string())?;
         if !self.manual_output_recording.contains(output_id) {
-            self.dashboard.record_output(&output.port, bytes)?;
+            let pretty_format_name = pretty_format_name(&format_name);
+            self.dashboard
+                .record_output_with_options(&port, bytes, Some(display_mode), false)?;
+            self.dashboard
+                .record_output_format_sample(&port, &pretty_format_name, bytes.len(), 1);
             self.dirty = true;
         }
         Ok(())
@@ -273,9 +377,13 @@ impl SessionRuntime {
             .outputs
             .get(output_id)
             .ok_or_else(|| format!("unknown output id: {output_id}"))?;
+        let connection = self
+            .connections
+            .get(&output.connection_key)
+            .ok_or_else(|| format!("missing output connection for `{output_id}`"))?;
         self.dashboard.set_output_status(
             &output.port,
-            format!("{} error={message}", output.status_label),
+            format!("{} error={message}", connection.status_label),
         );
         self.dirty = true;
         Ok(())
@@ -286,8 +394,12 @@ impl SessionRuntime {
             .outputs
             .get(output_id)
             .ok_or_else(|| format!("unknown output id: {output_id}"))?;
+        let connection = self
+            .connections
+            .get(&output.connection_key)
+            .ok_or_else(|| format!("missing output connection for `{output_id}`"))?;
         self.dashboard
-            .set_output_status(&output.port, output.status_label.clone());
+            .set_output_status(&output.port, connection.status_label.clone());
         self.dirty = true;
         Ok(())
     }
@@ -440,6 +552,12 @@ impl SessionRuntime {
             self.render_samples.pop_front();
         }
     }
+}
+
+fn pretty_format_name(format_name: &str) -> String {
+    OutputFormat::parse(format_name)
+        .map(|format| format.display_name().to_owned())
+        .unwrap_or_else(|_| format_name.to_owned())
 }
 
 fn make_session_callback(event_tx: mpsc::Sender<SessionEvent>, input_id: &str) -> SerialCallback {

@@ -5,9 +5,10 @@ mod roverdowngeneral;
 mod roverupgeneral;
 
 use crate::input::compact::CompactReport;
+use crate::port_display::PortDisplayMode;
 pub(crate) use crc::crc16_ccitt_false;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OutputFormat {
     PacketAcV6,
     PacketJfV1,
@@ -72,6 +73,15 @@ impl OutputFormat {
         find_definition(self).names[0]
     }
 
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::PacketAcV6 => "PacketACv6",
+            Self::PacketJfV1 => "PacketJFv1",
+            Self::RoverUpGeneral => "RoverUpGeneral",
+            Self::RoverDownGeneral => "RoverDownGeneral",
+        }
+    }
+
     pub fn create_driver(self) -> Result<Box<dyn OutputDriver>, String> {
         find_definition(self)
             .create_driver
@@ -95,6 +105,13 @@ impl OutputFormat {
 
     pub fn packet_len(self) -> usize {
         find_definition(self).packet_len
+    }
+
+    pub fn default_display_mode(self) -> PortDisplayMode {
+        match self {
+            Self::PacketAcV6 | Self::PacketJfV1 => PortDisplayMode::Hex,
+            Self::RoverUpGeneral | Self::RoverDownGeneral => PortDisplayMode::Ascii,
+        }
     }
 }
 
@@ -229,8 +246,8 @@ mod tests {
         let first = generator.next_payload().expect("should encode");
         let second = generator.next_payload().expect("should encode");
 
-        assert_eq!(first.len(), 110);
-        assert!(String::from_utf8_lossy(&first).contains("0x300,000\r\n"));
+        assert_eq!(first.len(), 12);
+        assert_eq!(String::from_utf8_lossy(&first), "0x300,1234\r\n");
         assert_ne!(first, second);
     }
 
@@ -267,8 +284,8 @@ mod tests {
         let first = generator.next_payload().expect("should encode");
         let second = generator.next_payload().expect("should encode");
 
-        assert_eq!(first.len(), 173);
-        assert!(String::from_utf8_lossy(&first).contains("415,35.12345678901\r\n"));
+        assert_eq!(first.len(), 11);
+        assert_eq!(String::from_utf8_lossy(&first), "400,21.10\r\n");
         assert_ne!(first, second);
     }
 
@@ -276,7 +293,27 @@ mod tests {
     fn packet_lengths_match_documented_formats() {
         assert_eq!(OutputFormat::PacketAcV6.packet_len(), 39);
         assert_eq!(OutputFormat::PacketJfV1.packet_len(), 16);
-        assert_eq!(OutputFormat::RoverUpGeneral.packet_len(), 110);
-        assert_eq!(OutputFormat::RoverDownGeneral.packet_len(), 173);
+        assert_eq!(OutputFormat::RoverUpGeneral.packet_len(), 12);
+        assert_eq!(OutputFormat::RoverDownGeneral.packet_len(), 11);
+    }
+
+    #[test]
+    fn default_display_modes_match_packet_families() {
+        assert_eq!(
+            OutputFormat::PacketAcV6.default_display_mode(),
+            crate::port_display::PortDisplayMode::Hex
+        );
+        assert_eq!(
+            OutputFormat::PacketJfV1.default_display_mode(),
+            crate::port_display::PortDisplayMode::Hex
+        );
+        assert_eq!(
+            OutputFormat::RoverUpGeneral.default_display_mode(),
+            crate::port_display::PortDisplayMode::Ascii
+        );
+        assert_eq!(
+            OutputFormat::RoverDownGeneral.default_display_mode(),
+            crate::port_display::PortDisplayMode::Ascii
+        );
     }
 }

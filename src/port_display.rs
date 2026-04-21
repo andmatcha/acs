@@ -84,6 +84,10 @@ impl PortDisplayScopeConfig {
             .or(self.default_mode)
             .unwrap_or_default()
     }
+
+    fn resolve_override(&self, port: &str) -> Option<PortDisplayMode> {
+        self.per_port.get(port).copied().or(self.default_mode)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -181,6 +185,14 @@ impl PortDisplayConfig {
 
     pub fn resolve_output(&self, port: &str) -> PortDisplayMode {
         self.output.resolve(port)
+    }
+
+    pub fn resolve_input_override(&self, port: &str) -> Option<PortDisplayMode> {
+        self.input.resolve_override(port)
+    }
+
+    pub fn resolve_output_override(&self, port: &str) -> Option<PortDisplayMode> {
+        self.output.resolve_override(port)
     }
 
     pub fn resolve_line_break_input(&self, port: &str) -> LineBreakMode {
@@ -358,6 +370,14 @@ mod tests {
         assert_eq!(
             config.resolve_output("/dev/ttyUSB1"),
             PortDisplayMode::HexUtf8
+        );
+        assert_eq!(
+            config.resolve_input_override("/dev/ttyUSB1"),
+            Some(PortDisplayMode::HexUtf8)
+        );
+        assert_eq!(
+            config.resolve_output_override("/dev/ttyUSB1"),
+            Some(PortDisplayMode::HexUtf8)
         );
     }
 

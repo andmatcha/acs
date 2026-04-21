@@ -6,17 +6,25 @@ use super::config;
 use super::help::{is_help_flag, print_send_help};
 use super::signal;
 use crate::output::OutputFormat;
-use crate::output::formats::DummyPayloadGenerator;
-use crate::port_display::{PortDisplayConfig, parse_display_assignment};
+use crate::output::formats::{DummyPayloadGenerator, crc16_ccitt_false};
+use crate::port_display::{PortDisplayConfig, PortDisplayMode, parse_display_assignment};
 use crate::serial;
+use crate::session::event::IngressFrame;
 use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntime, SessionSpec};
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 const DEFAULT_SEND_RATE_HZ: u32 = 50;
 const SEND_LOOP_INTERVAL: Duration = Duration::from_millis(1);
+const STATUS_INTERVAL: Duration = Duration::from_millis(200);
+const RATE_WINDOW: Duration = Duration::from_secs(1);
+const DISPLAY_FLUSH_SLICE: usize = 32;
+const DISPLAY_FLUSH_PACKET_BUDGET: usize = 256;
+const DISPLAY_QUEUE_LIMIT: usize = 65_536;
+const SERIAL_FRAME_BITS_PER_BYTE: u64 = 10;
 
 #[derive(Debug, Default)]
 struct SendCliOptions {
@@ -29,6 +37,7 @@ struct SendCliOptions {
     monitor_ports: Vec<SendMonitorBinding>,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
+    no_log: bool,
     interactive: bool,
 }
 
@@ -47,7 +56,7 @@ struct SendOutputBinding {
 struct SendMonitorBinding {
     port: String,
     baud: Option<u32>,
-    format: Option<String>,
+    formats: Vec<String>,
     display_mode: Option<crate::port_display::PortDisplayMode>,
     line_break_mode: Option<crate::port_display::LineBreakMode>,
 }
@@ -60,16 +69,19 @@ struct SendOutputSettings {
 }
 
 #[derive(Debug, Clone)]
-struct SendInputPacketFormat {
+struct SendObservedInputSpec {
+    input_id: String,
     port: String,
-    format: OutputFormat,
+    formats: Vec<OutputFormat>,
+    per_format_display_modes: Option<BTreeMap<OutputFormat, PortDisplayMode>>,
 }
 
 struct SendSettings {
     inputs: Vec<SessionInputSpec>,
     outputs: Vec<SendOutputSettings>,
-    input_packet_formats: Vec<SendInputPacketFormat>,
+    observed_inputs: Vec<SendObservedInputSpec>,
     log_dir: PathBuf,
+    logging_enabled: bool,
     interactive: bool,
 }
 
@@ -87,12 +99,641 @@ struct SendRunResult {
     interactive: bool,
     message_count: u64,
     outputs: Vec<SendOutputRunResult>,
+    logging_enabled: bool,
     log_path: PathBuf,
 }
 
 struct OutputSchedule {
     next_send_at: Instant,
     period: Duration,
+}
+
+#[derive(Debug, Clone)]
+struct SendHeaderOutput {
+    id: String,
+    port: String,
+    baud_rate: u32,
+    format: OutputFormat,
+    rate_hz: Option<u32>,
+    payload_len: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct SendHeaderObservedFormat {
+    port: String,
+    format: OutputFormat,
+}
+
+struct SendRuntimeState {
+    interactive: bool,
+    logging_enabled: bool,
+    log_path_display: String,
+    header_outputs: Vec<SendHeaderOutput>,
+    observed_inputs: BTreeMap<String, ObservedInput>,
+    observed_format_lines: Vec<SendHeaderObservedFormat>,
+    last_status_update: Instant,
+    header_lines: Vec<String>,
+}
+
+impl SendRuntimeState {
+    fn new(
+        settings: &SendSettings,
+        output_specs: &[SendOutputSettings],
+        payload_lengths: &BTreeMap<String, usize>,
+        log_path_display: String,
+        started_at: Instant,
+    ) -> Self {
+        let header_outputs = output_specs
+            .iter()
+            .map(|output| SendHeaderOutput {
+                id: output.session.id.clone(),
+                port: output.session.port.clone(),
+                baud_rate: output.session.baud_rate,
+                format: output.format,
+                rate_hz: (!settings.interactive).then_some(output.rate_hz),
+                payload_len: payload_lengths.get(&output.session.id).copied(),
+            })
+            .collect::<Vec<_>>();
+        let output_observed_pairs = header_outputs
+            .iter()
+            .map(|output| (output.port.clone(), output.format))
+            .collect::<BTreeSet<_>>();
+        let observed_inputs = settings
+            .observed_inputs
+            .iter()
+            .cloned()
+            .map(|spec| {
+                (
+                    spec.input_id.clone(),
+                    ObservedInput::new(
+                        spec.input_id,
+                        spec.port,
+                        spec.formats,
+                        spec.per_format_display_modes,
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let observed_format_lines = settings
+            .observed_inputs
+            .iter()
+            .flat_map(|spec| {
+                spec.formats.iter().filter_map(|format| {
+                    let key = (spec.port.clone(), *format);
+                    (!output_observed_pairs.contains(&key)).then_some(SendHeaderObservedFormat {
+                        port: spec.port.clone(),
+                        format: *format,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Self {
+            interactive: settings.interactive,
+            logging_enabled: settings.logging_enabled,
+            log_path_display,
+            header_outputs,
+            observed_inputs,
+            observed_format_lines,
+            last_status_update: started_at
+                .checked_sub(STATUS_INTERVAL)
+                .unwrap_or(started_at),
+            header_lines: Vec::new(),
+        }
+    }
+
+    fn configure_session(&self, session: &mut SessionRuntime) {
+        for input in self.observed_inputs.values() {
+            session.set_manual_input_recording(&input.input_id, true);
+            session.set_input_packet_rate_enabled(&input.port, true);
+            session.set_input_known_formats(
+                &input.port,
+                input
+                    .known_formats()
+                    .iter()
+                    .map(|format| format.display_name().to_owned())
+                    .collect(),
+            );
+        }
+    }
+
+    fn handle_input(
+        &mut self,
+        frame: &IngressFrame,
+        session: &mut SessionRuntime,
+    ) -> Result<(), String> {
+        let Some(input) = self.observed_inputs.get_mut(&frame.input_id) else {
+            return Ok(());
+        };
+
+        let batch = input.observe(&frame.bytes, Instant::now());
+        if batch.valid_packet_count > 0 {
+            session.record_input_sample(
+                &input.port,
+                batch.valid_byte_len,
+                batch.valid_packet_count,
+            );
+            for (format, (byte_len, packet_count)) in batch.per_format_totals {
+                session.record_input_format_sample(
+                    &input.port,
+                    format.display_name(),
+                    byte_len,
+                    packet_count,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn on_tick(&mut self, session: &mut SessionRuntime) -> Result<(), String> {
+        self.flush_display_queues(session)?;
+
+        let now = Instant::now();
+        if now.duration_since(self.last_status_update) >= STATUS_INTERVAL {
+            self.last_status_update = now;
+            let header_lines = self.build_header_lines(now);
+            if header_lines != self.header_lines {
+                self.header_lines = header_lines.clone();
+                session.set_header_lines(header_lines);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn flush_display_queues(&mut self, session: &mut SessionRuntime) -> Result<(), String> {
+        let mut remaining_budget = DISPLAY_FLUSH_PACKET_BUDGET;
+
+        while remaining_budget > 0 {
+            let mut flushed_total = 0usize;
+            for input in self.observed_inputs.values_mut() {
+                if remaining_budget == 0 {
+                    break;
+                }
+                let slice = remaining_budget.min(DISPLAY_FLUSH_SLICE);
+                let flushed = input.flush_display_batch(session, slice)?;
+                remaining_budget = remaining_budget.saturating_sub(flushed);
+                flushed_total += flushed;
+            }
+
+            if flushed_total == 0 {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn build_header_lines(&mut self, now: Instant) -> Vec<String> {
+        let mut lines = Vec::new();
+        for output in self.header_outputs.clone() {
+            let rx_rate_hz = self
+                .rx_rate_hz(&output.port, output.format, now)
+                .unwrap_or_default();
+            if self.interactive {
+                lines.push(format!(
+                    "output[{}]: {} @ {} baud, format={}, rx={rx_rate_hz:.1} Hz",
+                    output.id,
+                    output.port,
+                    output.baud_rate,
+                    output.format.as_str()
+                ));
+            } else {
+                lines.push(format!(
+                    "output[{}]: {} @ {} baud, format={}, tx_target={} Hz, rx={rx_rate_hz:.1} Hz, payload={} bytes",
+                    output.id,
+                    output.port,
+                    output.baud_rate,
+                    output.format.as_str(),
+                    output.rate_hz.unwrap_or_default(),
+                    output.payload_len.unwrap_or_default()
+                ));
+            }
+        }
+
+        for observed in self.observed_format_lines.clone() {
+            let rx_rate_hz = self
+                .rx_rate_hz(&observed.port, observed.format, now)
+                .unwrap_or_default();
+            lines.push(format!(
+                "input[{}:{}]: rx={rx_rate_hz:.1} Hz",
+                observed.port,
+                observed.format.as_str()
+            ));
+        }
+
+        if self.logging_enabled {
+            lines.push(format!("log: {}", self.log_path_display));
+        } else {
+            lines.push(String::from("log: disabled (--no-log)"));
+        }
+        if self.interactive {
+            lines.push(String::from(
+                "Enter で全出力ポートへ送信 (\\r\\n を末尾に付加)",
+            ));
+            lines.push(String::from("Ctrl-C で終了"));
+        } else {
+            lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
+        }
+        lines
+    }
+
+    fn rx_rate_hz(&mut self, port: &str, format: OutputFormat, now: Instant) -> Option<f64> {
+        self.observed_inputs
+            .values_mut()
+            .find(|input| input.port == port)
+            .and_then(|input| input.packet_rate_hz(format, now))
+    }
+}
+
+struct ObservedInput {
+    input_id: String,
+    port: String,
+    formats: Vec<OutputFormat>,
+    decoder: MixedFormatDecoder,
+    display_queue: PacketDisplayQueue,
+    rate_trackers: BTreeMap<OutputFormat, PacketRateTracker>,
+    per_format_display_modes: Option<BTreeMap<OutputFormat, PortDisplayMode>>,
+}
+
+impl ObservedInput {
+    fn new(
+        input_id: String,
+        port: String,
+        formats: Vec<OutputFormat>,
+        per_format_display_modes: Option<BTreeMap<OutputFormat, PortDisplayMode>>,
+    ) -> Self {
+        let rate_trackers = formats
+            .iter()
+            .map(|format| (*format, PacketRateTracker::new()))
+            .collect();
+        Self {
+            input_id,
+            port,
+            formats: formats.clone(),
+            decoder: MixedFormatDecoder::new(formats),
+            display_queue: PacketDisplayQueue::new(),
+            rate_trackers,
+            per_format_display_modes,
+        }
+    }
+
+    fn observe(&mut self, bytes: &[u8], at: Instant) -> ObservedInputBatch {
+        let packets = self.decoder.push(bytes);
+        let mut valid_byte_len = 0usize;
+        let mut valid_packet_count = 0usize;
+        let mut per_format_totals = BTreeMap::<OutputFormat, (usize, usize)>::new();
+
+        for packet in packets {
+            valid_byte_len += packet.bytes.len();
+            valid_packet_count += 1;
+            if let Some(rate_tracker) = self.rate_trackers.get_mut(&packet.format) {
+                rate_tracker.record(packet.bytes.len(), at);
+            }
+            let totals = per_format_totals.entry(packet.format).or_insert((0, 0));
+            totals.0 += packet.bytes.len();
+            totals.1 += 1;
+            let display_mode = if packet.format == OutputFormat::RoverUpGeneral {
+                Some(PortDisplayMode::Ascii)
+            } else {
+                self.per_format_display_modes
+                    .as_ref()
+                    .and_then(|display_modes| display_modes.get(&packet.format).copied())
+            };
+            self.display_queue
+                .enqueue(packet.bytes, display_mode, false);
+        }
+
+        ObservedInputBatch {
+            valid_byte_len,
+            valid_packet_count,
+            per_format_totals,
+        }
+    }
+
+    fn flush_display_batch(
+        &mut self,
+        session: &mut SessionRuntime,
+        max_packets: usize,
+    ) -> Result<usize, String> {
+        self.display_queue
+            .flush_input_batch(session, &self.port, max_packets)
+    }
+
+    fn packet_rate_hz(&mut self, format: OutputFormat, now: Instant) -> Option<f64> {
+        self.rate_trackers
+            .get_mut(&format)
+            .map(|tracker| tracker.packets_per_second(now))
+    }
+
+    fn known_formats(&self) -> &[OutputFormat] {
+        &self.formats
+    }
+}
+
+struct ObservedInputBatch {
+    valid_byte_len: usize,
+    valid_packet_count: usize,
+    per_format_totals: BTreeMap<OutputFormat, (usize, usize)>,
+}
+
+struct PacketRateTracker {
+    samples: VecDeque<PacketRateSample>,
+}
+
+impl PacketRateTracker {
+    fn new() -> Self {
+        Self {
+            samples: VecDeque::new(),
+        }
+    }
+
+    fn record(&mut self, _byte_len: usize, at: Instant) {
+        self.samples.push_back(PacketRateSample {
+            at,
+            packet_count: 1,
+        });
+    }
+
+    fn packets_per_second(&mut self, now: Instant) -> f64 {
+        self.prune(now);
+        self.samples
+            .iter()
+            .map(|sample| sample.packet_count)
+            .sum::<usize>() as f64
+            / RATE_WINDOW.as_secs_f64()
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while let Some(sample) = self.samples.front() {
+            if now.duration_since(sample.at) <= RATE_WINDOW {
+                break;
+            }
+            self.samples.pop_front();
+        }
+    }
+}
+
+struct PacketRateSample {
+    at: Instant,
+    packet_count: usize,
+}
+
+struct PacketDisplayQueue {
+    pending_packets: VecDeque<DisplayedPacket>,
+}
+
+impl PacketDisplayQueue {
+    fn new() -> Self {
+        Self {
+            pending_packets: VecDeque::new(),
+        }
+    }
+
+    fn enqueue(
+        &mut self,
+        packet: Vec<u8>,
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) {
+        self.pending_packets.push_back(DisplayedPacket {
+            bytes: packet,
+            display_mode,
+            preserve_line_breaks,
+        });
+        while self.pending_packets.len() > DISPLAY_QUEUE_LIMIT {
+            self.pending_packets.pop_front();
+        }
+    }
+
+    fn flush_input_batch(
+        &mut self,
+        session: &mut SessionRuntime,
+        port: &str,
+        max_packets: usize,
+    ) -> Result<usize, String> {
+        let mut flushed = 0usize;
+        while flushed < max_packets {
+            let Some(packet) = self.pending_packets.pop_front() else {
+                break;
+            };
+            session.add_input_entry_with_options(
+                port,
+                &packet.bytes,
+                packet.display_mode,
+                packet.preserve_line_breaks,
+            )?;
+            flushed += 1;
+        }
+        Ok(flushed)
+    }
+}
+
+struct DisplayedPacket {
+    bytes: Vec<u8>,
+    display_mode: Option<PortDisplayMode>,
+    preserve_line_breaks: bool,
+}
+
+struct MixedFormatDecoder {
+    formats: Vec<PacketMatcher>,
+    buffer: Vec<u8>,
+}
+
+impl MixedFormatDecoder {
+    fn new(formats: Vec<OutputFormat>) -> Self {
+        Self {
+            formats: formats.into_iter().map(PacketMatcher::new).collect(),
+            buffer: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> Vec<DecodedPacket> {
+        self.buffer.extend_from_slice(bytes);
+        let mut packets = Vec::new();
+
+        loop {
+            if self.buffer.is_empty() {
+                break;
+            }
+
+            if let Some(packet) = self.try_decode_packet() {
+                packets.push(packet);
+                continue;
+            }
+
+            if self
+                .formats
+                .iter()
+                .any(|format| format.could_match_prefix(&self.buffer))
+            {
+                break;
+            }
+
+            self.buffer.drain(..1);
+        }
+
+        packets
+    }
+
+    fn try_decode_packet(&mut self) -> Option<DecodedPacket> {
+        for format in &self.formats {
+            if self.buffer.len() < format.packet_len() {
+                continue;
+            }
+
+            let candidate = &self.buffer[..format.packet_len()];
+            if format.matches_packet(candidate) {
+                return Some(DecodedPacket {
+                    format: format.format(),
+                    bytes: self.buffer.drain(..format.packet_len()).collect(),
+                });
+            }
+        }
+
+        None
+    }
+}
+
+struct DecodedPacket {
+    format: OutputFormat,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PacketMatcher {
+    PacketAcV6,
+    PacketJfV1,
+    RoverUpGeneral,
+    RoverDownGeneral,
+}
+
+impl PacketMatcher {
+    fn new(format: OutputFormat) -> Self {
+        match format {
+            OutputFormat::PacketAcV6 => Self::PacketAcV6,
+            OutputFormat::PacketJfV1 => Self::PacketJfV1,
+            OutputFormat::RoverUpGeneral => Self::RoverUpGeneral,
+            OutputFormat::RoverDownGeneral => Self::RoverDownGeneral,
+        }
+    }
+
+    fn format(self) -> OutputFormat {
+        match self {
+            Self::PacketAcV6 => OutputFormat::PacketAcV6,
+            Self::PacketJfV1 => OutputFormat::PacketJfV1,
+            Self::RoverUpGeneral => OutputFormat::RoverUpGeneral,
+            Self::RoverDownGeneral => OutputFormat::RoverDownGeneral,
+        }
+    }
+
+    fn packet_len(self) -> usize {
+        self.format().packet_len()
+    }
+
+    fn matches_packet(self, bytes: &[u8]) -> bool {
+        match self {
+            Self::PacketAcV6 => matches_crc_packet(bytes, b"AC", 37),
+            Self::PacketJfV1 => matches_crc_packet(bytes, b"JF", 14),
+            Self::RoverUpGeneral => matches_rover_up_packet(bytes),
+            Self::RoverDownGeneral => matches_rover_down_packet(bytes),
+        }
+    }
+
+    fn could_match_prefix(self, bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
+            return false;
+        }
+
+        match self {
+            Self::PacketAcV6 => could_match_crc_packet_prefix(bytes, b"AC", 39),
+            Self::PacketJfV1 => could_match_crc_packet_prefix(bytes, b"JF", 16),
+            Self::RoverUpGeneral => matches_rover_up_prefix(bytes),
+            Self::RoverDownGeneral => matches_rover_down_prefix(bytes),
+        }
+    }
+}
+
+fn matches_crc_packet(bytes: &[u8], header: &[u8; 2], payload_len: usize) -> bool {
+    if bytes.len() != payload_len + 2 {
+        return false;
+    }
+
+    if !bytes.starts_with(header) {
+        return false;
+    }
+
+    let expected_crc = u16::from_le_bytes([bytes[payload_len], bytes[payload_len + 1]]);
+    crc16_ccitt_false(&bytes[..payload_len]) == expected_crc
+}
+
+fn could_match_crc_packet_prefix(bytes: &[u8], header: &[u8; 2], packet_len: usize) -> bool {
+    if bytes.len() >= packet_len {
+        return false;
+    }
+
+    if bytes.len() <= header.len() {
+        return header[..bytes.len()] == bytes[..];
+    }
+
+    bytes.starts_with(header)
+}
+
+fn matches_rover_up_prefix(bytes: &[u8]) -> bool {
+    if bytes.len() > OutputFormat::RoverUpGeneral.packet_len() {
+        return false;
+    }
+
+    bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| rover_up_byte_matches(index, *byte))
+}
+
+fn matches_rover_up_packet(bytes: &[u8]) -> bool {
+    bytes.len() == OutputFormat::RoverUpGeneral.packet_len() && matches_rover_up_prefix(bytes)
+}
+
+fn rover_up_byte_matches(index: usize, byte: u8) -> bool {
+    match index {
+        0 => byte == b'0',
+        1 => byte == b'x',
+        2 => byte == b'3',
+        3 | 4 => byte.is_ascii_hexdigit(),
+        5 => byte == b',',
+        6..=9 => byte.is_ascii_digit(),
+        10 => byte == b'\r',
+        11 => byte == b'\n',
+        _ => false,
+    }
+}
+
+fn matches_rover_down_prefix(bytes: &[u8]) -> bool {
+    if bytes.len() > OutputFormat::RoverDownGeneral.packet_len() {
+        return false;
+    }
+
+    bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| rover_down_byte_matches(index, *byte))
+}
+
+fn matches_rover_down_packet(bytes: &[u8]) -> bool {
+    bytes.len() == OutputFormat::RoverDownGeneral.packet_len() && matches_rover_down_prefix(bytes)
+}
+
+fn rover_down_byte_matches(index: usize, byte: u8) -> bool {
+    match index {
+        0 => byte == b'4',
+        1 | 2 => byte.is_ascii_hexdigit(),
+        3 => byte == b',',
+        4 | 5 | 7 | 8 => byte.is_ascii_digit(),
+        6 => byte == b'.',
+        9 => byte == b'\r',
+        10 => byte == b'\n',
+        _ => false,
+    }
 }
 
 pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
@@ -158,7 +799,9 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
                     );
                 }
             }
-            println!("log saved to {}", result.log_path.display());
+            if result.logging_enabled {
+                println!("log saved to {}", result.log_path.display());
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -172,7 +815,6 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
     let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
     let output_specs = settings.outputs.clone();
-    let input_packet_formats = settings.input_packet_formats.clone();
 
     let mut payload_lengths = BTreeMap::new();
     let mut generators = BTreeMap::<String, Box<dyn DummyPayloadGenerator>>::new();
@@ -189,11 +831,12 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
         }
     }
 
+    let started_at = Instant::now();
     let mut session = SessionRuntime::new(SessionSpec {
         title: String::from("acs send"),
         command_name: String::from("send"),
         log_dir: settings.log_dir.clone(),
-        logging_enabled: true,
+        logging_enabled: settings.logging_enabled,
         inputs: settings.inputs.clone(),
         outputs: output_specs
             .iter()
@@ -203,68 +846,18 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     for output in &output_specs {
         session.set_output_packet_rate_enabled(&output.session.port, true);
     }
-    for input_packet_format in &input_packet_formats {
-        session.set_input_packet_framing(
-            &input_packet_format.port,
-            input_packet_format.format.packet_len(),
-        );
-    }
     let log_path = session.log_path().to_path_buf();
     let log_path_display = log_path.display().to_string();
-
-    let output_ports = output_specs
-        .iter()
-        .map(|output| output.session.port.clone())
-        .collect::<BTreeSet<_>>();
-    let extra_monitor_ports = settings
-        .inputs
-        .iter()
-        .filter(|input| !output_ports.contains(&input.port))
-        .map(|input| format!("{}@{}", input.port, input.baud_rate))
-        .collect::<Vec<_>>();
-
-    let mut header_lines = output_specs
-        .iter()
-        .map(|output| {
-            if settings.interactive {
-                format!(
-                    "output[{}]: {} @ {} baud",
-                    output.session.id, output.session.port, output.session.baud_rate
-                )
-            } else {
-                format!(
-                    "output[{}]: {} @ {} baud, format={}, rate={} Hz, payload={} bytes",
-                    output.session.id,
-                    output.session.port,
-                    output.session.baud_rate,
-                    output.format.as_str(),
-                    output.rate_hz,
-                    payload_lengths
-                        .get(&output.session.id)
-                        .copied()
-                        .unwrap_or_default()
-                )
-            }
-        })
-        .collect::<Vec<_>>();
-    if settings.interactive {
-        header_lines.push(String::from(
-            "Enter で全出力ポートへ送信 (\\r\\n を末尾に付加)",
-        ));
-    }
-    if !extra_monitor_ports.is_empty() {
-        header_lines.push(format!(
-            "extra monitors: {}",
-            extra_monitor_ports.join(", ")
-        ));
-    }
-    header_lines.push(format!("log: {log_path_display}"));
-    if settings.interactive {
-        header_lines.push(String::from("Ctrl-C で終了"));
-    } else {
-        header_lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
-    }
-    session.set_header_lines(header_lines);
+    let runtime_state = RefCell::new(SendRuntimeState::new(
+        &settings,
+        &output_specs,
+        &payload_lengths,
+        log_path_display,
+        started_at,
+    ));
+    runtime_state.borrow().configure_session(&mut session);
+    let initial_header_lines = runtime_state.borrow_mut().build_header_lines(started_at);
+    session.set_header_lines(initial_header_lines);
     signal::install_handler();
 
     let mut sent_counts = output_specs
@@ -283,7 +876,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
         session.run_loop_with_tick(
             SEND_LOOP_INTERVAL,
             signal::is_stop_requested,
-            |_, _| Ok(()),
+            |frame, session| runtime_state.borrow_mut().handle_input(frame, session),
             |session| {
                 if let Some(input) = session.take_user_input() {
                     message_count = message_count.saturating_add(1);
@@ -309,11 +902,11 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
                         }
                     }
                 }
+                runtime_state.borrow_mut().on_tick(session)?;
                 Ok(())
             },
         )?;
     } else {
-        let started_at = Instant::now();
         let mut schedules = output_specs
             .iter()
             .map(|output| {
@@ -329,7 +922,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
         session.run_loop_with_tick(
             SEND_LOOP_INTERVAL,
             signal::is_stop_requested,
-            |_, _| Ok(()),
+            |frame, session| runtime_state.borrow_mut().handle_input(frame, session),
             |session| {
                 let now = Instant::now();
                 for output in &output_specs {
@@ -337,7 +930,8 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
                     let schedule = schedules
                         .get_mut(output_id)
                         .ok_or_else(|| format!("missing send schedule for output `{output_id}`"))?;
-                    while now >= schedule.next_send_at {
+                    if now >= schedule.next_send_at {
+                        realign_output_schedule(schedule, now);
                         let payload = generators
                             .get_mut(output_id)
                             .ok_or_else(|| {
@@ -362,6 +956,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
                         schedule.next_send_at += schedule.period;
                     }
                 }
+                runtime_state.borrow_mut().on_tick(session)?;
                 Ok(())
             },
         )?;
@@ -390,6 +985,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
                     .unwrap_or_default(),
             })
             .collect(),
+        logging_enabled: settings.logging_enabled,
         log_path,
     })
 }
@@ -465,9 +1061,10 @@ fn build_settings(
 
     let mut outputs = Vec::new();
     let mut inputs = Vec::new();
-    let mut input_packet_formats = Vec::new();
     let mut seen_output_ids = BTreeSet::new();
-    let mut seen_output_ports = BTreeSet::new();
+    let mut output_port_bauds = BTreeMap::<String, u32>::new();
+    let mut input_packet_format_candidates = BTreeMap::<String, Vec<OutputFormat>>::new();
+    let mut input_display_is_explicit = BTreeMap::<String, bool>::new();
 
     for binding in output_bindings {
         if !seen_output_ids.insert(binding.id.clone()) {
@@ -475,19 +1072,33 @@ fn build_settings(
         }
 
         let port = serial::resolve_port(Some(&binding.port)).map_err(|error| error.to_string())?;
-        if !seen_output_ports.insert(port.clone()) {
-            return Err(format!("duplicate send output port: {port}"));
-        }
-
         let baud_rate = binding.baud.unwrap_or(default_baud);
+        if let Some(existing_baud_rate) = output_port_bauds.get(&port) {
+            if *existing_baud_rate != baud_rate {
+                return Err(format!(
+                    "send output port `{port}` cannot use multiple baud rates ({existing_baud_rate} and {baud_rate})"
+                ));
+            }
+        } else {
+            output_port_bauds.insert(port.clone(), baud_rate);
+        }
         let format = binding.format.unwrap_or(default_format);
-        let output_display_mode = binding
+        let output_display_mode = resolve_display_mode(
+            binding.display_mode,
+            display.resolve_output_override(&port),
+            Some(format.default_display_mode()),
+        );
+        let input_display_override = binding
             .display_mode
-            .unwrap_or(display.resolve_output(&port));
-        let input_display_mode = binding.display_mode.unwrap_or(display.resolve_input(&port));
+            .or(display.resolve_input_override(&port));
+        let input_display_mode = input_display_override.unwrap_or(format.default_display_mode());
         let line_break_mode = binding
             .line_break_mode
             .unwrap_or(display.resolve_line_break_input(&port));
+        input_display_is_explicit
+            .entry(port.clone())
+            .and_modify(|explicit| *explicit |= input_display_override.is_some())
+            .or_insert(input_display_override.is_some());
 
         outputs.push(SendOutputSettings {
             session: SessionOutputSpec {
@@ -500,53 +1111,185 @@ fn build_settings(
             format,
             rate_hz: binding.rate_hz,
         });
-        inputs.push(SessionInputSpec {
-            id: port.clone(),
-            port: port.clone(),
-            baud_rate,
-            display_mode: input_display_mode,
-            line_break_mode,
-        });
         if !cli_options.interactive {
-            input_packet_formats.push(SendInputPacketFormat { port, format });
+            let formats = input_packet_format_candidates
+                .entry(port.clone())
+                .or_default();
+            if !formats.contains(&format) {
+                formats.push(format);
+            }
         }
+        if !inputs
+            .iter()
+            .any(|input: &SessionInputSpec| input.port == port && input.baud_rate == baud_rate)
+        {
+            inputs.push(SessionInputSpec {
+                id: port.clone(),
+                port: port.clone(),
+                baud_rate,
+                display_mode: input_display_mode,
+                line_break_mode,
+            });
+        }
+    }
+
+    if !cli_options.interactive {
+        validate_output_port_loads(&outputs)?;
     }
 
     for port_spec in monitor_port_specs {
         let monitor_port =
             serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?;
-        if inputs
+        if !inputs
             .iter()
             .any(|input: &SessionInputSpec| input.port == monitor_port)
         {
-            continue;
-        }
-        inputs.push(SessionInputSpec {
-            id: monitor_port.clone(),
-            port: monitor_port.clone(),
-            baud_rate: port_spec.baud.unwrap_or(default_baud),
-            display_mode: port_spec
-                .display_mode
-                .unwrap_or(display.resolve_input(&monitor_port)),
-            line_break_mode: port_spec
-                .line_break_mode
-                .unwrap_or(display.resolve_line_break_input(&monitor_port)),
-        });
-        if let Some(format) = port_spec.format {
-            input_packet_formats.push(SendInputPacketFormat {
-                port: monitor_port,
-                format,
+            inputs.push(SessionInputSpec {
+                id: monitor_port.clone(),
+                port: monitor_port.clone(),
+                baud_rate: port_spec.baud.unwrap_or(default_baud),
+                display_mode: resolve_display_mode(
+                    port_spec.display_mode,
+                    display.resolve_input_override(&monitor_port),
+                    port_spec
+                        .formats
+                        .first()
+                        .copied()
+                        .map(OutputFormat::default_display_mode),
+                ),
+                line_break_mode: port_spec
+                    .line_break_mode
+                    .unwrap_or(display.resolve_line_break_input(&monitor_port)),
             });
         }
+        if !port_spec.formats.is_empty() {
+            let input_display_override = port_spec
+                .display_mode
+                .or(display.resolve_input_override(&monitor_port));
+            input_display_is_explicit
+                .entry(monitor_port.clone())
+                .and_modify(|explicit| *explicit |= input_display_override.is_some())
+                .or_insert(input_display_override.is_some());
+            let formats = input_packet_format_candidates
+                .entry(monitor_port)
+                .or_default();
+            for format in port_spec.formats {
+                if !formats.contains(&format) {
+                    formats.push(format);
+                }
+            }
+        }
     }
+
+    let observed_inputs = input_packet_format_candidates
+        .into_iter()
+        .filter_map(|(port, mut formats)| {
+            if formats.is_empty() {
+                return None;
+            }
+            formats.sort_by_key(|format| format.as_str());
+            let explicit_input_display = input_display_is_explicit
+                .get(&port)
+                .copied()
+                .unwrap_or(false);
+            let per_format_display_modes = if explicit_input_display || formats.len() <= 1 {
+                None
+            } else {
+                Some(
+                    formats
+                        .iter()
+                        .map(|format| (*format, format.default_display_mode()))
+                        .collect(),
+                )
+            };
+            let input_id = inputs
+                .iter()
+                .find(|input| input.port == port)
+                .map(|input| input.id.clone())?;
+            Some(SendObservedInputSpec {
+                input_id,
+                port,
+                formats,
+                per_format_display_modes,
+            })
+        })
+        .collect();
 
     Ok(SendSettings {
         inputs,
         outputs,
-        input_packet_formats,
+        observed_inputs,
         log_dir,
+        logging_enabled: !cli_options.no_log,
         interactive: cli_options.interactive,
     })
+}
+
+fn resolve_display_mode(
+    explicit_mode: Option<PortDisplayMode>,
+    configured_mode: Option<PortDisplayMode>,
+    built_in_mode: Option<PortDisplayMode>,
+) -> PortDisplayMode {
+    explicit_mode
+        .or(configured_mode)
+        .or(built_in_mode)
+        .unwrap_or_default()
+}
+
+fn validate_output_port_loads(outputs: &[SendOutputSettings]) -> Result<(), String> {
+    let mut loads = BTreeMap::<(String, u32), Vec<(String, u32, u64)>>::new();
+
+    for output in outputs {
+        let estimated_bps = estimated_output_line_bps(output.format, output.rate_hz);
+        loads
+            .entry((output.session.port.clone(), output.session.baud_rate))
+            .or_default()
+            .push((
+                output.format.display_name().to_owned(),
+                output.rate_hz,
+                estimated_bps,
+            ));
+    }
+
+    for ((port, baud_rate), entries) in loads {
+        let total_bps = entries.iter().map(|(_, _, bps)| *bps).sum::<u64>();
+        if total_bps > baud_rate as u64 {
+            let detail = entries
+                .into_iter()
+                .map(|(format_name, rate_hz, bps)| format!("{format_name} {rate_hz}Hz={bps}bps"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "send output load on `{port}` @ {baud_rate} baud exceeds serial capacity: estimated {total_bps} bps assuming 10 bits/byte ({detail}) > {baud_rate} baud. Reduce rates or increase baud."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn estimated_output_line_bps(format: OutputFormat, rate_hz: u32) -> u64 {
+    format.packet_len() as u64 * SERIAL_FRAME_BITS_PER_BYTE * rate_hz as u64
+}
+
+fn realign_output_schedule(schedule: &mut OutputSchedule, now: Instant) {
+    if now <= schedule.next_send_at || schedule.period.is_zero() {
+        return;
+    }
+
+    let overdue = now.duration_since(schedule.next_send_at);
+    if overdue < schedule.period {
+        return;
+    }
+
+    let skipped_periods = (overdue.as_secs_f64() / schedule.period.as_secs_f64()).floor() as u32;
+    if skipped_periods > 0 {
+        if let Some(advance) = schedule.period.checked_mul(skipped_periods) {
+            schedule.next_send_at += advance;
+        } else {
+            schedule.next_send_at = now;
+        }
+    }
 }
 
 fn resolve_output_bindings(
@@ -659,7 +1402,7 @@ fn resolve_send_output_binding(
 struct ResolvedSendMonitorBinding {
     port: String,
     baud: Option<u32>,
-    format: Option<OutputFormat>,
+    formats: Vec<OutputFormat>,
     display_mode: Option<crate::port_display::PortDisplayMode>,
     line_break_mode: Option<crate::port_display::LineBreakMode>,
 }
@@ -685,7 +1428,11 @@ fn resolve_monitor_bindings(
             resolve_send_monitor_binding(SendMonitorBinding {
                 port: binding.port.clone(),
                 baud: binding.baud,
-                format: binding.format.clone(),
+                formats: binding
+                    .format
+                    .iter()
+                    .map(|format| format.to_owned())
+                    .collect(),
                 display_mode: binding.display_mode,
                 line_break_mode: binding.line_break_mode,
             })
@@ -699,10 +1446,11 @@ fn resolve_send_monitor_binding(
     Ok(ResolvedSendMonitorBinding {
         port: binding.port,
         baud: binding.baud,
-        format: binding
-            .format
-            .map(|format| OutputFormat::parse(&format))
-            .transpose()?,
+        formats: binding
+            .formats
+            .iter()
+            .map(|format| OutputFormat::parse(format))
+            .collect::<Result<Vec<_>, _>>()?,
         display_mode: binding.display_mode,
         line_break_mode: binding.line_break_mode,
     })
@@ -752,6 +1500,7 @@ fn parse_send_args(args: Vec<String>) -> Result<SendCliOptions, String> {
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
+            "--no-log" => options.no_log = true,
             other => return Err(format!("unknown option for send: {other}")),
         }
     }
@@ -764,24 +1513,43 @@ fn parse_send_monitor_binding(value: &str) -> Result<SendMonitorBinding, String>
         return Err(String::from("send monitor binding must not be empty"));
     }
 
-    let (port_text, format) = if let Some((port_text, format_name)) = value.rsplit_once(',') {
-        if OutputFormat::parse(format_name).is_ok() {
-            (port_text, Some(format_name.to_owned()))
+    let (port_text, formats) = if let Some((port_text, format_names)) = value.rsplit_once(',') {
+        if let Some(formats) = parse_output_format_list(format_names) {
+            (port_text, formats)
         } else {
-            (value, None)
+            (value, Vec::new())
         }
     } else {
-        (value, None)
+        (value, Vec::new())
     };
 
     let port_spec = parse_port_spec("--monitor", port_text)?;
     Ok(SendMonitorBinding {
         port: port_spec.port,
         baud: port_spec.baud,
-        format,
+        formats,
         display_mode: port_spec.display_mode,
         line_break_mode: port_spec.line_break_mode,
     })
+}
+
+fn parse_output_format_list(value: &str) -> Option<Vec<String>> {
+    let mut formats = Vec::new();
+
+    for candidate in value.split('+') {
+        let candidate = candidate.trim();
+        if candidate.is_empty() {
+            return None;
+        }
+
+        let format = OutputFormat::parse(candidate).ok()?;
+        let canonical = format.as_str().to_owned();
+        if !formats.contains(&canonical) {
+            formats.push(canonical);
+        }
+    }
+
+    (!formats.is_empty()).then_some(formats)
 }
 
 fn parse_send_output_binding(value: &str) -> Result<SendOutputBinding, String> {
@@ -833,12 +1601,18 @@ fn parse_send_output_binding(value: &str) -> Result<SendOutputBinding, String> {
 #[cfg(test)]
 mod tests {
     use super::{
+        MixedFormatDecoder, ObservedInput, OutputSchedule, SendOutputSettings,
+        estimated_output_line_bps, matches_rover_down_packet, parse_output_format_list,
         parse_send_args, parse_send_monitor_binding, parse_send_output_binding,
-        resolve_requested_port_spec,
+        realign_output_schedule, resolve_display_mode, resolve_requested_port_spec,
+        validate_output_port_loads,
     };
     use crate::app::cli::common::PortSpec;
+    use crate::output::OutputFormat;
     use crate::port_display::{LineBreakMode, PortDisplayMode};
+    use crate::session::runtime::SessionOutputSpec;
     use std::path::PathBuf;
+    use std::time::Instant;
 
     #[test]
     fn parse_send_args_accepts_port_baud_and_format() {
@@ -866,7 +1640,7 @@ mod tests {
         assert_eq!(options.monitor_ports.len(), 1);
         assert_eq!(options.monitor_ports[0].port, "/dev/ttyUSB1");
         assert_eq!(options.monitor_ports[0].baud, None);
-        assert_eq!(options.monitor_ports[0].format, None);
+        assert!(options.monitor_ports[0].formats.is_empty());
     }
 
     #[test]
@@ -876,9 +1650,20 @@ mod tests {
 
         assert_eq!(binding.port, "/dev/ttyUSB1");
         assert_eq!(binding.baud, Some(115_200));
-        assert_eq!(binding.format.as_deref(), Some("packetjfv1"));
+        assert_eq!(binding.formats, vec![String::from("packetjfv1")]);
         assert_eq!(binding.display_mode, Some(PortDisplayMode::Utf8));
         assert_eq!(binding.line_break_mode, Some(LineBreakMode::Line));
+    }
+
+    #[test]
+    fn parse_send_monitor_binding_accepts_multiple_formats() {
+        let binding = parse_send_monitor_binding("/dev/ttyUSB1,packetacv6+packetjfv1").unwrap();
+
+        assert_eq!(binding.port, "/dev/ttyUSB1");
+        assert_eq!(
+            binding.formats,
+            vec![String::from("packetacv6"), String::from("packetjfv1"),]
+        );
     }
 
     #[test]
@@ -943,6 +1728,7 @@ mod tests {
             String::from("config"),
             String::from("--log-dir"),
             String::from("tmp/send-logs"),
+            String::from("--no-log"),
         ])
         .expect("should parse");
 
@@ -952,5 +1738,163 @@ mod tests {
         );
         assert_eq!(options.config_path, Some(PathBuf::from("config")));
         assert_eq!(options.log_dir, Some(PathBuf::from("tmp/send-logs")));
+        assert!(options.no_log);
+    }
+
+    #[test]
+    fn mixed_decoder_recovers_packet_boundaries_across_chunks() {
+        let ac = OutputFormat::PacketAcV6
+            .encode_dummy_payload()
+            .expect("packetacv6 dummy payload");
+        let up = OutputFormat::RoverUpGeneral
+            .encode_dummy_payload()
+            .expect("roverupgeneral dummy payload");
+        let mut decoder =
+            MixedFormatDecoder::new(vec![OutputFormat::PacketAcV6, OutputFormat::RoverUpGeneral]);
+
+        assert!(decoder.push(&ac[..7]).is_empty());
+
+        let mut decoded = decoder.push(&[&ac[7..], &up[..5]].concat());
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].format, OutputFormat::PacketAcV6);
+        assert_eq!(decoded[0].bytes, ac);
+
+        decoded = decoder.push(&up[5..]);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].format, OutputFormat::RoverUpGeneral);
+        assert_eq!(decoded[0].bytes, up);
+    }
+
+    #[test]
+    fn observed_input_forces_rover_up_receive_display_to_ascii() {
+        let packet = OutputFormat::RoverUpGeneral
+            .encode_dummy_payload()
+            .expect("roverupgeneral dummy payload");
+        let mut observed = ObservedInput::new(
+            String::from("monitor-up"),
+            String::from("/dev/ttyUSB1"),
+            vec![OutputFormat::RoverUpGeneral],
+            None,
+        );
+
+        let batch = observed.observe(&packet, Instant::now());
+
+        assert_eq!(batch.valid_packet_count, 1);
+        assert_eq!(batch.valid_byte_len, packet.len());
+        assert_eq!(observed.display_queue.pending_packets.len(), 1);
+        let queued = observed
+            .display_queue
+            .pending_packets
+            .front()
+            .expect("queued roverup packet");
+        assert_eq!(queued.display_mode, Some(PortDisplayMode::Ascii));
+        assert!(!queued.preserve_line_breaks);
+        assert_eq!(queued.bytes, packet);
+    }
+
+    #[test]
+    fn estimated_output_line_bps_uses_packet_length_and_rate() {
+        assert_eq!(
+            estimated_output_line_bps(OutputFormat::PacketAcV6, 100),
+            39_000
+        );
+        assert_eq!(
+            estimated_output_line_bps(OutputFormat::RoverUpGeneral, 100),
+            12_000
+        );
+    }
+
+    #[test]
+    fn validate_output_port_loads_rejects_oversubscribed_shared_port() {
+        let outputs = vec![
+            SendOutputSettings {
+                session: SessionOutputSpec {
+                    id: String::from("arm"),
+                    port: String::from("/dev/ttyUSB0"),
+                    baud_rate: 115_200,
+                    format_name: String::from("packetacv6"),
+                    display_mode: PortDisplayMode::Hex,
+                },
+                format: OutputFormat::PacketAcV6,
+                rate_hz: 1_000,
+            },
+            SendOutputSettings {
+                session: SessionOutputSpec {
+                    id: String::from("rover"),
+                    port: String::from("/dev/ttyUSB0"),
+                    baud_rate: 115_200,
+                    format_name: String::from("roverupgeneral"),
+                    display_mode: PortDisplayMode::Ascii,
+                },
+                format: OutputFormat::RoverUpGeneral,
+                rate_hz: 1_000,
+            },
+        ];
+
+        let error = validate_output_port_loads(&outputs).expect_err("should reject");
+        assert!(error.contains("exceeds serial capacity"));
+        assert!(error.contains("510000 bps"));
+    }
+
+    #[test]
+    fn realign_output_schedule_discards_backlog_after_long_stall() {
+        let started_at = Instant::now();
+        let mut schedule = OutputSchedule {
+            next_send_at: started_at,
+            period: std::time::Duration::from_millis(10),
+        };
+
+        realign_output_schedule(
+            &mut schedule,
+            started_at + std::time::Duration::from_millis(55),
+        );
+
+        assert_eq!(
+            schedule.next_send_at.duration_since(started_at),
+            std::time::Duration::from_millis(50)
+        );
+    }
+
+    #[test]
+    fn rover_down_validator_accepts_documented_dummy_payload() {
+        let payload = OutputFormat::RoverDownGeneral
+            .encode_dummy_payload()
+            .expect("roverdowngeneral dummy payload");
+
+        assert!(matches_rover_down_packet(&payload));
+    }
+
+    #[test]
+    fn parse_output_format_list_returns_none_for_display_modes() {
+        assert_eq!(parse_output_format_list("utf8+line"), None);
+        assert_eq!(parse_output_format_list("hex"), None);
+    }
+
+    #[test]
+    fn resolve_display_mode_prefers_explicit_then_configured_then_builtin() {
+        assert_eq!(
+            resolve_display_mode(
+                Some(PortDisplayMode::Utf8),
+                Some(PortDisplayMode::Hex),
+                Some(OutputFormat::PacketAcV6.default_display_mode()),
+            ),
+            PortDisplayMode::Utf8
+        );
+        assert_eq!(
+            resolve_display_mode(
+                None,
+                Some(PortDisplayMode::HexAscii),
+                Some(OutputFormat::RoverUpGeneral.default_display_mode()),
+            ),
+            PortDisplayMode::HexAscii
+        );
+        assert_eq!(
+            resolve_display_mode(
+                None,
+                None,
+                Some(OutputFormat::RoverDownGeneral.default_display_mode()),
+            ),
+            PortDisplayMode::Ascii
+        );
     }
 }
