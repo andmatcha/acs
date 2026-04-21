@@ -13,7 +13,7 @@
 - `monitor.rs` で 1 個以上のシリアル入力を監視します。
 - `route.rs` で入力・出力・パイプライン・テンプレートを解決して中継処理を起動します。
 - `send.rs` でダミーペイロードを一定周期で送信します。
-- `xbee_test.rs` で `base` / `rover` 間の PacketACv6 / PacketJFv1 往復試験を行います。
+- `xbee_test.rs` で `base` / `remote` 間の AU/RU と AD/RD の往復試験を行います。
 - `paths.rs` と `signal.rs` で設定/ログの保存先解決と Ctrl-C 停止を共通化しています。
 
 ## 実装の要点

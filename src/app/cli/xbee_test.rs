@@ -16,11 +16,11 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 const BASE_PORT_ID: &str = "base";
-const ROVER_PORT_ID: &str = "rover";
-const BASE_AC_OUTPUT_ID: &str = "base-ac";
-const BASE_UP_OUTPUT_ID: &str = "base-up";
-const ROVER_JF_OUTPUT_ID: &str = "rover-jf";
-const ROVER_DOWN_OUTPUT_ID: &str = "rover-down";
+const REMOTE_PORT_ID: &str = "remote";
+const BASE_AU_OUTPUT_ID: &str = "base-au";
+const BASE_RU_OUTPUT_ID: &str = "base-ru";
+const REMOTE_AD_OUTPUT_ID: &str = "remote-ad";
+const REMOTE_RD_OUTPUT_ID: &str = "remote-rd";
 const DEFAULT_RATE_HZ: u32 = 100;
 const LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
@@ -34,10 +34,10 @@ const SPACE_HINT: &str = "Space で表示を一時停止/再開  Ctrl-C で終�
 struct XbeeTestCliOptions {
     ports: Vec<XbeeTestPortBinding>,
     mode: Option<String>,
-    ac_rate_hz: Option<u32>,
-    up_rate_hz: Option<u32>,
-    jf_rate_hz: Option<u32>,
-    down_rate_hz: Option<u32>,
+    au_rate_hz: Option<u32>,
+    ru_rate_hz: Option<u32>,
+    ad_rate_hz: Option<u32>,
+    rd_rate_hz: Option<u32>,
     config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
     no_log: bool,
@@ -59,28 +59,28 @@ struct ResolvedXbeeTestPort {
 #[derive(Debug, Clone)]
 struct XbeeTestSettings {
     base_port: ResolvedXbeeTestPort,
-    rover_port: ResolvedXbeeTestPort,
+    remote_port: ResolvedXbeeTestPort,
     mode: XbeeTestMode,
-    ac_rate_hz: u32,
-    up_rate_hz: u32,
-    jf_rate_hz: u32,
-    down_rate_hz: u32,
+    au_rate_hz: u32,
+    ru_rate_hz: u32,
+    ad_rate_hz: u32,
+    rd_rate_hz: u32,
     log_dir: PathBuf,
     logging_enabled: bool,
 }
 
 struct XbeeTestRunResult {
     base_port: ResolvedXbeeTestPort,
-    rover_port: ResolvedXbeeTestPort,
+    remote_port: ResolvedXbeeTestPort,
     mode: XbeeTestMode,
-    ac_rate_hz: u32,
-    up_rate_hz: u32,
-    jf_rate_hz: u32,
-    down_rate_hz: u32,
-    ac_stats: PacketMatchStats,
-    up_stats: PacketMatchStats,
-    jf_stats: PacketMatchStats,
-    down_stats: PacketMatchStats,
+    au_rate_hz: u32,
+    ru_rate_hz: u32,
+    ad_rate_hz: u32,
+    rd_rate_hz: u32,
+    au_stats: PacketMatchStats,
+    ru_stats: PacketMatchStats,
+    ad_stats: PacketMatchStats,
+    rd_stats: PacketMatchStats,
     logging_enabled: bool,
     log_path: PathBuf,
 }
@@ -137,6 +137,15 @@ impl PacketDefinition {
                 )
             }
         }
+    }
+}
+
+fn xbee_test_format_label(format: OutputFormat) -> &'static str {
+    match format {
+        OutputFormat::PacketAcV6 => "AU(PacketACv6)",
+        OutputFormat::RoverUpGeneral => "RU(RoverUpGeneral)",
+        OutputFormat::PacketJfV1 => "AD(PacketJFv1)",
+        OutputFormat::RoverDownGeneral => "RD(RoverDownGeneral)",
     }
 }
 
@@ -475,7 +484,7 @@ impl ObservedInputFormatState {
             "{} <- {}  format={}  target={} Hz  rx={:.1} Hz {:.0} B/s  matched={}  err={:.2}%  pending={}  miss={}  bad={}  unexp={}  overflow={}",
             input_id,
             self.from_port_id,
-            self.format.as_str(),
+            xbee_test_format_label(self.format),
             target_rate_hz,
             self.rx_rate_hz(),
             self.rx_bytes_per_second(),
@@ -660,7 +669,7 @@ impl ScheduledSender {
             "{} -> {}  format={}  target={} Hz  sent={}  tx_err={}",
             self.output_id,
             self.target_input_id,
-            self.format.as_str(),
+            xbee_test_format_label(self.format),
             self.target_rate_hz,
             self.sent_packets,
             self.write_errors
@@ -706,19 +715,19 @@ impl DisplayedOutput {
 
 struct XbeeTestState {
     base_port: ResolvedXbeeTestPort,
-    rover_port: ResolvedXbeeTestPort,
+    remote_port: ResolvedXbeeTestPort,
     mode: XbeeTestMode,
     log_path_display: String,
     logging_enabled: bool,
     display_fps: f64,
-    ac_sender: ScheduledSender,
-    up_sender: ScheduledSender,
-    jf_sender: ScheduledSender,
-    down_sender: ScheduledSender,
+    au_sender: ScheduledSender,
+    ru_sender: ScheduledSender,
+    ad_sender: ScheduledSender,
+    rd_sender: ScheduledSender,
     base_output: DisplayedOutput,
-    rover_output: DisplayedOutput,
+    remote_output: DisplayedOutput,
     base_input: ObservedInput,
-    rover_input: ObservedInput,
+    remote_input: ObservedInput,
     last_status_update: Instant,
     header_lines: Vec<String>,
 }
@@ -731,50 +740,50 @@ impl XbeeTestState {
     ) -> Result<Self, String> {
         Ok(Self {
             base_port: settings.base_port.clone(),
-            rover_port: settings.rover_port.clone(),
+            remote_port: settings.remote_port.clone(),
             mode: settings.mode,
             log_path_display,
             logging_enabled: settings.logging_enabled,
             display_fps: 0.0,
-            ac_sender: ScheduledSender::new(
-                BASE_AC_OUTPUT_ID,
-                ROVER_PORT_ID,
+            au_sender: ScheduledSender::new(
+                BASE_AU_OUTPUT_ID,
+                REMOTE_PORT_ID,
                 OutputFormat::PacketAcV6,
-                settings.ac_rate_hz,
+                settings.au_rate_hz,
                 started_at,
             )?,
-            up_sender: ScheduledSender::new(
-                BASE_UP_OUTPUT_ID,
-                ROVER_PORT_ID,
+            ru_sender: ScheduledSender::new(
+                BASE_RU_OUTPUT_ID,
+                REMOTE_PORT_ID,
                 OutputFormat::RoverUpGeneral,
-                settings.up_rate_hz,
+                settings.ru_rate_hz,
                 started_at,
             )?,
-            jf_sender: ScheduledSender::new(
-                ROVER_JF_OUTPUT_ID,
+            ad_sender: ScheduledSender::new(
+                REMOTE_AD_OUTPUT_ID,
                 BASE_PORT_ID,
                 OutputFormat::PacketJfV1,
-                settings.jf_rate_hz,
+                settings.ad_rate_hz,
                 started_at,
             )?,
-            down_sender: ScheduledSender::new(
-                ROVER_DOWN_OUTPUT_ID,
+            rd_sender: ScheduledSender::new(
+                REMOTE_RD_OUTPUT_ID,
                 BASE_PORT_ID,
                 OutputFormat::RoverDownGeneral,
-                settings.down_rate_hz,
+                settings.rd_rate_hz,
                 started_at,
             )?,
             base_output: DisplayedOutput::new(settings.base_port.port.clone()),
-            rover_output: DisplayedOutput::new(settings.rover_port.port.clone()),
+            remote_output: DisplayedOutput::new(settings.remote_port.port.clone()),
             base_input: ObservedInput::new(
                 BASE_PORT_ID,
                 settings.base_port.port.clone(),
-                ROVER_PORT_ID,
+                REMOTE_PORT_ID,
                 vec![OutputFormat::PacketJfV1, OutputFormat::RoverDownGeneral],
             ),
-            rover_input: ObservedInput::new(
-                ROVER_PORT_ID,
-                settings.rover_port.port.clone(),
+            remote_input: ObservedInput::new(
+                REMOTE_PORT_ID,
+                settings.remote_port.port.clone(),
                 BASE_PORT_ID,
                 vec![OutputFormat::PacketAcV6, OutputFormat::RoverUpGeneral],
             ),
@@ -806,17 +815,17 @@ impl XbeeTestState {
                     }
                 }
             }
-            ROVER_PORT_ID => {
-                let batch = self.rover_input.observe(&frame.bytes, now);
+            REMOTE_PORT_ID => {
+                let batch = self.remote_input.observe(&frame.bytes, now);
                 if batch.valid_packet_count > 0 {
                     session.record_input_sample(
-                        &self.rover_input.input_port,
+                        &self.remote_input.input_port,
                         batch.valid_byte_len,
                         batch.valid_packet_count,
                     );
                     for (&format, &(byte_len, packet_count)) in &batch.per_format_totals {
                         session.record_input_format_sample(
-                            &self.rover_input.input_port,
+                            &self.remote_input.input_port,
                             format.display_name(),
                             byte_len,
                             packet_count,
@@ -829,10 +838,10 @@ impl XbeeTestState {
                             .map(|(_, packet_count)| *packet_count)
                             .unwrap_or(0);
                         for _ in 0..ac_count {
-                            self.jf_sender.send_once(
+                            self.ad_sender.send_once(
                                 session,
                                 &mut self.base_input,
-                                &mut self.rover_output,
+                                &mut self.remote_output,
                             );
                         }
                         let up_count = batch
@@ -841,10 +850,10 @@ impl XbeeTestState {
                             .map(|(_, packet_count)| *packet_count)
                             .unwrap_or(0);
                         for _ in 0..up_count {
-                            self.down_sender.send_once(
+                            self.rd_sender.send_once(
                                 session,
                                 &mut self.base_input,
-                                &mut self.rover_output,
+                                &mut self.remote_output,
                             );
                         }
                     }
@@ -856,22 +865,30 @@ impl XbeeTestState {
 
     fn on_tick(&mut self, session: &mut SessionRuntime) -> Result<(), String> {
         let now = Instant::now();
-        self.ac_sender
-            .send_due_packets(now, session, &mut self.rover_input, &mut self.base_output);
-        self.up_sender
-            .send_due_packets(now, session, &mut self.rover_input, &mut self.base_output);
+        self.au_sender.send_due_packets(
+            now,
+            session,
+            &mut self.remote_input,
+            &mut self.base_output,
+        );
+        self.ru_sender.send_due_packets(
+            now,
+            session,
+            &mut self.remote_input,
+            &mut self.base_output,
+        );
         if self.mode == XbeeTestMode::Flood {
-            self.jf_sender.send_due_packets(
+            self.ad_sender.send_due_packets(
                 now,
                 session,
                 &mut self.base_input,
-                &mut self.rover_output,
+                &mut self.remote_output,
             );
-            self.down_sender.send_due_packets(
+            self.rd_sender.send_due_packets(
                 now,
                 session,
                 &mut self.base_input,
-                &mut self.rover_output,
+                &mut self.remote_output,
             );
         }
 
@@ -904,7 +921,7 @@ impl XbeeTestState {
             }
 
             let slice = remaining_budget.min(DISPLAY_FLUSH_SLICE);
-            let flushed = self.rover_output.flush_display_batch(session, slice)?;
+            let flushed = self.remote_output.flush_display_batch(session, slice)?;
             remaining_budget = remaining_budget.saturating_sub(flushed);
             flushed_total += flushed;
             if remaining_budget == 0 {
@@ -920,7 +937,7 @@ impl XbeeTestState {
             }
 
             let slice = remaining_budget.min(DISPLAY_FLUSH_SLICE);
-            let flushed = self.rover_input.flush_display_batch(session, slice)?;
+            let flushed = self.remote_input.flush_display_batch(session, slice)?;
             remaining_budget = remaining_budget.saturating_sub(flushed);
             flushed_total += flushed;
 
@@ -933,7 +950,7 @@ impl XbeeTestState {
     }
 
     fn build_header_lines(&self) -> Vec<String> {
-        let rover_targets = self.rover_target_rates();
+        let remote_targets = self.remote_target_rates();
         let base_targets = self.base_target_rates();
         let mut lines = vec![
             format!(
@@ -942,61 +959,51 @@ impl XbeeTestState {
                 self.display_fps
             ),
             format!(
-                "{BASE_PORT_ID}: {} @ {} baud  tx={}+{}  rx={}+{}",
-                self.base_port.port,
-                self.base_port.baud_rate,
-                OutputFormat::PacketAcV6.as_str(),
-                OutputFormat::RoverUpGeneral.as_str(),
-                OutputFormat::PacketJfV1.as_str(),
-                OutputFormat::RoverDownGeneral.as_str()
+                "{BASE_PORT_ID}: {} @ {} baud  tx=AU+RU  rx=AD+RD",
+                self.base_port.port, self.base_port.baud_rate,
             ),
             format!(
-                "{ROVER_PORT_ID}: {} @ {} baud  tx={}+{}  rx={}+{}",
-                self.rover_port.port,
-                self.rover_port.baud_rate,
-                OutputFormat::PacketJfV1.as_str(),
-                OutputFormat::RoverDownGeneral.as_str(),
-                OutputFormat::PacketAcV6.as_str(),
-                OutputFormat::RoverUpGeneral.as_str()
+                "{REMOTE_PORT_ID}: {} @ {} baud  tx=AD+RD  rx=AU+RU",
+                self.remote_port.port, self.remote_port.baud_rate,
             ),
-            self.ac_sender.status_line(),
-            self.up_sender.status_line(),
+            self.au_sender.status_line(),
+            self.ru_sender.status_line(),
         ];
-        lines.extend(self.rover_input.status_lines(&rover_targets));
+        lines.extend(self.remote_input.status_lines(&remote_targets));
         lines.push(match self.mode {
-            XbeeTestMode::Flood => self.jf_sender.status_line(),
+            XbeeTestMode::Flood => self.ad_sender.status_line(),
             XbeeTestMode::PingPong => format!(
-                "{} -> {}  format={}  trigger=ac-rx  sent={}  tx_err={}",
-                self.jf_sender.output_id,
-                self.jf_sender.target_input_id,
-                self.jf_sender.format.as_str(),
-                self.jf_sender.sent_packets,
-                self.jf_sender.write_errors
+                "{} -> {}  format={}  trigger=au-rx  sent={}  tx_err={}",
+                self.ad_sender.output_id,
+                self.ad_sender.target_input_id,
+                xbee_test_format_label(self.ad_sender.format),
+                self.ad_sender.sent_packets,
+                self.ad_sender.write_errors
             ),
         });
         lines.push(match self.mode {
-            XbeeTestMode::Flood => self.down_sender.status_line(),
+            XbeeTestMode::Flood => self.rd_sender.status_line(),
             XbeeTestMode::PingPong => format!(
-                "{} -> {}  format={}  trigger=up-rx  sent={}  tx_err={}",
-                self.down_sender.output_id,
-                self.down_sender.target_input_id,
-                self.down_sender.format.as_str(),
-                self.down_sender.sent_packets,
-                self.down_sender.write_errors
+                "{} -> {}  format={}  trigger=ru-rx  sent={}  tx_err={}",
+                self.rd_sender.output_id,
+                self.rd_sender.target_input_id,
+                xbee_test_format_label(self.rd_sender.format),
+                self.rd_sender.sent_packets,
+                self.rd_sender.write_errors
             ),
         });
         lines.extend(self.base_input.status_lines(&base_targets));
         lines.extend([
             format!(
-                "display backlog  out(base={}, rover={})  in(base={}, rover={})  overflow={}",
+                "display backlog  out(base={}, remote={})  in(base={}, remote={})  overflow={}",
                 self.base_output.pending_packets(),
-                self.rover_output.pending_packets(),
+                self.remote_output.pending_packets(),
                 self.base_input.display_queue.pending_packets(),
-                self.rover_input.display_queue.pending_packets(),
+                self.remote_input.display_queue.pending_packets(),
                 self.base_output.overflow_packets()
-                    + self.rover_output.overflow_packets()
+                    + self.remote_output.overflow_packets()
                     + self.base_input.display_queue.overflow_packets()
-                    + self.rover_input.display_queue.overflow_packets()
+                    + self.remote_input.display_queue.overflow_packets()
             ),
             if self.logging_enabled {
                 format!("log: {}", self.log_path_display)
@@ -1011,42 +1018,42 @@ impl XbeeTestState {
     fn run_result(self, log_path: PathBuf) -> XbeeTestRunResult {
         XbeeTestRunResult {
             base_port: self.base_port,
-            rover_port: self.rover_port,
+            remote_port: self.remote_port,
             mode: self.mode,
-            ac_rate_hz: self.ac_sender.target_rate_hz,
-            up_rate_hz: self.up_sender.target_rate_hz,
-            jf_rate_hz: self.jf_sender.target_rate_hz,
-            down_rate_hz: self.down_sender.target_rate_hz,
-            ac_stats: self.rover_input.stats(OutputFormat::PacketAcV6),
-            up_stats: self.rover_input.stats(OutputFormat::RoverUpGeneral),
-            jf_stats: self.base_input.stats(OutputFormat::PacketJfV1),
-            down_stats: self.base_input.stats(OutputFormat::RoverDownGeneral),
+            au_rate_hz: self.au_sender.target_rate_hz,
+            ru_rate_hz: self.ru_sender.target_rate_hz,
+            ad_rate_hz: self.ad_sender.target_rate_hz,
+            rd_rate_hz: self.rd_sender.target_rate_hz,
+            au_stats: self.remote_input.stats(OutputFormat::PacketAcV6),
+            ru_stats: self.remote_input.stats(OutputFormat::RoverUpGeneral),
+            ad_stats: self.base_input.stats(OutputFormat::PacketJfV1),
+            rd_stats: self.base_input.stats(OutputFormat::RoverDownGeneral),
             logging_enabled: self.logging_enabled,
             log_path,
         }
     }
 
-    fn rover_target_rates(&self) -> BTreeMap<OutputFormat, u32> {
+    fn remote_target_rates(&self) -> BTreeMap<OutputFormat, u32> {
         BTreeMap::from([
-            (OutputFormat::PacketAcV6, self.ac_sender.target_rate_hz),
-            (OutputFormat::RoverUpGeneral, self.up_sender.target_rate_hz),
+            (OutputFormat::PacketAcV6, self.au_sender.target_rate_hz),
+            (OutputFormat::RoverUpGeneral, self.ru_sender.target_rate_hz),
         ])
     }
 
     fn base_target_rates(&self) -> BTreeMap<OutputFormat, u32> {
         match self.mode {
             XbeeTestMode::Flood => BTreeMap::from([
-                (OutputFormat::PacketJfV1, self.jf_sender.target_rate_hz),
+                (OutputFormat::PacketJfV1, self.ad_sender.target_rate_hz),
                 (
                     OutputFormat::RoverDownGeneral,
-                    self.down_sender.target_rate_hz,
+                    self.rd_sender.target_rate_hz,
                 ),
             ]),
             XbeeTestMode::PingPong => BTreeMap::from([
-                (OutputFormat::PacketJfV1, self.ac_sender.target_rate_hz),
+                (OutputFormat::PacketJfV1, self.au_sender.target_rate_hz),
                 (
                     OutputFormat::RoverDownGeneral,
-                    self.up_sender.target_rate_hz,
+                    self.ru_sender.target_rate_hz,
                 ),
             ]),
         }
@@ -1072,63 +1079,63 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
         Ok(result) => {
             match result.mode {
                 XbeeTestMode::Flood => println!(
-                    "mode={} base={}@{} rover={}@{} ac={}Hz up={}Hz jf={}Hz down={}Hz",
+                    "mode={} base={}@{} remote={}@{} au={}Hz ru={}Hz ad={}Hz rd={}Hz",
                     result.mode.as_str(),
                     result.base_port.port,
                     result.base_port.baud_rate,
-                    result.rover_port.port,
-                    result.rover_port.baud_rate,
-                    result.ac_rate_hz,
-                    result.up_rate_hz,
-                    result.jf_rate_hz,
-                    result.down_rate_hz
+                    result.remote_port.port,
+                    result.remote_port.baud_rate,
+                    result.au_rate_hz,
+                    result.ru_rate_hz,
+                    result.ad_rate_hz,
+                    result.rd_rate_hz
                 ),
                 XbeeTestMode::PingPong => println!(
-                    "mode={} base={}@{} rover={}@{} ac={}Hz up={}Hz jf=reply-to-ac down=reply-to-up",
+                    "mode={} base={}@{} remote={}@{} au={}Hz ru={}Hz ad=reply-to-au rd=reply-to-ru",
                     result.mode.as_str(),
                     result.base_port.port,
                     result.base_port.baud_rate,
-                    result.rover_port.port,
-                    result.rover_port.baud_rate,
-                    result.ac_rate_hz,
-                    result.up_rate_hz
+                    result.remote_port.port,
+                    result.remote_port.baud_rate,
+                    result.au_rate_hz,
+                    result.ru_rate_hz
                 ),
             }
             println!(
-                "  AC base->rover: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
-                result.ac_stats.matched_packets,
-                result.ac_stats.error_rate_percent(),
-                result.ac_stats.missing_packets,
-                result.ac_stats.invalid_packets,
-                result.ac_stats.unexpected_packets,
-                result.ac_stats.queue_overflow_packets
+                "  AU base->remote: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                result.au_stats.matched_packets,
+                result.au_stats.error_rate_percent(),
+                result.au_stats.missing_packets,
+                result.au_stats.invalid_packets,
+                result.au_stats.unexpected_packets,
+                result.au_stats.queue_overflow_packets
             );
             println!(
-                "  UP base->rover: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
-                result.up_stats.matched_packets,
-                result.up_stats.error_rate_percent(),
-                result.up_stats.missing_packets,
-                result.up_stats.invalid_packets,
-                result.up_stats.unexpected_packets,
-                result.up_stats.queue_overflow_packets
+                "  RU base->remote: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                result.ru_stats.matched_packets,
+                result.ru_stats.error_rate_percent(),
+                result.ru_stats.missing_packets,
+                result.ru_stats.invalid_packets,
+                result.ru_stats.unexpected_packets,
+                result.ru_stats.queue_overflow_packets
             );
             println!(
-                "  JF rover->base: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
-                result.jf_stats.matched_packets,
-                result.jf_stats.error_rate_percent(),
-                result.jf_stats.missing_packets,
-                result.jf_stats.invalid_packets,
-                result.jf_stats.unexpected_packets,
-                result.jf_stats.queue_overflow_packets
+                "  AD remote->base: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                result.ad_stats.matched_packets,
+                result.ad_stats.error_rate_percent(),
+                result.ad_stats.missing_packets,
+                result.ad_stats.invalid_packets,
+                result.ad_stats.unexpected_packets,
+                result.ad_stats.queue_overflow_packets
             );
             println!(
-                "  DOWN rover->base: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
-                result.down_stats.matched_packets,
-                result.down_stats.error_rate_percent(),
-                result.down_stats.missing_packets,
-                result.down_stats.invalid_packets,
-                result.down_stats.unexpected_packets,
-                result.down_stats.queue_overflow_packets
+                "  RD remote->base: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                result.rd_stats.matched_packets,
+                result.rd_stats.error_rate_percent(),
+                result.rd_stats.missing_packets,
+                result.rd_stats.invalid_packets,
+                result.rd_stats.unexpected_packets,
+                result.rd_stats.queue_overflow_packets
             );
             if result.logging_enabled {
                 println!("log saved to {}", result.log_path.display());
@@ -1160,48 +1167,48 @@ fn run_with_options(cli_options: XbeeTestCliOptions) -> Result<XbeeTestRunResult
                 line_break_mode: LineBreakMode::Packet,
             },
             SessionInputSpec {
-                id: ROVER_PORT_ID.to_owned(),
-                port: settings.rover_port.port.clone(),
-                baud_rate: settings.rover_port.baud_rate,
+                id: REMOTE_PORT_ID.to_owned(),
+                port: settings.remote_port.port.clone(),
+                baud_rate: settings.remote_port.baud_rate,
                 display_mode: PortDisplayMode::Hex,
                 line_break_mode: LineBreakMode::Packet,
             },
         ],
         outputs: vec![
             SessionOutputSpec {
-                id: BASE_AC_OUTPUT_ID.to_owned(),
+                id: BASE_AU_OUTPUT_ID.to_owned(),
                 port: settings.base_port.port.clone(),
                 baud_rate: settings.base_port.baud_rate,
                 format_name: OutputFormat::PacketAcV6.as_str().to_owned(),
                 display_mode: PortDisplayMode::Hex,
             },
             SessionOutputSpec {
-                id: BASE_UP_OUTPUT_ID.to_owned(),
+                id: BASE_RU_OUTPUT_ID.to_owned(),
                 port: settings.base_port.port.clone(),
                 baud_rate: settings.base_port.baud_rate,
                 format_name: OutputFormat::RoverUpGeneral.as_str().to_owned(),
                 display_mode: PortDisplayMode::Hex,
             },
             SessionOutputSpec {
-                id: ROVER_JF_OUTPUT_ID.to_owned(),
-                port: settings.rover_port.port.clone(),
-                baud_rate: settings.rover_port.baud_rate,
+                id: REMOTE_AD_OUTPUT_ID.to_owned(),
+                port: settings.remote_port.port.clone(),
+                baud_rate: settings.remote_port.baud_rate,
                 format_name: OutputFormat::PacketJfV1.as_str().to_owned(),
                 display_mode: PortDisplayMode::Hex,
             },
             SessionOutputSpec {
-                id: ROVER_DOWN_OUTPUT_ID.to_owned(),
-                port: settings.rover_port.port.clone(),
-                baud_rate: settings.rover_port.baud_rate,
+                id: REMOTE_RD_OUTPUT_ID.to_owned(),
+                port: settings.remote_port.port.clone(),
+                baud_rate: settings.remote_port.baud_rate,
                 format_name: OutputFormat::RoverDownGeneral.as_str().to_owned(),
                 display_mode: PortDisplayMode::Hex,
             },
         ],
     })?;
     session.set_output_packet_rate_enabled(&settings.base_port.port, true);
-    session.set_output_packet_rate_enabled(&settings.rover_port.port, true);
+    session.set_output_packet_rate_enabled(&settings.remote_port.port, true);
     session.set_input_packet_rate_enabled(&settings.base_port.port, true);
-    session.set_input_packet_rate_enabled(&settings.rover_port.port, true);
+    session.set_input_packet_rate_enabled(&settings.remote_port.port, true);
     session.set_input_known_formats(
         &settings.base_port.port,
         vec![
@@ -1210,18 +1217,18 @@ fn run_with_options(cli_options: XbeeTestCliOptions) -> Result<XbeeTestRunResult
         ],
     );
     session.set_input_known_formats(
-        &settings.rover_port.port,
+        &settings.remote_port.port,
         vec![
             OutputFormat::PacketAcV6.display_name().to_owned(),
             OutputFormat::RoverUpGeneral.display_name().to_owned(),
         ],
     );
     session.set_manual_input_recording(BASE_PORT_ID, true);
-    session.set_manual_input_recording(ROVER_PORT_ID, true);
-    session.set_manual_output_recording(BASE_AC_OUTPUT_ID, true);
-    session.set_manual_output_recording(BASE_UP_OUTPUT_ID, true);
-    session.set_manual_output_recording(ROVER_JF_OUTPUT_ID, true);
-    session.set_manual_output_recording(ROVER_DOWN_OUTPUT_ID, true);
+    session.set_manual_input_recording(REMOTE_PORT_ID, true);
+    session.set_manual_output_recording(BASE_AU_OUTPUT_ID, true);
+    session.set_manual_output_recording(BASE_RU_OUTPUT_ID, true);
+    session.set_manual_output_recording(REMOTE_AD_OUTPUT_ID, true);
+    session.set_manual_output_recording(REMOTE_RD_OUTPUT_ID, true);
 
     let log_path = session.log_path().to_path_buf();
     let started_at = Instant::now();
@@ -1281,17 +1288,17 @@ fn build_settings(
     let base_binding = ports
         .remove(BASE_PORT_ID)
         .ok_or_else(|| String::from("xbee-test requires `--port base=PORT[@BAUD]`"))?;
-    let rover_binding = ports
-        .remove(ROVER_PORT_ID)
-        .ok_or_else(|| String::from("xbee-test requires `--port rover=PORT[@BAUD]`"))?;
+    let remote_binding = ports
+        .remove(REMOTE_PORT_ID)
+        .ok_or_else(|| String::from("xbee-test requires `--port remote=PORT[@BAUD]`"))?;
 
     let base_port =
         serial::resolve_port(Some(&base_binding.port)).map_err(|error| error.to_string())?;
-    let rover_port =
-        serial::resolve_port(Some(&rover_binding.port)).map_err(|error| error.to_string())?;
-    if base_port == rover_port {
+    let remote_port =
+        serial::resolve_port(Some(&remote_binding.port)).map_err(|error| error.to_string())?;
+    if base_port == remote_port {
         return Err(String::from(
-            "xbee-test requires different ports for `base` and `rover`",
+            "xbee-test requires different ports for `base` and `remote`",
         ));
     }
 
@@ -1303,36 +1310,36 @@ fn build_settings(
         .transpose()?
         .unwrap_or(XbeeTestMode::Flood);
 
-    let ac_rate_hz = cli_options
-        .ac_rate_hz
-        .or(file_config.xbee_test.ac_rate_hz)
+    let au_rate_hz = cli_options
+        .au_rate_hz
+        .or(file_config.xbee_test.au_rate_hz)
         .unwrap_or(DEFAULT_RATE_HZ);
-    let up_rate_hz = cli_options
-        .up_rate_hz
-        .or(file_config.xbee_test.up_rate_hz)
+    let ru_rate_hz = cli_options
+        .ru_rate_hz
+        .or(file_config.xbee_test.ru_rate_hz)
         .unwrap_or(DEFAULT_RATE_HZ);
-    let jf_rate_hz = cli_options
-        .jf_rate_hz
-        .or(file_config.xbee_test.jf_rate_hz)
+    let ad_rate_hz = cli_options
+        .ad_rate_hz
+        .or(file_config.xbee_test.ad_rate_hz)
         .unwrap_or(DEFAULT_RATE_HZ);
-    let down_rate_hz = cli_options
-        .down_rate_hz
-        .or(file_config.xbee_test.down_rate_hz)
+    let rd_rate_hz = cli_options
+        .rd_rate_hz
+        .or(file_config.xbee_test.rd_rate_hz)
         .unwrap_or(DEFAULT_RATE_HZ);
-    if ac_rate_hz == 0 {
-        return Err(String::from("--ac-rate must be greater than 0"));
+    if au_rate_hz == 0 {
+        return Err(String::from("--au-rate must be greater than 0"));
     }
-    if up_rate_hz == 0 {
-        return Err(String::from("--up-rate must be greater than 0"));
+    if ru_rate_hz == 0 {
+        return Err(String::from("--ru-rate must be greater than 0"));
     }
-    if mode == XbeeTestMode::Flood && jf_rate_hz == 0 {
-        return Err(String::from("--jf-rate must be greater than 0"));
+    if mode == XbeeTestMode::Flood && ad_rate_hz == 0 {
+        return Err(String::from("--ad-rate must be greater than 0"));
     }
-    if mode == XbeeTestMode::Flood && down_rate_hz == 0 {
-        return Err(String::from("--down-rate must be greater than 0"));
+    if mode == XbeeTestMode::Flood && rd_rate_hz == 0 {
+        return Err(String::from("--rd-rate must be greater than 0"));
     }
-    let jf_rate_hz = jf_rate_hz.max(1);
-    let down_rate_hz = down_rate_hz.max(1);
+    let ad_rate_hz = ad_rate_hz.max(1);
+    let rd_rate_hz = rd_rate_hz.max(1);
 
     let log_dir = cli_options
         .log_dir
@@ -1345,15 +1352,15 @@ fn build_settings(
             port: base_port,
             baud_rate: base_binding.baud.unwrap_or_else(default_baud_rate),
         },
-        rover_port: ResolvedXbeeTestPort {
-            port: rover_port,
-            baud_rate: rover_binding.baud.unwrap_or_else(default_baud_rate),
+        remote_port: ResolvedXbeeTestPort {
+            port: remote_port,
+            baud_rate: remote_binding.baud.unwrap_or_else(default_baud_rate),
         },
         mode,
-        ac_rate_hz,
-        up_rate_hz,
-        jf_rate_hz,
-        down_rate_hz,
+        au_rate_hz,
+        ru_rate_hz,
+        ad_rate_hz,
+        rd_rate_hz,
         log_dir,
         logging_enabled: !cli_options.no_log,
     })
@@ -1369,21 +1376,21 @@ fn parse_xbee_test_args(args: Vec<String>) -> Result<XbeeTestCliOptions, String>
                 &mut iter, "--port",
             )?)?),
             "--mode" => options.mode = Some(next_value(&mut iter, "--mode")?),
-            "--ac-rate" => {
-                let value = next_value(&mut iter, "--ac-rate")?;
-                options.ac_rate_hz = Some(parse_u32_arg("--ac-rate", &value)?);
+            "--au-rate" => {
+                let value = next_value(&mut iter, "--au-rate")?;
+                options.au_rate_hz = Some(parse_u32_arg("--au-rate", &value)?);
             }
-            "--up-rate" => {
-                let value = next_value(&mut iter, "--up-rate")?;
-                options.up_rate_hz = Some(parse_u32_arg("--up-rate", &value)?);
+            "--ru-rate" => {
+                let value = next_value(&mut iter, "--ru-rate")?;
+                options.ru_rate_hz = Some(parse_u32_arg("--ru-rate", &value)?);
             }
-            "--jf-rate" => {
-                let value = next_value(&mut iter, "--jf-rate")?;
-                options.jf_rate_hz = Some(parse_u32_arg("--jf-rate", &value)?);
+            "--ad-rate" => {
+                let value = next_value(&mut iter, "--ad-rate")?;
+                options.ad_rate_hz = Some(parse_u32_arg("--ad-rate", &value)?);
             }
-            "--down-rate" => {
-                let value = next_value(&mut iter, "--down-rate")?;
-                options.down_rate_hz = Some(parse_u32_arg("--down-rate", &value)?);
+            "--rd-rate" => {
+                let value = next_value(&mut iter, "--rd-rate")?;
+                options.rd_rate_hz = Some(parse_u32_arg("--rd-rate", &value)?);
             }
             "--config" => {
                 options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
@@ -1402,7 +1409,7 @@ fn parse_xbee_test_args(args: Vec<String>) -> Result<XbeeTestCliOptions, String>
 fn parse_xbee_test_port_binding(value: &str) -> Result<XbeeTestPortBinding, String> {
     let Some((id, port_text)) = value.split_once('=') else {
         return Err(format!(
-            "invalid xbee-test port binding: {value} (expected base=PORT[@BAUD] or rover=PORT[@BAUD])"
+            "invalid xbee-test port binding: {value} (expected base=PORT[@BAUD] or remote=PORT[@BAUD])"
         ));
     };
 
@@ -1424,9 +1431,9 @@ fn parse_xbee_test_port_binding(value: &str) -> Result<XbeeTestPortBinding, Stri
 fn normalize_port_id(value: &str) -> Result<String, String> {
     let id = value.trim().to_ascii_lowercase();
     match id.as_str() {
-        BASE_PORT_ID | ROVER_PORT_ID => Ok(id),
+        BASE_PORT_ID | REMOTE_PORT_ID => Ok(id),
         _ => Err(format!(
-            "unsupported xbee-test port label: {value} (expected `base` or `rover`)"
+            "unsupported xbee-test port label: {value} (expected `base` or `remote`)"
         )),
     }
 }
@@ -1493,16 +1500,16 @@ mod tests {
             String::from("--port"),
             String::from("base=/dev/ttyUSB0@921600"),
             String::from("--port"),
-            String::from("rover=/dev/ttyUSB1@115200"),
+            String::from("remote=/dev/ttyUSB1@115200"),
             String::from("--mode"),
             String::from("ping-pong"),
-            String::from("--ac-rate"),
+            String::from("--au-rate"),
             String::from("100"),
-            String::from("--up-rate"),
+            String::from("--ru-rate"),
             String::from("90"),
-            String::from("--jf-rate"),
+            String::from("--ad-rate"),
             String::from("80"),
-            String::from("--down-rate"),
+            String::from("--rd-rate"),
             String::from("70"),
             String::from("--config"),
             String::from("config"),
@@ -1515,13 +1522,13 @@ mod tests {
         assert_eq!(options.ports.len(), 2);
         assert_eq!(options.ports[0].id, "base");
         assert_eq!(options.ports[0].baud, Some(921_600));
-        assert_eq!(options.ports[1].id, "rover");
+        assert_eq!(options.ports[1].id, "remote");
         assert_eq!(options.ports[1].baud, Some(115_200));
         assert_eq!(options.mode.as_deref(), Some("ping-pong"));
-        assert_eq!(options.ac_rate_hz, Some(100));
-        assert_eq!(options.up_rate_hz, Some(90));
-        assert_eq!(options.jf_rate_hz, Some(80));
-        assert_eq!(options.down_rate_hz, Some(70));
+        assert_eq!(options.au_rate_hz, Some(100));
+        assert_eq!(options.ru_rate_hz, Some(90));
+        assert_eq!(options.ad_rate_hz, Some(80));
+        assert_eq!(options.rd_rate_hz, Some(70));
         assert_eq!(options.config_path, Some(PathBuf::from("config")));
         assert_eq!(options.log_dir, Some(PathBuf::from("tmp/logs")));
         assert!(options.no_log);

@@ -7,15 +7,15 @@
         "baud": 921600
       },
       {
-        "id": "rover",
+        "id": "remote",
         "port": "/dev/ttyUSB1",
         "baud": 115200
       }
     ],
     "mode": "flood",
-    "ac_rate": 100,
-    "up_rate": 100,
-    "jf_rate": 100,
-    "down_rate": 100
+    "au_rate": 100,
+    "ru_rate": 100,
+    "ad_rate": 100,
+    "rd_rate": 100
   }
 }

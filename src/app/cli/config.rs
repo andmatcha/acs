@@ -59,10 +59,10 @@ pub(crate) struct SendConfig {
 pub(crate) struct XbeeTestConfig {
     pub ports: Vec<XbeeTestPortConfig>,
     pub mode: Option<String>,
-    pub ac_rate_hz: Option<u32>,
-    pub up_rate_hz: Option<u32>,
-    pub jf_rate_hz: Option<u32>,
-    pub down_rate_hz: Option<u32>,
+    pub au_rate_hz: Option<u32>,
+    pub ru_rate_hz: Option<u32>,
+    pub ad_rate_hz: Option<u32>,
+    pub rd_rate_hz: Option<u32>,
     pub log_dir: Option<PathBuf>,
 }
 
@@ -196,10 +196,10 @@ impl XbeeTestConfig {
     fn merge_from(&mut self, other: XbeeTestConfig) {
         merge_xbee_test_ports(&mut self.ports, other.ports);
         merge_option(&mut self.mode, other.mode);
-        merge_option(&mut self.ac_rate_hz, other.ac_rate_hz);
-        merge_option(&mut self.up_rate_hz, other.up_rate_hz);
-        merge_option(&mut self.jf_rate_hz, other.jf_rate_hz);
-        merge_option(&mut self.down_rate_hz, other.down_rate_hz);
+        merge_option(&mut self.au_rate_hz, other.au_rate_hz);
+        merge_option(&mut self.ru_rate_hz, other.ru_rate_hz);
+        merge_option(&mut self.ad_rate_hz, other.ad_rate_hz);
+        merge_option(&mut self.rd_rate_hz, other.rd_rate_hz);
         merge_option(&mut self.log_dir, other.log_dir);
     }
 }
@@ -473,10 +473,10 @@ fn parse_xbee_test_config(
     Ok(XbeeTestConfig {
         ports: optional_xbee_test_ports(object, "ports")?,
         mode: optional_string(object, "mode")?,
-        ac_rate_hz: optional_u32(object, "ac_rate")?,
-        up_rate_hz: optional_u32(object, "up_rate")?,
-        jf_rate_hz: optional_u32(object, "jf_rate")?,
-        down_rate_hz: optional_u32(object, "down_rate")?,
+        au_rate_hz: optional_u32(object, "au_rate")?,
+        ru_rate_hz: optional_u32(object, "ru_rate")?,
+        ad_rate_hz: optional_u32(object, "ad_rate")?,
+        rd_rate_hz: optional_u32(object, "rd_rate")?,
         log_dir: optional_path(object, "log_dir", base_dir)?,
     })
 }
@@ -967,7 +967,7 @@ fn parse_xbee_test_port_value(
 fn parse_xbee_test_port_text(value: &str, key: &str) -> Result<XbeeTestPortConfig, String> {
     let Some((id, port_text)) = value.split_once('=') else {
         return Err(format!(
-            "`{key}` entry must be `base=PORT[@BAUD]` or `rover=PORT[@BAUD]`"
+            "`{key}` entry must be `base=PORT[@BAUD]` or `remote=PORT[@BAUD]`"
         ));
     };
 
@@ -1013,9 +1013,9 @@ fn parse_xbee_test_port_object(
 fn normalize_xbee_test_port_id(value: &str) -> Result<String, String> {
     let value = value.trim().to_ascii_lowercase();
     match value.as_str() {
-        "base" | "rover" => Ok(value),
+        "base" | "remote" => Ok(value),
         _ => Err(format!(
-            "xbee_test port id must be `base` or `rover`, got `{value}`"
+            "xbee_test port id must be `base` or `remote`, got `{value}`"
         )),
     }
 }
@@ -1898,13 +1898,13 @@ mod tests {
               "xbee_test": {
                 "ports": [
                   "base=/dev/ttyUSB0@921600",
-                  { "id": "rover", "port": "/dev/ttyUSB1", "baud": 115200 }
+                  { "id": "remote", "port": "/dev/ttyUSB1", "baud": 115200 }
                 ],
                 "mode": "ping-pong",
-                "ac_rate": 100,
-                "up_rate": 90,
-                "jf_rate": 80,
-                "down_rate": 70
+                "au_rate": 100,
+                "ru_rate": 90,
+                "ad_rate": 80,
+                "rd_rate": 70
               }
             }
             "#,
@@ -1922,17 +1922,17 @@ mod tests {
                     baud: Some(921_600),
                 },
                 XbeeTestPortConfig {
-                    id: String::from("rover"),
+                    id: String::from("remote"),
                     port: String::from("/dev/ttyUSB1"),
                     baud: Some(115_200),
                 }
             ]
         );
         assert_eq!(config.xbee_test.mode.as_deref(), Some("ping-pong"));
-        assert_eq!(config.xbee_test.ac_rate_hz, Some(100));
-        assert_eq!(config.xbee_test.up_rate_hz, Some(90));
-        assert_eq!(config.xbee_test.jf_rate_hz, Some(80));
-        assert_eq!(config.xbee_test.down_rate_hz, Some(70));
+        assert_eq!(config.xbee_test.au_rate_hz, Some(100));
+        assert_eq!(config.xbee_test.ru_rate_hz, Some(90));
+        assert_eq!(config.xbee_test.ad_rate_hz, Some(80));
+        assert_eq!(config.xbee_test.rd_rate_hz, Some(70));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

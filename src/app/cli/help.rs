@@ -9,7 +9,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!("  monitor    Monitor one or more serial ports");
     eprintln!("  route      Route bytes between serial inputs and outputs");
     eprintln!("  send       Repeatedly send dummy payloads to a serial port");
-    eprintln!("  xbee-test  Cross-test PacketACv6 and PacketJFv1 across base/rover ports");
+    eprintln!("  xbee-test  Cross-test AU/RU and AD/RD across base/remote ports");
     eprintln!("  controllers List connected DUALSHOCK 4 controllers");
     eprintln!("  ports      List available serial ports");
     eprintln!("  version    Show build version and source metadata");
@@ -30,7 +30,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  monitor    Monitor one or more serial ports");
     println!("  route      Route bytes between serial inputs and outputs");
     println!("  send       Repeatedly send dummy payloads to a serial port");
-    println!("  xbee-test  Cross-test PacketACv6 and PacketJFv1 across base/rover ports");
+    println!("  xbee-test  Cross-test AU/RU and AD/RD across base/remote ports");
     println!("  controllers List connected DUALSHOCK 4 controllers");
     println!("  ports      List available serial ports");
     println!("  version    Show build version and source metadata");
@@ -55,7 +55,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverUpGeneral");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverDownGeneral");
     println!(
-        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --jf-rate 100"
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --au-rate 100 --ad-rate 100"
     );
     println!("  {bin_name} control --config config");
     println!("  {bin_name} --version");
@@ -244,7 +244,7 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     println!("Usage: {bin_name} xbee-test [OPTIONS]");
     println!();
     println!(
-        "Sends PacketACv6 + RoverUpGeneral from `base` to `rover`, and PacketJFv1 + RoverDownGeneral from `rover` to `base`."
+        "Sends AU(PacketACv6) + RU(RoverUpGeneral) from `base` to `remote`, and AD(PacketJFv1) + RD(RoverDownGeneral) from `remote` to `base`."
     );
     println!(
         "Each port is monitored simultaneously, and the dashboard shows per-port TX/RX packet rates plus matched/error statistics."
@@ -257,25 +257,25 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     );
     println!();
     println!("Options:");
-    println!("  -p, --port <ID=PORT[@BAUD]> Port binding. IDs: `base`, `rover`");
+    println!("  -p, --port <ID=PORT[@BAUD]> Port binding. IDs: `base`, `remote`");
     println!("      --mode <MODE>          Transfer mode: `flood` or `ping-pong` (default: flood)");
     println!(
-        "      --ac-rate <HZ>         PacketACv6 send rate from `base` to `rover` (default: 100)"
+        "      --au-rate <HZ>         AU(PacketACv6) send rate from `base` to `remote` (default: 100)"
     );
     println!(
-        "      --up-rate <HZ>         RoverUpGeneral send rate from `base` to `rover` (default: 100)"
+        "      --ru-rate <HZ>         RU(RoverUpGeneral) send rate from `base` to `remote` (default: 100)"
     );
     println!(
-        "      --jf-rate <HZ>         PacketJFv1 send rate from `rover` to `base` (default: 100)"
+        "      --ad-rate <HZ>         AD(PacketJFv1) send rate from `remote` to `base` (default: 100)"
     );
     println!(
-        "                              Ignored in `ping-pong`; JF is sent once per valid AC receive"
+        "                              Ignored in `ping-pong`; AD is sent once per valid AU receive"
     );
     println!(
-        "      --down-rate <HZ>       RoverDownGeneral send rate from `rover` to `base` (default: 100)"
+        "      --rd-rate <HZ>         RD(RoverDownGeneral) send rate from `remote` to `base` (default: 100)"
     );
     println!(
-        "                              Ignored in `ping-pong`; RoverDown is sent once per valid RoverUp receive"
+        "                              Ignored in `ping-pong`; RD is sent once per valid RU receive"
     );
     println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
@@ -291,16 +291,16 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     println!();
     println!("Examples:");
     println!(
-        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200"
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200"
     );
     println!(
-        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --up-rate 50 --jf-rate 80 --down-rate 40"
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --au-rate 100 --ru-rate 50 --ad-rate 80 --rd-rate 40"
     );
     println!(
-        "  {bin_name} xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --ac-rate 100 --up-rate 50"
+        "  {bin_name} xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --au-rate 100 --ru-rate 50"
     );
     println!(
-        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port rover=/dev/ttyUSB1@115200 --no-log"
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --no-log"
     );
     println!("  {bin_name} xbee-test --config config");
 }
