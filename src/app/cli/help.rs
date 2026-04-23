@@ -343,11 +343,25 @@ pub(crate) fn print_xbee_rtt_help(bin_name: &str) {
     println!(
         "      --connect-timeout-ms <MS> Time limit for HELLO/start/result handshake phases (default: 3000)"
     );
+    println!(
+        "      --show-wire            Continuously dump live TX/RX bytes in hex; TX is blue, RX is red"
+    );
+    println!(
+        "                            In one-PC local-pair mode, chunks are prefixed as [0>] / [1<]"
+    );
+    println!(
+        "      --show-protocol        Continuously dump decoded HELLO / PROBE / RESULT-style logs"
+    );
+    println!(
+        "                            Uses the same blue/red color split and [0>] / [1<] prefixes"
+    );
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0");
     println!("  # Run the same command on the other PC too");
+    println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0 --show-wire");
+    println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0 --show-protocol");
     println!(
         "  {bin_name} xbee-rtt --port /dev/ttyUSB0@921600 --payload-size 64 --count 20 --interval-ms 50"
     );

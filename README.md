@@ -103,6 +103,8 @@ acs xbee-mock base -p /dev/ttyUSB0 --option PAIR=1,TX_FORMAT=packetacv6@100+rove
 acs xbee-mock base -p up=/dev/ttyUSB0 -p down=/dev/ttyUSB1 --option PAIR=2,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=ping-pong
 acs xbee-mock remote -p up=/dev/ttyUSB0 -p down=/dev/ttyUSB1 --option PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling
 acs xbee-rtt --port /dev/ttyUSB0
+acs xbee-rtt --port /dev/ttyUSB0 --show-wire
+acs xbee-rtt --port /dev/ttyUSB0 --show-protocol
 acs xbee-rtt --port /dev/ttyUSB0@921600 --payload-size 64 --count 20 --interval-ms 50
 acs xbee-rtt --port /dev/ttyUSB0@921600 --port /dev/ttyUSB1@921600 --payload-size 64 --count 20 --interval-ms 50
 acs xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ru-rate 100 --ad-rate 100 --rd-rate 100
@@ -120,6 +122,8 @@ acs --version
 - `acs xbee-rtt` は通常、各 PC で 1 個の XBee port を指定して同じコマンドを実行します。`--port` を 2 回指定したときだけ、1 プロセスでローカル 2 port を同時に動かします。
 - `acs xbee-rtt` には `base` / `remote` の固定ロールはなく、hello nonce で測定順を対称に決めます。
 - `acs xbee-rtt` は `payload-size` / `count` / `interval-ms` を省略すると、そのまま 32B を 10 回、100 ms 間隔で測定します。
+- `acs xbee-rtt --show-wire` を付けると、実送受信の hex byte 列を青/赤で改行なしに垂れ流し表示します。1 台 PC のローカルペア時は `[0>]` / `[1<]` のような短い port ラベルも付きます。
+- `acs xbee-rtt --show-protocol` を付けると、`HELLO(...)` / `PROBE(seq=3, ...)` / `RESULT(avg=...)` のような意味付きログを青/赤で改行なしに垂れ流し表示します。
 - `acs xbee-rtt` は session ID と CRC16 付きの軽量バイナリフレームで再同期し、最終結果には payload bytes、回数、間隔、両方向の平均 RTT を表示します。
 - `acs xbee-test` は表示更新が遅い場合も受信レートとエラー率の集計を優先し、packet 表示は別キューで追いかけます。
 - `acs xbee-test` は `AU(PacketACv6) + RU(RoverUpGeneral)` と `AD(PacketJFv1) + RD(RoverDownGeneral)` をそれぞれ混在送信でき、各 format の送受信 Hz と照合結果を表示します。

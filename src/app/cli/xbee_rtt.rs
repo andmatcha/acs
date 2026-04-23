@@ -1,6 +1,7 @@
 use super::common::{default_baud_rate, next_value, parse_port_spec, parse_u32_arg};
 use super::help::{is_help_flag, print_xbee_rtt_help};
 use super::signal;
+use crate::common::format_bytes_hex;
 use crate::output::formats::crc16_ccitt_false;
 use crate::serial::{
     SerialCallback, SerialConfig, SerialEvent, SerialMonitor, SerialWriter,
@@ -8,9 +9,10 @@ use crate::serial::{
 };
 use std::cmp::{max, min};
 use std::collections::VecDeque;
+use std::io::{self, Write};
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -28,6 +30,9 @@ const FRAME_FIXED_PREFIX_LEN: usize = 13;
 const FRAME_OVERHEAD_BYTES: usize = 15;
 const ROUND_ID_FIRST: u8 = 1;
 const ROUND_ID_SECOND: u8 = 2;
+const ANSI_BLUE: &str = "\x1b[34m";
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_RESET: &str = "\x1b[0m";
 
 #[derive(Debug, Default)]
 struct XbeeRttCliOptions {
@@ -37,6 +42,8 @@ struct XbeeRttCliOptions {
     interval_ms: Option<u32>,
     connect_timeout_ms: Option<u32>,
     probe_timeout_ms: Option<u32>,
+    show_wire: bool,
+    show_protocol: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +69,7 @@ struct XbeeRttSettings {
     connect_timeout_ms: u32,
     probe_timeout: Duration,
     probe_timeout_ms: u32,
+    trace_tap: Option<Arc<LiveTraceTap>>,
 }
 
 impl XbeeRttSettings {
@@ -198,6 +206,145 @@ impl MeasurementOutcome {
 
     fn max_rtt_display(&self) -> String {
         format_duration(self.max_rtt)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WireDirection {
+    Tx,
+    Rx,
+}
+
+impl WireDirection {
+    fn color(self) -> &'static str {
+        match self {
+            Self::Tx => ANSI_BLUE,
+            Self::Rx => ANSI_RED,
+        }
+    }
+
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Tx => ">",
+            Self::Rx => "<",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LiveTraceTap {
+    local_pair: bool,
+    show_wire: bool,
+    show_protocol: bool,
+    state: Mutex<LiveTraceTapState>,
+}
+
+#[derive(Debug, Default)]
+struct LiveTraceTapState {
+    heading_printed: bool,
+    stream_open: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TraceKind {
+    Wire,
+    Protocol,
+}
+
+impl TraceKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Wire => "wire",
+            Self::Protocol => "proto",
+        }
+    }
+}
+
+impl LiveTraceTap {
+    fn new(local_pair: bool, show_wire: bool, show_protocol: bool) -> Self {
+        Self {
+            local_pair,
+            show_wire,
+            show_protocol,
+            state: Mutex::new(LiveTraceTapState::default()),
+        }
+    }
+
+    fn record_wire(&self, stream_label: Option<&str>, direction: WireDirection, bytes: &[u8]) {
+        if !self.show_wire || bytes.is_empty() {
+            return;
+        }
+
+        let mut state = self.state.lock().expect("trace tap mutex poisoned");
+        self.ensure_heading(&mut state);
+        print!(
+            "{}",
+            format_trace_chunk(
+                TraceKind::Wire,
+                stream_label,
+                direction,
+                &format_wire_bytes(bytes),
+            )
+        );
+        let _ = io::stdout().flush();
+        state.stream_open = true;
+    }
+
+    fn record_protocol(
+        &self,
+        stream_label: Option<&str>,
+        direction: WireDirection,
+        frame: &ProtocolFrame,
+    ) {
+        if !self.show_protocol {
+            return;
+        }
+
+        let mut state = self.state.lock().expect("trace tap mutex poisoned");
+        self.ensure_heading(&mut state);
+        print!(
+            "{}",
+            format_trace_chunk(
+                TraceKind::Protocol,
+                stream_label,
+                direction,
+                &format_protocol_frame(frame),
+            )
+        );
+        let _ = io::stdout().flush();
+        state.stream_open = true;
+    }
+
+    fn ensure_heading(&self, state: &mut LiveTraceTapState) {
+        if state.heading_printed {
+            return;
+        }
+
+        let mut modes = Vec::new();
+        if self.show_wire {
+            modes.push("wire=hex");
+        }
+        if self.show_protocol {
+            modes.push("protocol=decoded");
+        }
+        println!(
+            "live trace: tx=blue rx=red {}{}",
+            modes.join(" "),
+            if self.local_pair {
+                " local-pair prefixes [0>] / [1<]"
+            } else {
+                ""
+            }
+        );
+        state.heading_printed = true;
+    }
+
+    fn finish_line(&self) {
+        let mut state = self.state.lock().expect("trace tap mutex poisoned");
+        if state.stream_open {
+            println!();
+        }
+        state.stream_open = false;
     }
 }
 
@@ -582,10 +729,12 @@ enum PeerEvent {
 
 struct LocalPeer {
     local_port: ResolvedXbeeRttPort,
+    stream_label: Option<String>,
     local_nonce: u64,
     local_spec: MeasurementSpecWire,
     connect_timeout: Duration,
     control_retry_interval: Duration,
+    trace_tap: Option<Arc<LiveTraceTap>>,
     event_rx: Receiver<PeerEvent>,
     _monitor: SerialMonitor,
     writer: SerialWriter,
@@ -597,7 +746,11 @@ struct LocalPeer {
 }
 
 impl LocalPeer {
-    fn open(local_port: ResolvedXbeeRttPort, settings: &XbeeRttSettings) -> Result<Self, String> {
+    fn open(
+        local_port: ResolvedXbeeRttPort,
+        stream_label: Option<String>,
+        settings: &XbeeRttSettings,
+    ) -> Result<Self, String> {
         let (event_tx, event_rx) = mpsc::channel();
         let callback = make_xbee_rtt_callback(event_tx);
         let (monitor, writer) = open_monitor_and_writer(
@@ -611,10 +764,12 @@ impl LocalPeer {
 
         Ok(Self {
             local_port,
+            stream_label,
             local_nonce: fresh_u64(),
             local_spec: settings.spec(),
             connect_timeout: settings.connect_timeout,
             control_retry_interval: Duration::from_millis(CONTROL_RETRY_INTERVAL_MS),
+            trace_tap: settings.trace_tap.clone(),
             event_rx,
             _monitor: monitor,
             writer,
@@ -990,7 +1145,9 @@ impl LocalPeer {
                 .min(Duration::from_millis(EVENT_POLL_SLICE_MS));
             match self.event_rx.recv_timeout(timeout) {
                 Ok(PeerEvent::Data(bytes)) => {
+                    self.trace_wire(WireDirection::Rx, &bytes);
                     for frame in self.decoder.push(&bytes) {
+                        self.trace_protocol(WireDirection::Rx, &frame);
                         self.pending_frames.push_back(frame);
                     }
                 }
@@ -1131,9 +1288,13 @@ impl LocalPeer {
     }
 
     fn send_frame(&mut self, frame: ProtocolFrame) -> Result<(), String> {
+        let bytes = frame.encode();
         self.writer
-            .write_bytes(&frame.encode())
-            .map_err(|error| error.to_string())
+            .write_bytes(&bytes)
+            .map_err(|error| error.to_string())?;
+        self.trace_wire(WireDirection::Tx, &bytes);
+        self.trace_protocol(WireDirection::Tx, &frame);
+        Ok(())
     }
 
     fn matches_session(&self, frame: &ProtocolFrame) -> bool {
@@ -1160,6 +1321,18 @@ impl LocalPeer {
             Err(String::from("xbee-rtt interrupted by Ctrl-C"))
         } else {
             Ok(())
+        }
+    }
+
+    fn trace_wire(&self, direction: WireDirection, bytes: &[u8]) {
+        if let Some(trace_tap) = &self.trace_tap {
+            trace_tap.record_wire(self.stream_label.as_deref(), direction, bytes);
+        }
+    }
+
+    fn trace_protocol(&self, direction: WireDirection, frame: &ProtocolFrame) {
+        if let Some(trace_tap) = &self.trace_tap {
+            trace_tap.record_protocol(self.stream_label.as_deref(), direction, frame);
         }
     }
 }
@@ -1203,34 +1376,47 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 
 fn run_with_options(cli_options: XbeeRttCliOptions) -> Result<XbeeRttRunResult, String> {
     let settings = build_settings(cli_options)?;
+    let trace_tap = settings.trace_tap.clone();
     signal::install_handler();
 
-    if settings.local_ports.len() == 1 {
-        let result = execute_peer(settings.local_ports[0].clone(), settings.clone())?;
-        return Ok(XbeeRttRunResult::Single(result));
+    let result = (|| {
+        if settings.local_ports.len() == 1 {
+            let result = execute_peer(settings.local_ports[0].clone(), None, settings.clone())?;
+            return Ok(XbeeRttRunResult::Single(result));
+        }
+
+        let first_port = settings.local_ports[0].clone();
+        let second_port = settings.local_ports[1].clone();
+        let settings_for_first = settings.clone();
+        let settings_for_second = settings.clone();
+
+        let first_worker = thread::spawn(move || {
+            execute_peer(first_port, Some(String::from("0")), settings_for_first)
+        });
+        let second_worker = thread::spawn(move || {
+            execute_peer(second_port, Some(String::from("1")), settings_for_second)
+        });
+
+        let first_result = join_peer_worker(first_worker)?;
+        let second_result = join_peer_worker(second_worker)?;
+        Ok(XbeeRttRunResult::LocalPair(aggregate_local_pair(
+            first_result,
+            second_result,
+        )?))
+    })();
+
+    if let Some(trace_tap) = trace_tap {
+        trace_tap.finish_line();
     }
-
-    let first_port = settings.local_ports[0].clone();
-    let second_port = settings.local_ports[1].clone();
-    let settings_for_first = settings.clone();
-    let settings_for_second = settings.clone();
-
-    let first_worker = thread::spawn(move || execute_peer(first_port, settings_for_first));
-    let second_worker = thread::spawn(move || execute_peer(second_port, settings_for_second));
-
-    let first_result = join_peer_worker(first_worker)?;
-    let second_result = join_peer_worker(second_worker)?;
-    Ok(XbeeRttRunResult::LocalPair(aggregate_local_pair(
-        first_result,
-        second_result,
-    )?))
+    result
 }
 
 fn execute_peer(
     local_port: ResolvedXbeeRttPort,
+    stream_label: Option<String>,
     settings: XbeeRttSettings,
 ) -> Result<PeerRunResult, String> {
-    let peer = LocalPeer::open(local_port, &settings)?;
+    let peer = LocalPeer::open(local_port, stream_label, &settings)?;
     peer.run(&settings)
 }
 
@@ -1398,6 +1584,8 @@ fn build_settings(cli_options: XbeeRttCliOptions) -> Result<XbeeRttSettings, Str
         interval_ms,
         connect_timeout_ms,
         probe_timeout_ms,
+        show_wire,
+        show_protocol,
     } = cli_options;
 
     if ports.len() > 2 {
@@ -1455,6 +1643,14 @@ fn build_settings(cli_options: XbeeRttCliOptions) -> Result<XbeeRttSettings, Str
         return Err(String::from("--probe-timeout-ms must be greater than 0"));
     }
 
+    let trace_tap = (show_wire || show_protocol).then(|| {
+        Arc::new(LiveTraceTap::new(
+            resolved_ports.len() == 2,
+            show_wire,
+            show_protocol,
+        ))
+    });
+
     Ok(XbeeRttSettings {
         local_ports: resolved_ports,
         payload_size,
@@ -1465,6 +1661,7 @@ fn build_settings(cli_options: XbeeRttCliOptions) -> Result<XbeeRttSettings, Str
         connect_timeout_ms,
         probe_timeout: Duration::from_millis(u64::from(probe_timeout_ms)),
         probe_timeout_ms,
+        trace_tap,
     })
 }
 
@@ -1497,6 +1694,8 @@ fn parse_xbee_rtt_args(args: Vec<String>) -> Result<XbeeRttCliOptions, String> {
                 let value = next_value(&mut iter, "--probe-timeout-ms")?;
                 options.probe_timeout_ms = Some(parse_u32_arg("--probe-timeout-ms", &value)?);
             }
+            "--show-wire" => options.show_wire = true,
+            "--show-protocol" => options.show_protocol = true,
             other => return Err(format!("unknown option for xbee-rtt: {other}")),
         }
     }
@@ -1642,6 +1841,108 @@ fn format_duration(value: Option<Duration>) -> String {
     }
 }
 
+fn format_trace_chunk(
+    kind: TraceKind,
+    stream_label: Option<&str>,
+    direction: WireDirection,
+    body: &str,
+) -> String {
+    let prefix = match stream_label {
+        Some(label) => format!("{}[{label}{}] ", kind.label(), direction.marker()),
+        None => format!("{}[{}] ", kind.label(), direction.marker()),
+    };
+    format!("{}{}{}{} ", direction.color(), prefix, body, ANSI_RESET)
+}
+
+fn format_wire_bytes(bytes: &[u8]) -> String {
+    format_bytes_hex(bytes)
+}
+
+fn format_protocol_frame(frame: &ProtocolFrame) -> String {
+    match frame.kind {
+        FrameKind::Hello => match HelloWire::decode(&frame.payload) {
+            Ok(hello) => format!(
+                "HELLO(nonce=0x{:016x}, {})",
+                hello.nonce,
+                format_spec(hello.spec)
+            ),
+            Err(_) => format!("HELLO(invalid-payload-len={})", frame.payload.len()),
+        },
+        FrameKind::HelloAck => match HelloAckWire::decode(&frame.payload) {
+            Ok(ack) => format!("HELLO_ACK(ack=0x{:016x})", ack.ack_nonce),
+            Err(_) => format!("HELLO_ACK(invalid-payload-len={})", frame.payload.len()),
+        },
+        FrameKind::MeasureStart => match MeasurementSpecWire::decode(&frame.payload) {
+            Ok(spec) => format!(
+                "MEASURE_START(session=0x{:08x}, round={}, {})",
+                frame.session_id,
+                trace_round_label(frame.round_id),
+                format_spec(spec)
+            ),
+            Err(_) => format!(
+                "MEASURE_START(session=0x{:08x}, round={}, invalid-payload-len={})",
+                frame.session_id,
+                trace_round_label(frame.round_id),
+                frame.payload.len()
+            ),
+        },
+        FrameKind::MeasureAck => format!(
+            "MEASURE_ACK(session=0x{:08x}, round={})",
+            frame.session_id,
+            trace_round_label(frame.round_id)
+        ),
+        FrameKind::Probe => format!(
+            "PROBE(session=0x{:08x}, round={}, seq={}, bytes={})",
+            frame.session_id,
+            trace_round_label(frame.round_id),
+            frame.seq,
+            frame.payload.len()
+        ),
+        FrameKind::ProbeEcho => format!(
+            "PROBE_ECHO(session=0x{:08x}, round={}, seq={}, bytes={})",
+            frame.session_id,
+            trace_round_label(frame.round_id),
+            frame.seq,
+            frame.payload.len()
+        ),
+        FrameKind::Result => match MeasurementSummaryWire::decode(&frame.payload) {
+            Ok(summary) => format!(
+                "RESULT(session=0x{:08x}, round={}, payload={}B, success={}/{}, timeout={}, mismatch={}, avg={}, min={}, max={})",
+                frame.session_id,
+                trace_round_label(frame.round_id),
+                summary.payload_size,
+                summary.success_count,
+                summary.probe_count,
+                summary.timeout_count,
+                summary.mismatch_count,
+                format_duration(micros_to_duration(summary.mean_rtt_us)),
+                format_duration(micros_to_duration(summary.min_rtt_us)),
+                format_duration(micros_to_duration(summary.max_rtt_us))
+            ),
+            Err(_) => format!(
+                "RESULT(session=0x{:08x}, round={}, invalid-payload-len={})",
+                frame.session_id,
+                trace_round_label(frame.round_id),
+                frame.payload.len()
+            ),
+        },
+        FrameKind::ResultAck => format!(
+            "RESULT_ACK(session=0x{:08x}, round={})",
+            frame.session_id,
+            trace_round_label(frame.round_id)
+        ),
+    }
+}
+
+fn trace_round_label(round_id: u8) -> &'static str {
+    match round_id {
+        0 => "control",
+        ROUND_ID_FIRST => "round-1",
+        ROUND_ID_SECOND => "round-2",
+        _ => "unknown-round",
+    }
+}
+
 fn derive_session_id(first_nonce: u64, second_nonce: u64) -> u32 {
     let (low, high) = if first_nonce < second_nonce {
         (first_nonce, second_nonce)
@@ -1689,8 +1990,9 @@ mod tests {
     use super::{
         DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_INTERVAL_MS, DEFAULT_PAYLOAD_SIZE, DEFAULT_PROBE_COUNT,
         DEFAULT_PROBE_TIMEOUT_MS, FrameDecoder, FrameKind, HelloAckWire, HelloWire,
-        MeasurementSpecWire, MeasurementSummaryWire, ProtocolFrame, XbeeRttPortBinding,
-        build_probe_payload, derive_session_id, parse_xbee_rtt_args, parse_xbee_rtt_port_binding,
+        MeasurementSpecWire, MeasurementSummaryWire, ProtocolFrame, TraceKind, WireDirection,
+        XbeeRttPortBinding, build_probe_payload, derive_session_id, format_protocol_frame,
+        format_trace_chunk, format_wire_bytes, parse_xbee_rtt_args, parse_xbee_rtt_port_binding,
     };
 
     #[test]
@@ -1733,6 +2035,23 @@ mod tests {
         assert_eq!(options.interval_ms, Some(25));
         assert_eq!(options.connect_timeout_ms, Some(5_000));
         assert_eq!(options.probe_timeout_ms, Some(750));
+        assert!(!options.show_wire);
+        assert!(!options.show_protocol);
+    }
+
+    #[test]
+    fn parse_xbee_rtt_args_accepts_show_wire() {
+        let options = parse_xbee_rtt_args(vec![String::from("--show-wire")]).expect("should parse");
+        assert!(options.show_wire);
+        assert!(!options.show_protocol);
+    }
+
+    #[test]
+    fn parse_xbee_rtt_args_accepts_show_protocol() {
+        let options =
+            parse_xbee_rtt_args(vec![String::from("--show-protocol")]).expect("should parse");
+        assert!(options.show_protocol);
+        assert!(!options.show_wire);
     }
 
     #[test]
@@ -1827,5 +2146,49 @@ mod tests {
         assert_eq!(DEFAULT_INTERVAL_MS, 100);
         assert_eq!(DEFAULT_CONNECT_TIMEOUT_MS, 3_000);
         assert_eq!(DEFAULT_PROBE_TIMEOUT_MS, 1_000);
+    }
+
+    #[test]
+    fn format_wire_bytes_is_fixed_hex() {
+        assert_eq!(format_wire_bytes(b"OK\r\n"), "4F 4B 0D 0A");
+    }
+
+    #[test]
+    fn format_wire_bytes_falls_back_to_hex_for_binary() {
+        assert_eq!(format_wire_bytes(&[0x58, 0x52, 0x02, 0x00]), "58 52 02 00");
+    }
+
+    #[test]
+    fn format_trace_chunk_includes_kind_and_local_pair_label() {
+        let chunk = format_trace_chunk(TraceKind::Wire, Some("1"), WireDirection::Rx, "01 02");
+        assert!(chunk.contains("wire[1<] 01 02"));
+        assert!(chunk.starts_with("\u{1b}[31m"));
+        assert!(chunk.ends_with("\u{1b}[0m "));
+    }
+
+    #[test]
+    fn format_protocol_frame_describes_result_summary() {
+        let frame = ProtocolFrame {
+            kind: FrameKind::Result,
+            session_id: 0x1122_3344,
+            round_id: 2,
+            seq: 0,
+            payload: MeasurementSummaryWire {
+                probe_count: 10,
+                success_count: 9,
+                timeout_count: 1,
+                mismatch_count: 0,
+                payload_size: 32,
+                mean_rtt_us: 12_345,
+                min_rtt_us: 11_000,
+                max_rtt_us: 14_000,
+            }
+            .encode(),
+        };
+
+        assert_eq!(
+            format_protocol_frame(&frame),
+            "RESULT(session=0x11223344, round=round-2, payload=32B, success=9/10, timeout=1, mismatch=0, avg=12.345 ms, min=11.000 ms, max=14.000 ms)"
+        );
     }
 }

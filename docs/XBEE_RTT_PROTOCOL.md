@@ -69,6 +69,23 @@ CLI オプション未指定時は次で動きます。
 - connect timeout: `3000 ms`
 - control retry interval: `200 ms`
 
+## オプションの live 表示
+
+`--show-wire` を付けると、送受信した生 byte 列をローカル端末へそのまま流します。
+これは **診断表示だけ** の機能で、wire protocol 自体には影響しません。
+
+- TX は青、RX は赤
+- 改行せず、read / write chunk ごとに追記する
+- 常に hex byte 列で表示する
+- 2-port / 1-PC ローカルペアでは `[0>]`, `[0<]`, `[1>]`, `[1<]` の短い label を付ける
+
+`--show-protocol` を付けると、decode できた frame を意味付きログとして流します。
+
+- TX は青、RX は赤
+- 改行せず、frame ごとに追記する
+- 例: `HELLO(...)`, `MEASURE_START(...)`, `PROBE(seq=3, ...)`, `RESULT(avg=...)`
+- 2-port / 1-PC ローカルペアでは `[0>]`, `[0<]`, `[1>]`, `[1<]` の短い label を付ける
+
 ## 実行条件
 
 ### 1-port / 2-PC モード
