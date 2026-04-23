@@ -140,6 +140,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!();
     println!("Options:");
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial output port");
+    println!("                              PORT accepts a device path or `acs ports` index");
     println!("                              Omit to auto-select a single USB serial or ST-LINK");
     println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!("  -c, --controller <ID>      Controller index or HID path");
@@ -185,6 +186,7 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!(
         "  -o, --output-port <ID=PORT[@BAUD][,DISPLAY][,FORMAT][,RATE]> Additional/repeatable serial output"
     );
+    println!("                              PORT accepts a device path or `acs ports` index");
     println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!(
         "  -r, --rate <HZ>            Default dummy packet send rate (default: 50, overridden by output-port rate, ignored with --interactive)"
@@ -255,6 +257,7 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     println!();
     println!("Options:");
     println!("  -p, --port <ID=PORT[@BAUD]> Port binding. IDs: `base`, `remote`");
+    println!("                              PORT accepts a device path or `acs ports` index");
     println!(
         "      --mode <MODE>          Transfer mode: `flood`, `ping-pong`, or `polling` (default: flood)"
     );
@@ -328,6 +331,7 @@ pub(crate) fn print_xbee_mock_help(bin_name: &str) {
     println!("  -p, --port <PORT[@BAUD]>   Port binding for `PAIR=1`");
     println!("  -p, --port <up=PORT[@BAUD]> Uplink binding for `PAIR=2`");
     println!("  -p, --port <down=PORT[@BAUD]> Downlink binding for `PAIR=2`");
+    println!("                              PORT accepts a device path or `acs ports` index");
     println!("      --role <ROLE>          Role: `base` or `remote`");
     println!(
         "      --option <K=V,...>    Xbee mock options: `PAIR`, `TX_FORMAT`, `RX_FORMAT`, `TRAFFIC_PATTERN`"
@@ -366,6 +370,7 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!();
     println!("Options:");
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial port to monitor (repeatable)");
+    println!("                              PORT accepts a device path or `acs ports` index");
     println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
@@ -400,6 +405,7 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("      --list-templates        Show built-in route templates");
     println!("  -i, --input-port <ID=PORT[@BAUD][,DISPLAY]>  Route input port (repeatable)");
     println!("  -o, --output-port <ID=PORT[@BAUD][,DISPLAY]> Route output port (repeatable)");
+    println!("                               PORT accepts a device path or `acs ports` index");
     println!("  -b, --baud <BAUD_RATE>      Default baud rate for ports without inline baud");
     println!("      --display <TARGET=MODE> Display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");

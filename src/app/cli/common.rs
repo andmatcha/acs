@@ -120,6 +120,15 @@ mod tests {
                 line_break_mode: Some(LineBreakMode::Packet),
             }
         );
+        assert_eq!(
+            parse_port_spec("--port", "0@460800,hex").unwrap(),
+            PortSpec {
+                port: String::from("0"),
+                baud: Some(460_800),
+                display_mode: Some(PortDisplayMode::Hex),
+                line_break_mode: None,
+            }
+        );
     }
 
     #[test]

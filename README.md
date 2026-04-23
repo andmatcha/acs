@@ -107,6 +107,7 @@ acs --version
 ```
 
 - 1 台だけコントローラーやシリアルポートが見つかる場合は、自動選択されます。
+- `acs ports` の `[0]`, `[1]`, ... の番号は、`--port` / `--monitor` / `-i` / `-o` などのポート指定でそのまま使えます。
 - 詳しいオプションや表示形式は `acs help <command>` を参照してください。
 - `acs xbee-mock` は `PAIR=1` で 1 port を共用し、`PAIR=2` で uplink/downlink を分離できます。
 - `acs xbee-mock` は `TX_FORMAT` に rate を持たせ、`RX_FORMAT` は monitor/decoder 対象 format を指定します。

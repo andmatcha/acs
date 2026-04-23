@@ -85,6 +85,10 @@ pub enum SerialError {
     },
     NoSerialPortFound,
     MultiplePortsFound(usize),
+    PortIndexOutOfRange {
+        index: usize,
+        count: usize,
+    },
     PortNotFound(String),
 }
 
@@ -106,6 +110,10 @@ impl fmt::Display for SerialError {
             Self::MultiplePortsFound(count) => write!(
                 f,
                 "{count} serial ports found; specify one explicitly with --port"
+            ),
+            Self::PortIndexOutOfRange { index, count } => write!(
+                f,
+                "serial port index `{index}` is out of range for {count} available ports; use `acs ports` to inspect candidates"
             ),
             Self::PortNotFound(port) => write!(
                 f,
@@ -241,14 +249,37 @@ pub fn available_ports() -> Result<Vec<SerialPortInfo>, SerialError> {
 
 pub fn resolve_port(port_name: Option<&str>) -> Result<String, SerialError> {
     let ports = available_ports()?;
+    resolve_port_from_ports(port_name, &ports)
+}
+
+fn resolve_port_from_ports(
+    port_name: Option<&str>,
+    ports: &[SerialPortInfo],
+) -> Result<String, SerialError> {
     match port_name {
-        Some(port_name) => ports
-            .iter()
-            .find(|port| port.port_name == port_name)
-            .map(|port| port.port_name.clone())
-            .ok_or_else(|| SerialError::PortNotFound(port_name.to_owned())),
+        Some(port_name) => resolve_requested_port(port_name, ports),
         None => auto_select_port(&ports),
     }
+}
+
+fn resolve_requested_port(
+    port_name: &str,
+    ports: &[SerialPortInfo],
+) -> Result<String, SerialError> {
+    if let Some(port) = ports.iter().find(|port| port.port_name == port_name) {
+        return Ok(port.port_name.clone());
+    }
+
+    if let Ok(index) = port_name.parse::<usize>() {
+        return ports.get(index).map(|port| port.port_name.clone()).ok_or(
+            SerialError::PortIndexOutOfRange {
+                index,
+                count: ports.len(),
+            },
+        );
+    }
+
+    Err(SerialError::PortNotFound(port_name.to_owned()))
 }
 
 fn auto_select_port(ports: &[SerialPortInfo]) -> Result<String, SerialError> {
@@ -446,7 +477,7 @@ fn take_complete_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SerialLineBuffer, auto_select_port};
+    use super::{SerialError, SerialLineBuffer, auto_select_port, resolve_port_from_ports};
     use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
 
     #[test]
@@ -514,6 +545,42 @@ mod tests {
         ];
 
         assert_eq!(auto_select_port(&ports).unwrap(), "/dev/ttyUSB0");
+    }
+
+    #[test]
+    fn resolve_port_from_ports_accepts_acs_ports_index() {
+        let ports = vec![
+            port("/dev/ttyUSB0", usb_port_type("USB Serial 0")),
+            port("/dev/ttyUSB1", usb_port_type("USB Serial 1")),
+        ];
+
+        assert_eq!(
+            resolve_port_from_ports(Some("1"), &ports).unwrap(),
+            "/dev/ttyUSB1"
+        );
+    }
+
+    #[test]
+    fn resolve_port_from_ports_prefers_exact_name_before_index_lookup() {
+        let ports = vec![
+            port("1", SerialPortType::Unknown),
+            port("/dev/ttyUSB1", usb_port_type("USB Serial 1")),
+        ];
+
+        assert_eq!(resolve_port_from_ports(Some("1"), &ports).unwrap(), "1");
+    }
+
+    #[test]
+    fn resolve_port_from_ports_reports_out_of_range_index() {
+        let ports = vec![port("/dev/ttyUSB0", usb_port_type("USB Serial 0"))];
+
+        match resolve_port_from_ports(Some("2"), &ports).unwrap_err() {
+            SerialError::PortIndexOutOfRange { index, count } => {
+                assert_eq!(index, 2);
+                assert_eq!(count, 1);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     fn port(port_name: &str, port_type: SerialPortType) -> SerialPortInfo {
