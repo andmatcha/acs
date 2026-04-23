@@ -555,6 +555,10 @@ impl ExpectedPacketTracker {
         self.stats.unexpected_packets = self.stats.unexpected_packets.saturating_add(1);
     }
 
+    fn observe_untracked_valid_packet(&mut self) {
+        self.stats.matched_packets = self.stats.matched_packets.saturating_add(1);
+    }
+
     fn stats(&self) -> PacketMatchStats {
         self.stats.clone()
     }
@@ -574,9 +578,32 @@ struct ObservedInput {
 struct ObservedInputFormatState {
     from_port_id: &'static str,
     kind: XbeeTestFrameKind,
+    track_expected_packets: bool,
     decoder: PacketStreamDecoder,
     tracker: ExpectedPacketTracker,
     rate_samples: VecDeque<PacketRateSample>,
+}
+
+#[derive(Clone, Copy)]
+struct ObservedInputKindSpec {
+    kind: XbeeTestFrameKind,
+    track_expected_packets: bool,
+}
+
+impl ObservedInputKindSpec {
+    fn strict(kind: XbeeTestFrameKind) -> Self {
+        Self {
+            kind,
+            track_expected_packets: true,
+        }
+    }
+
+    fn passive(kind: XbeeTestFrameKind) -> Self {
+        Self {
+            kind,
+            track_expected_packets: false,
+        }
+    }
 }
 
 impl ObservedInput {
@@ -584,7 +611,7 @@ impl ObservedInput {
         input_id: &'static str,
         input_port: String,
         from_port_id: &'static str,
-        kinds: Vec<XbeeTestFrameKind>,
+        kinds: Vec<ObservedInputKindSpec>,
     ) -> Self {
         Self {
             input_id,
@@ -594,8 +621,9 @@ impl ObservedInput {
                 .into_iter()
                 .map(|kind| ObservedInputFormatState {
                     from_port_id,
-                    kind,
-                    decoder: PacketStreamDecoder::new(kind),
+                    kind: kind.kind,
+                    track_expected_packets: kind.track_expected_packets,
+                    decoder: PacketStreamDecoder::new(kind.kind),
                     tracker: ExpectedPacketTracker::new(),
                     rate_samples: VecDeque::new(),
                 })
@@ -625,7 +653,11 @@ impl ObservedInput {
                 valid_packet_count += 1;
                 valid_byte_len += packet.len();
                 self.display_queue.enqueue(packet.clone());
-                state.tracker.observe(packet);
+                if state.track_expected_packets {
+                    state.tracker.observe(packet);
+                } else {
+                    state.tracker.observe_untracked_valid_packet();
+                }
             }
             if valid_packet_count > 0 {
                 state.rate_samples.push_back(PacketRateSample {
@@ -701,22 +733,37 @@ impl ObservedInputFormatState {
     ) -> String {
         let stats = self.tracker.stats();
         let target_rate_hz = target_rates_hz.get(&self.kind).copied().unwrap_or_default();
-        format!(
-            "{} <- {}  format={}  target={:.1} Hz  rx={:.1} Hz {:.0} B/s  matched={}  err={:.2}%  pending={}  miss={}  bad={}  unexp={}  overflow={}",
-            input_id,
-            self.from_port_id,
-            xbee_test_format_label(self.kind),
-            target_rate_hz,
-            self.rx_rate_hz(),
-            self.rx_bytes_per_second(),
-            stats.matched_packets,
-            stats.error_rate_percent(),
-            self.tracker.pending_packets(),
-            stats.missing_packets,
-            stats.invalid_packets,
-            stats.unexpected_packets,
-            stats.queue_overflow_packets
-        )
+        if self.track_expected_packets {
+            format!(
+                "{} <- {}  format={}  target={:.1} Hz  rx={:.1} Hz {:.0} B/s  matched={}  err={:.2}%  pending={}  miss={}  bad={}  unexp={}  overflow={}",
+                input_id,
+                self.from_port_id,
+                xbee_test_format_label(self.kind),
+                target_rate_hz,
+                self.rx_rate_hz(),
+                self.rx_bytes_per_second(),
+                stats.matched_packets,
+                stats.error_rate_percent(),
+                self.tracker.pending_packets(),
+                stats.missing_packets,
+                stats.invalid_packets,
+                stats.unexpected_packets,
+                stats.queue_overflow_packets
+            )
+        } else {
+            format!(
+                "{} <- {}  format={}  target={:.1} Hz  rx={:.1} Hz {:.0} B/s  valid={}  bad={}  overflow={}  track=passive",
+                input_id,
+                self.from_port_id,
+                xbee_test_format_label(self.kind),
+                target_rate_hz,
+                self.rx_rate_hz(),
+                self.rx_bytes_per_second(),
+                stats.matched_packets,
+                stats.invalid_packets,
+                stats.queue_overflow_packets
+            )
+        }
     }
 }
 
@@ -1219,16 +1266,24 @@ impl XbeeTestState {
         started_at: Instant,
     ) -> Result<Self, String> {
         let mut base_input_kinds = vec![
-            XbeeTestFrameKind::Format(OutputFormat::PacketJfV1),
-            XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral),
+            ObservedInputKindSpec::strict(XbeeTestFrameKind::Format(OutputFormat::PacketJfV1)),
+            ObservedInputKindSpec::strict(XbeeTestFrameKind::Format(
+                OutputFormat::RoverDownGeneral,
+            )),
         ];
         let mut remote_input_kinds = vec![
-            XbeeTestFrameKind::Format(OutputFormat::PacketAcV6),
-            XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral),
+            ObservedInputKindSpec::strict(XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)),
+            ObservedInputKindSpec::strict(XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral)),
         ];
         if settings.mode == XbeeTestMode::Polling {
-            base_input_kinds.insert(0, XbeeTestFrameKind::PollResponse);
-            remote_input_kinds.insert(0, XbeeTestFrameKind::PollGreeting);
+            base_input_kinds.insert(
+                0,
+                ObservedInputKindSpec::strict(XbeeTestFrameKind::PollResponse),
+            );
+            remote_input_kinds.insert(
+                0,
+                ObservedInputKindSpec::strict(XbeeTestFrameKind::PollGreeting),
+            );
         }
 
         Ok(Self {
@@ -2450,11 +2505,18 @@ impl XbeeMockState {
                 REMOTE_PORT_ID,
                 {
                     let mut kinds = vec![
-                        XbeeTestFrameKind::Format(OutputFormat::PacketJfV1),
-                        XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral),
+                        ObservedInputKindSpec::strict(XbeeTestFrameKind::Format(
+                            OutputFormat::PacketJfV1,
+                        )),
+                        ObservedInputKindSpec::strict(XbeeTestFrameKind::Format(
+                            OutputFormat::RoverDownGeneral,
+                        )),
                     ];
                     if settings.mode == XbeeTestMode::Polling {
-                        kinds.insert(0, XbeeTestFrameKind::PollResponse);
+                        kinds.insert(
+                            0,
+                            ObservedInputKindSpec::strict(XbeeTestFrameKind::PollResponse),
+                        );
                     }
                     kinds
                 },
@@ -2464,11 +2526,18 @@ impl XbeeMockState {
                 BASE_PORT_ID,
                 {
                     let mut kinds = vec![
-                        XbeeTestFrameKind::Format(OutputFormat::PacketAcV6),
-                        XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral),
+                        ObservedInputKindSpec::passive(XbeeTestFrameKind::Format(
+                            OutputFormat::PacketAcV6,
+                        )),
+                        ObservedInputKindSpec::passive(XbeeTestFrameKind::Format(
+                            OutputFormat::RoverUpGeneral,
+                        )),
                     ];
                     if settings.mode == XbeeTestMode::Polling {
-                        kinds.insert(0, XbeeTestFrameKind::PollGreeting);
+                        kinds.insert(
+                            0,
+                            ObservedInputKindSpec::passive(XbeeTestFrameKind::PollGreeting),
+                        );
                     }
                     kinds
                 },
@@ -2509,12 +2578,20 @@ impl XbeeMockState {
         }
 
         match &mut self.driver {
-            XbeeMockDriver::Base(driver) => {
-                driver.handle_input(self.mode, &batch, session, &mut self.input, &mut self.output)
-            }
-            XbeeMockDriver::Remote(driver) => {
-                driver.handle_input(self.mode, &batch, session, &mut self.input, &mut self.output)
-            }
+            XbeeMockDriver::Base(driver) => driver.handle_input(
+                self.mode,
+                &batch,
+                session,
+                &mut self.input,
+                &mut self.output,
+            ),
+            XbeeMockDriver::Remote(driver) => driver.handle_input(
+                self.mode,
+                &batch,
+                session,
+                &mut self.input,
+                &mut self.output,
+            ),
         }
     }
 
@@ -2684,7 +2761,17 @@ impl XbeeMockState {
             ..
         } = self;
 
-        let (au_rate_hz, ru_rate_hz, ad_rate_hz, rd_rate_hz, poll_tx_sent, au_tx_sent, ru_tx_sent, ad_tx_sent, rd_tx_sent) = match driver {
+        let (
+            au_rate_hz,
+            ru_rate_hz,
+            ad_rate_hz,
+            rd_rate_hz,
+            poll_tx_sent,
+            au_tx_sent,
+            ru_tx_sent,
+            ad_tx_sent,
+            rd_tx_sent,
+        ) = match driver {
             XbeeMockDriver::Base(driver) => (
                 driver.au_sender.target_rate_hz(),
                 driver.ru_sender.target_rate_hz(),
@@ -2943,32 +3030,23 @@ pub(crate) fn run_mock(args: Vec<String>, bin_name: &str) -> ExitCode {
                 XbeeMockRole::Remote => {
                     if result.mode == XbeeTestMode::Polling {
                         println!(
-                            "  PollGreeting rx: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                            "  PollGreeting rx: valid={} bad={} overflow={}",
                             result.greeting_stats.matched_packets,
-                            result.greeting_stats.error_rate_percent(),
-                            result.greeting_stats.missing_packets,
                             result.greeting_stats.invalid_packets,
-                            result.greeting_stats.unexpected_packets,
                             result.greeting_stats.queue_overflow_packets
                         );
                         println!("  PollResponse tx: sent={}", result.poll_tx_sent);
                     }
                     println!(
-                        "  AU rx: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                        "  AU rx: valid={} bad={} overflow={}",
                         result.au_stats.matched_packets,
-                        result.au_stats.error_rate_percent(),
-                        result.au_stats.missing_packets,
                         result.au_stats.invalid_packets,
-                        result.au_stats.unexpected_packets,
                         result.au_stats.queue_overflow_packets
                     );
                     println!(
-                        "  RU rx: matched={} err={:.2}% miss={} bad={} unexp={} overflow={}",
+                        "  RU rx: valid={} bad={} overflow={}",
                         result.ru_stats.matched_packets,
-                        result.ru_stats.error_rate_percent(),
-                        result.ru_stats.missing_packets,
                         result.ru_stats.invalid_packets,
-                        result.ru_stats.unexpected_packets,
                         result.ru_stats.queue_overflow_packets
                     );
                     println!("  AD tx: sent={}", result.ad_tx_sent);
@@ -3566,7 +3644,9 @@ fn parse_xbee_mock_args(args: Vec<String>) -> Result<XbeeMockCliOptions, String>
         match arg.as_str() {
             "--role" => options.role = Some(next_value(&mut iter, "--role")?),
             "--port" | "-p" => {
-                options.port = Some(parse_xbee_mock_port_spec(&next_value(&mut iter, "--port")?)?)
+                options.port = Some(parse_xbee_mock_port_spec(&next_value(
+                    &mut iter, "--port",
+                )?)?)
             }
             "--mode" => options.mode = Some(next_value(&mut iter, "--mode")?),
             "--poll-rate" => {
@@ -3714,8 +3794,8 @@ fn matches_rover_down_packet(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExpectedPacketTracker, OutputFormat, PacketDefinition, PacketStreamDecoder,
-        XbeeMockRole, XbeeTestFrameKind, XbeeTestMode, build_poll_frame, matches_poll_frame,
+        ExpectedPacketTracker, OutputFormat, PacketDefinition, PacketStreamDecoder, XbeeMockRole,
+        XbeeTestFrameKind, XbeeTestMode, build_poll_frame, matches_poll_frame,
         parse_xbee_mock_args, parse_xbee_mock_port_spec, parse_xbee_test_args,
         parse_xbee_test_port_binding,
     };
@@ -3812,7 +3892,10 @@ mod tests {
             options.port.as_ref().map(|port| port.port.as_str()),
             Some("/dev/ttyUSB2")
         );
-        assert_eq!(options.port.as_ref().and_then(|port| port.baud), Some(460_800));
+        assert_eq!(
+            options.port.as_ref().and_then(|port| port.baud),
+            Some(460_800)
+        );
         assert_eq!(options.mode.as_deref(), Some("polling"));
         assert_eq!(options.poll_rate_hz, Some(100));
         assert_eq!(options.base_real_percent, Some(10));
@@ -3835,7 +3918,10 @@ mod tests {
 
     #[test]
     fn xbee_mock_role_parse_accepts_base_and_remote() {
-        assert_eq!(XbeeMockRole::parse("base").expect("role"), XbeeMockRole::Base);
+        assert_eq!(
+            XbeeMockRole::parse("base").expect("role"),
+            XbeeMockRole::Base
+        );
         assert_eq!(
             XbeeMockRole::parse("remote").expect("role"),
             XbeeMockRole::Remote
@@ -3896,6 +3982,22 @@ mod tests {
 
         assert_eq!(stats.matched_packets, 1);
         assert_eq!(stats.missing_packets, 2);
+        assert_eq!(tracker.pending_packets(), 0);
+    }
+
+    #[test]
+    fn expected_packet_tracker_can_count_passive_valid_packets() {
+        let mut tracker = ExpectedPacketTracker::new();
+
+        tracker.observe_untracked_valid_packet();
+        tracker.observe_untracked_valid_packet();
+        tracker.record_invalid_packets(1);
+        let stats = tracker.stats();
+
+        assert_eq!(stats.matched_packets, 2);
+        assert_eq!(stats.invalid_packets, 1);
+        assert_eq!(stats.missing_packets, 0);
+        assert_eq!(stats.unexpected_packets, 0);
         assert_eq!(tracker.pending_packets(), 0);
     }
 
