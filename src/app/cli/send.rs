@@ -1,5 +1,6 @@
 use super::common::{
-    PortSpec, default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
+    PortSpec, default_baud_rate, default_log_dir, next_value, parse_key_value_args,
+    parse_port_spec, parse_u32_arg,
 };
 use super::help::{is_help_flag, print_send_help};
 use super::signal;
@@ -1377,6 +1378,9 @@ fn parse_send_args(args: Vec<String>) -> Result<SendCliOptions, String> {
             "--output-port" | "-o" => options.outputs.push(parse_send_output_binding(
                 &next_value(&mut iter, "--output-port")?,
             )?),
+            "--config" => {
+                apply_send_config_args(&mut options, &next_value(&mut iter, "--config")?)?
+            }
             "--baud" | "-b" => {
                 let value = next_value(&mut iter, "--baud")?;
                 options.baud = Some(parse_u32_arg("--baud", &value)?);
@@ -1409,6 +1413,24 @@ fn parse_send_args(args: Vec<String>) -> Result<SendCliOptions, String> {
     }
 
     Ok(options)
+}
+
+fn apply_send_config_args(options: &mut SendCliOptions, value: &str) -> Result<(), String> {
+    for assignment in parse_key_value_args("--config", value)? {
+        let key = assignment.key.to_ascii_uppercase();
+        match key.as_str() {
+            "RATE" => options.rate_hz = Some(parse_u32_arg("RATE", &assignment.value)?),
+            "FORMAT" => options.format = Some(assignment.value),
+            "DISPLAY" => {
+                let display = parse_display_assignment(&assignment.value)?;
+                display.apply_to(&mut options.display);
+            }
+            "LOG_DIR" => options.log_dir = Some(PathBuf::from(assignment.value)),
+            other => return Err(format!("unknown send config key: {other}")),
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_send_monitor_binding(value: &str) -> Result<SendMonitorBinding, String> {
@@ -1601,6 +1623,31 @@ mod tests {
             Some(std::path::PathBuf::from("tmp/send-logs"))
         );
         assert!(options.no_log);
+    }
+
+    #[test]
+    fn parse_send_args_accepts_config_aliases() {
+        let options = parse_send_args(vec![
+            String::from("--port"),
+            String::from("/dev/ttyUSB0@921600"),
+            String::from("--config"),
+            String::from("FORMAT=PacketACv6,RATE=100,DISPLAY=output:default=hex,LOG_DIR=tmp/send-logs"),
+            String::from("--interactive"),
+        ])
+        .expect("should parse");
+
+        assert_eq!(
+            options.port.as_ref().map(|port| port.port.as_str()),
+            Some("/dev/ttyUSB0")
+        );
+        assert_eq!(options.port.as_ref().and_then(|port| port.baud), Some(921_600));
+        assert_eq!(options.rate_hz, Some(100));
+        assert_eq!(options.format.as_deref(), Some("PacketACv6"));
+        assert_eq!(
+            options.log_dir,
+            Some(std::path::PathBuf::from("tmp/send-logs"))
+        );
+        assert!(options.interactive);
     }
 
     #[test]

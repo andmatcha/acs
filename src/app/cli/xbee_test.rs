@@ -1,5 +1,6 @@
 use super::common::{
-    default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
+    default_baud_rate, default_log_dir, next_value, parse_key_value_args, parse_port_spec,
+    parse_u32_arg,
 };
 use super::help::{is_help_flag, print_xbee_test_help};
 use super::signal;
@@ -2165,6 +2166,9 @@ fn parse_xbee_test_args(args: Vec<String>) -> Result<XbeeTestCliOptions, String>
             "--port" | "-p" => options.ports.push(parse_xbee_test_port_binding(&next_value(
                 &mut iter, "--port",
             )?)?),
+            "--config" => {
+                apply_xbee_test_config_args(&mut options, &next_value(&mut iter, "--config")?)?
+            }
             "--mode" => options.mode = Some(next_value(&mut iter, "--mode")?),
             "--poll-rate" => {
                 let value = next_value(&mut iter, "--poll-rate")?;
@@ -2203,6 +2207,37 @@ fn parse_xbee_test_args(args: Vec<String>) -> Result<XbeeTestCliOptions, String>
     }
 
     Ok(options)
+}
+
+fn apply_xbee_test_config_args(
+    options: &mut XbeeTestCliOptions,
+    value: &str,
+) -> Result<(), String> {
+    for assignment in parse_key_value_args("--config", value)? {
+        let key = assignment.key.to_ascii_uppercase();
+        match key.as_str() {
+            "MODE" => options.mode = Some(assignment.value),
+            "POLL_RATE" => {
+                options.poll_rate_hz = Some(parse_u32_arg("POLL_RATE", &assignment.value)?);
+            }
+            "BASE_REAL_PERCENT" => {
+                options.base_real_percent =
+                    Some(parse_u32_arg("BASE_REAL_PERCENT", &assignment.value)?);
+            }
+            "REMOTE_REAL_PERCENT" => {
+                options.remote_real_percent =
+                    Some(parse_u32_arg("REMOTE_REAL_PERCENT", &assignment.value)?);
+            }
+            "AU_RATE" => options.au_rate_hz = Some(parse_u32_arg("AU_RATE", &assignment.value)?),
+            "RU_RATE" => options.ru_rate_hz = Some(parse_u32_arg("RU_RATE", &assignment.value)?),
+            "AD_RATE" => options.ad_rate_hz = Some(parse_u32_arg("AD_RATE", &assignment.value)?),
+            "RD_RATE" => options.rd_rate_hz = Some(parse_u32_arg("RD_RATE", &assignment.value)?),
+            "LOG_DIR" => options.log_dir = Some(PathBuf::from(assignment.value)),
+            other => return Err(format!("unknown xbee-test config key: {other}")),
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_xbee_test_port_binding(value: &str) -> Result<XbeeTestPortBinding, String> {
@@ -2356,6 +2391,33 @@ mod tests {
         assert_eq!(options.ports[1].id, "remote");
         assert_eq!(options.ports[1].port, "/dev/ttyUSB1");
         assert_eq!(options.ports[1].baud, None);
+    }
+
+    #[test]
+    fn parse_xbee_test_args_accepts_config_aliases() {
+        let options = parse_xbee_test_args(vec![
+            String::from("--port"),
+            String::from("base=/dev/ttyUSB0@921600"),
+            String::from("--port"),
+            String::from("remote=/dev/ttyUSB1@115200"),
+            String::from("--config"),
+            String::from(
+                "MODE=ping-pong,POLL_RATE=100,BASE_REAL_PERCENT=15,REMOTE_REAL_PERCENT=25,AU_RATE=100,RU_RATE=90,AD_RATE=80,RD_RATE=70,LOG_DIR=tmp/logs",
+            ),
+            String::from("--no-log"),
+        ])
+        .expect("should parse");
+
+        assert_eq!(options.mode.as_deref(), Some("ping-pong"));
+        assert_eq!(options.poll_rate_hz, Some(100));
+        assert_eq!(options.base_real_percent, Some(15));
+        assert_eq!(options.remote_real_percent, Some(25));
+        assert_eq!(options.au_rate_hz, Some(100));
+        assert_eq!(options.ru_rate_hz, Some(90));
+        assert_eq!(options.ad_rate_hz, Some(80));
+        assert_eq!(options.rd_rate_hz, Some(70));
+        assert_eq!(options.log_dir, Some(std::path::PathBuf::from("tmp/logs")));
+        assert!(options.no_log);
     }
 
     #[test]

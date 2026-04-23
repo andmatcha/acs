@@ -1,5 +1,6 @@
 use super::common::{
-    default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
+    default_baud_rate, default_log_dir, next_value, parse_key_value_args, parse_port_spec,
+    parse_u32_arg,
 };
 use super::help::{is_help_flag, print_xbee_mock_help};
 use super::signal;
@@ -917,11 +918,8 @@ fn parse_xbee_mock_args(args: Vec<String>) -> Result<XbeeMockCliOptions, String>
             "--port" | "-p" => options.ports.push(parse_xbee_mock_port_binding(&next_value(
                 &mut iter, "--port",
             )?)?),
-            "--option" => {
-                apply_xbee_mock_option_assignment(
-                    &mut options,
-                    &next_value(&mut iter, "--option")?,
-                )?;
+            "--config" | "--option" => {
+                apply_xbee_mock_config_args(&mut options, &next_value(&mut iter, arg.as_str())?)?;
             }
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
@@ -1027,24 +1025,21 @@ fn resolve_xbee_mock_ports(
     Ok((up, down))
 }
 
-fn apply_xbee_mock_option_assignment(
+fn apply_xbee_mock_config_args(
     options: &mut XbeeMockCliOptions,
     value: &str,
 ) -> Result<(), String> {
-    for assignment in value.split(',') {
-        let Some((key, raw_value)) = assignment.split_once('=') else {
-            return Err(format!(
-                "invalid xbee-mock option assignment: {assignment} (expected KEY=VALUE)"
-            ));
-        };
-        let key = key.trim().to_ascii_uppercase();
-        let raw_value = raw_value.trim();
+    for assignment in parse_key_value_args("--config", value)? {
+        let key = assignment.key.to_ascii_uppercase();
+        let raw_value = assignment.value;
         match key.as_str() {
-            "PAIR" => options.pair_number = Some(parse_u32_arg("PAIR", raw_value)?),
-            "TX_FORMAT" => options.tx_formats = Some(parse_xbee_mock_tx_format_list(raw_value)?),
-            "RX_FORMAT" => options.rx_formats = Some(parse_xbee_mock_rx_format_list(raw_value)?),
-            "TRAFFIC_PATTERN" => options.traffic_pattern = Some(raw_value.to_owned()),
-            other => return Err(format!("unknown xbee-mock option key: {other}")),
+            "ROLE" => options.role = Some(raw_value),
+            "PAIR" => options.pair_number = Some(parse_u32_arg("PAIR", &raw_value)?),
+            "TX_FORMAT" => options.tx_formats = Some(parse_xbee_mock_tx_format_list(&raw_value)?),
+            "RX_FORMAT" => options.rx_formats = Some(parse_xbee_mock_rx_format_list(&raw_value)?),
+            "TRAFFIC_PATTERN" => options.traffic_pattern = Some(raw_value),
+            "LOG_DIR" => options.log_dir = Some(PathBuf::from(raw_value)),
+            other => return Err(format!("unknown xbee-mock config key: {other}")),
         }
     }
 
@@ -1259,12 +1254,10 @@ mod tests {
             String::from("up=/dev/ttyUSB2@460800"),
             String::from("-p"),
             String::from("down=/dev/ttyUSB3@115200"),
-            String::from("--option"),
+            String::from("--config"),
             String::from(
-                "PAIR=2,TX_FORMAT=packetjfv1@80+roverdowngeneral@70,RX_FORMAT=packetacv6+roverupgeneral,TRAFFIC_PATTERN=ping-pong",
+                "PAIR=2,TX_FORMAT=packetjfv1@80+roverdowngeneral@70,RX_FORMAT=packetacv6+roverupgeneral,TRAFFIC_PATTERN=ping-pong,LOG_DIR=tmp/logs",
             ),
-            String::from("--log-dir"),
-            String::from("tmp/logs"),
             String::from("--no-log"),
         ])
         .expect("should parse");
@@ -1324,6 +1317,24 @@ mod tests {
         assert_eq!(options.ports.len(), 2);
         assert_eq!(options.ports[0].baud, None);
         assert_eq!(options.ports[1].baud, None);
+    }
+
+    #[test]
+    fn parse_xbee_mock_args_accepts_role_via_config() {
+        let options = parse_xbee_mock_args(vec![
+            String::from("--config"),
+            String::from(
+                "ROLE=base,PAIR=1,TX_FORMAT=packetacv6@100,RX_FORMAT=packetjfv1,TRAFFIC_PATTERN=flood",
+            ),
+            String::from("-p"),
+            String::from("/dev/ttyUSB0@921600"),
+        ])
+        .expect("should parse");
+
+        assert_eq!(options.role.as_deref(), Some("base"));
+        assert_eq!(options.pair_number, Some(1));
+        assert_eq!(options.ports.len(), 1);
+        assert_eq!(options.ports[0].baud, Some(921_600));
     }
 
     #[test]

@@ -23,6 +23,41 @@ pub(crate) fn parse_u32_arg(option: &str, value: &str) -> Result<u32, String> {
         .map_err(|_| format!("invalid value for {option}: {value}"))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyValueArg {
+    pub key: String,
+    pub value: String,
+}
+
+pub(crate) fn parse_key_value_args(option: &str, value: &str) -> Result<Vec<KeyValueArg>, String> {
+    if value.trim().is_empty() {
+        return Err(format!("missing value for {option}"));
+    }
+
+    let mut args = Vec::new();
+    for assignment in value.split(',') {
+        let assignment = assignment.trim();
+        let Some((key, raw_value)) = assignment.split_once('=') else {
+            return Err(format!(
+                "invalid value for {option}: {value} (expected KEY=VALUE or KEY=VALUE,KEY=VALUE)"
+            ));
+        };
+        let key = key.trim();
+        let raw_value = raw_value.trim();
+        if key.is_empty() || raw_value.is_empty() {
+            return Err(format!(
+                "invalid value for {option}: {value} (expected KEY=VALUE or KEY=VALUE,KEY=VALUE)"
+            ));
+        }
+        args.push(KeyValueArg {
+            key: key.to_owned(),
+            value: raw_value.to_owned(),
+        });
+    }
+
+    Ok(args)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct PortSpec {
     pub port: String,
@@ -88,7 +123,7 @@ pub(crate) fn parse_port_spec(option: &str, value: &str) -> Result<PortSpec, Str
 
 #[cfg(test)]
 mod tests {
-    use super::{PortSpec, parse_port_spec};
+    use super::{KeyValueArg, PortSpec, parse_key_value_args, parse_port_spec};
     use crate::port_display::{LineBreakMode, PortDisplayMode};
 
     #[test]
@@ -157,6 +192,28 @@ mod tests {
                 display_mode: Some(PortDisplayMode::Hex),
                 line_break_mode: Some(LineBreakMode::Packet),
             })
+        );
+    }
+
+    #[test]
+    fn parse_key_value_args_accepts_csv_assignments() {
+        assert_eq!(
+            parse_key_value_args("--config", "FORMAT=PacketACv6,RATE=100,DISPLAY=input:default=utf8+packet")
+                .unwrap(),
+            vec![
+                KeyValueArg {
+                    key: String::from("FORMAT"),
+                    value: String::from("PacketACv6"),
+                },
+                KeyValueArg {
+                    key: String::from("RATE"),
+                    value: String::from("100"),
+                },
+                KeyValueArg {
+                    key: String::from("DISPLAY"),
+                    value: String::from("input:default=utf8+packet"),
+                },
+            ]
         );
     }
 }

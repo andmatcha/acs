@@ -92,29 +92,30 @@ acs help xbee-test
 ```bash
 acs ports
 acs controllers
-acs control --port /dev/ttyUSB0 --format PacketACv6
-acs monitor --port /dev/ttyUSB0
-acs route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1
-acs send --port /dev/ttyUSB0 --format PacketJFv1 --rate 100
-acs send --port /dev/ttyUSB0 --format PacketACv6 --no-log
+acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6
+acs monitor --port /dev/ttyUSB0@921600 --no-log
+acs route merge -i in_a=/dev/ttyUSB0@921600 -o out_main=/dev/ttyUSB1@921600 --no-log
+acs send --port /dev/ttyUSB0@921600 --config FORMAT=PacketJFv1,RATE=100
+acs send --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6 --no-log
 acs send -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100 -o up=/dev/ttyUSB0@921600,utf8,roverupgeneral,10
-acs send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1,packetacv6+packetjfv1
-acs xbee-mock base -p /dev/ttyUSB0 --option PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood
-acs xbee-mock base -p up=/dev/ttyUSB0 -p down=/dev/ttyUSB1 --option PAIR=2,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=ping-pong
-acs xbee-mock remote -p up=/dev/ttyUSB0 -p down=/dev/ttyUSB1 --option PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling
+acs send --port /dev/ttyUSB0@921600 --monitor /dev/ttyUSB1@115200,packetacv6+packetjfv1 --config FORMAT=PacketACv6
+acs xbee-mock base -p /dev/ttyUSB0@921600 --config PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood
+acs xbee-mock base -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@921600 --config PAIR=2,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=ping-pong
+acs xbee-mock remote -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@921600 --config PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling
 acs xbee-rtt --port /dev/ttyUSB0
 acs xbee-rtt --port /dev/ttyUSB0 --show-wire
 acs xbee-rtt --port /dev/ttyUSB0 --show-protocol
-acs xbee-rtt --port /dev/ttyUSB0@921600 --payload-size 64 --count 20 --interval-ms 50
-acs xbee-rtt --port /dev/ttyUSB0@921600 --port /dev/ttyUSB1@921600 --payload-size 64 --count 20 --interval-ms 50
-acs xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ru-rate 100 --ad-rate 100 --rd-rate 100
-acs xbee-test --mode ping-pong --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ru-rate 50
-acs xbee-test --mode polling --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --poll-rate 100 --base-real-percent 10 --remote-real-percent 20
+acs xbee-rtt --port /dev/ttyUSB0@921600 --config PAYLOAD_SIZE=64,COUNT=20,INTERVAL_MS=50
+acs xbee-rtt --port /dev/ttyUSB0@921600 --port /dev/ttyUSB1@921600 --config PAYLOAD_SIZE=64,COUNT=20,INTERVAL_MS=50
+acs xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --config AU_RATE=100,RU_RATE=100,AD_RATE=100,RD_RATE=100
+acs xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --config MODE=ping-pong,AU_RATE=100,RU_RATE=50
+acs xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --config MODE=polling,POLL_RATE=100,BASE_REAL_PERCENT=10,REMOTE_REAL_PERCENT=20
 acs --version
 ```
 
 - 1 台だけコントローラーやシリアルポートが見つかる場合は、自動選択されます。
 - すべてのポート指定で、ボーレート省略時は `115200` が使われます。
+- 非 boolean の設定は、`--config KEY=VALUE,...` にまとめて指定できるコマンドが増えています。既存の個別フラグも互換のため引き続き受け付けます。
 - `acs ports` の `[0]`, `[1]`, ... の番号は、`--port` / `--monitor` / `-i` / `-o` などのポート指定でそのまま使えます。
 - 詳しいオプションや表示形式は `acs help <command>` を参照してください。
 - `acs xbee-mock` は `PAIR=1` で 1 port を共用し、`PAIR=2` で uplink/downlink を分離できます。
@@ -127,12 +128,12 @@ acs --version
 - `acs xbee-rtt` は session ID と CRC16 付きの軽量バイナリフレームで再同期し、最終結果には payload bytes、回数、間隔、両方向の平均 RTT を表示します。
 - `acs xbee-test` は表示更新が遅い場合も受信レートとエラー率の集計を優先し、packet 表示は別キューで追いかけます。
 - `acs xbee-test` は `AU(PacketACv6) + RU(RoverUpGeneral)` と `AD(PacketJFv1) + RD(RoverDownGeneral)` をそれぞれ混在送信でき、各 format の送受信 Hz と照合結果を表示します。
-- `acs xbee-test --mode polling` は `PollGreeting` / `PollResponse` を基本にしつつ、`base` 側と `remote` 側で独立した確率で実パケット対へ差し替えます。
+- `acs xbee-test --config MODE=polling,...` は `PollGreeting` / `PollResponse` を基本にしつつ、`base` 側と `remote` 側で独立した確率で実パケット対へ差し替えます。
 - `acs send` は同一ポートの mixed-format 受信でも packet を再同期し、format ごとの受信 Hz をヘッダに表示します。
 - `acs send --monitor` は `packetacv6+packetjfv1` のように複数 format を指定でき、それぞれの built-in 既定表示で表示します。
-- `acs send --no-log` と `acs xbee-test --no-log` と `acs xbee-mock --no-log` はログファイル作成を止め、I/O 負荷を減らします。
+- ログを保存する `acs control` / `acs monitor` / `acs route` / `acs send` / `acs xbee-test` / `acs xbee-mock` は、すべて `--no-log` でログファイル作成を止めて I/O 負荷を減らせます。
 
-ログは既定で `./logs` に出力され、必要なら `--log-dir` で切り替えられます。
+ログは既定で `./logs` に出力され、必要なら `--log-dir` か `--config LOG_DIR=...` で切り替えられます。
 
 ## その他の `make` コマンド
 

@@ -1,4 +1,3 @@
-use super::paths;
 use std::process::ExitCode;
 
 pub(crate) fn print_usage(bin_name: &str) {
@@ -41,25 +40,25 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  help       Show help for a command");
     println!();
     println!("Examples:");
-    println!("  {bin_name} control --port /dev/ttyUSB0 --format PacketACv6");
+    println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
     println!(
-        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8"
+        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8 --config FORMAT=PacketACv6"
     );
     println!("  {bin_name} monitor --port /dev/ttyUSB0,utf8+packet --port /dev/ttyUSB1,hex");
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0,utf8 -o out_main=/dev/ttyUSB1,hex");
-    println!("  {bin_name} send --port /dev/ttyUSB0,hex --format PacketACv6");
+    println!("  {bin_name} send --port /dev/ttyUSB0,hex --config FORMAT=PacketACv6");
     println!(
         "  {bin_name} send -o main=/dev/ttyUSB0@921600,hex,packetacv6 -o sub=/dev/ttyUSB1@115200,utf8,packetjfv1"
     );
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverUpGeneral");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverDownGeneral");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketJFv1");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=RoverUpGeneral");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=RoverDownGeneral");
     println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0");
     println!(
-        "  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ad-rate 100"
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --config AU_RATE=100,AD_RATE=100"
     );
     println!(
-        "  {bin_name} xbee-mock base -p /dev/ttyUSB0 --option PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood"
+        "  {bin_name} xbee-mock base -p /dev/ttyUSB0 --config PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood"
     );
     println!("  {bin_name} --version");
     println!();
@@ -67,6 +66,7 @@ pub(crate) fn print_help(bin_name: &str) {
         "When exactly one controller or one serial port is available, it is selected automatically."
     );
     println!("If baud is omitted on any port option, 115200 is used.");
+    println!("Most non-boolean command settings can also be grouped with `--config KEY=VALUE,...`.");
 }
 
 pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode {
@@ -147,32 +147,28 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("                              PORT accepts a device path or `acs ports` index");
     println!("                              BAUD defaults to 115200 when omitted");
     println!("                              Omit to auto-select a single USB serial or ST-LINK");
-    println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
-    println!("  -c, --controller <ID>      Controller index or HID path");
-    println!("  -f, --format <FORMAT>      Output format (currently: packetacv6)");
-    println!("      --display <TARGET=MODE> Display mode for a port");
+    println!("  -m, --monitor <PORT[@BAUD][,DISPLAY]> Additional serial port to monitor");
+    println!("      --config <K=V,...>     Grouped settings: `CONTROLLER`, `FORMAT`, `DISPLAY`, `LOG_DIR`");
+    println!("                              `FORMAT`: output format (currently: packetacv6)");
+    println!("                              `DISPLAY`: display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("                                    + optional +line/+packet for monitor input");
-    println!("      --monitor <PORT[@BAUD][,DISPLAY]> Additional serial port to monitor");
-    println!(
-        "      --log-dir <DIR>        Log directory (default: {})",
-        paths::default_log_help()
-    );
     println!("      --no-log               Disable log file creation for maximum throughput");
+    println!("                              Value-taking legacy flags remain available for compatibility");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
-    println!("  {bin_name} control --port /dev/ttyUSB0 --format PacketACv6");
+    println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
     println!(
-        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8"
+        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8 --config FORMAT=PacketACv6"
     );
-    println!("  {bin_name} control --display input:default=utf8+packet --monitor /dev/ttyUSB1");
+    println!("  {bin_name} control --config DISPLAY=input:default=utf8+packet --monitor /dev/ttyUSB1");
     println!(
-        "  {bin_name} control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex"
+        "  {bin_name} control --config DISPLAY=input:/dev/ttyUSB0=utf8 --config DISPLAY=output:/dev/ttyUSB0=hex"
     );
-    println!("  {bin_name} control --controller 0 --monitor /dev/ttyUSB1");
+    println!("  {bin_name} control --config CONTROLLER=0 --monitor /dev/ttyUSB1 --no-log");
 }
 
 pub(crate) fn print_send_help(bin_name: &str) {
@@ -193,42 +189,31 @@ pub(crate) fn print_send_help(bin_name: &str) {
     );
     println!("                              PORT accepts a device path or `acs ports` index");
     println!("                              BAUD defaults to 115200 when omitted");
-    println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
     println!(
-        "  -r, --rate <HZ>            Default dummy packet send rate (default: 50, overridden by output-port rate, ignored with --interactive)"
+        "      --config <K=V,...>     Grouped settings: `FORMAT`, `RATE`, `DISPLAY`, `LOG_DIR`"
     );
-    println!(
-        "  -f, --format <FORMAT>      Dummy payload format (currently: packetacv6, packetjfv1, roverupgeneral, roverdowngeneral)"
-    );
+    println!("                              `RATE` is ignored with --interactive");
+    println!("                              `DISPLAY` uses TARGET=MODE, for example `output:default=hex`");
     println!(
         "  -i, --interactive          Read lines from terminal and send on Enter (raw UTF-8 + \\r\\n)"
     );
     println!(
         "  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]> Additional serial port to monitor"
     );
-    println!("      --display <TARGET=MODE> Display mode for a port");
-    println!(
-        "                              TARGET: PORT, input:PORT, output:PORT, default, input:default, output:default"
-    );
-    println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
-    println!("                                    + optional +line/+packet for monitor input");
-    println!(
-        "      --log-dir <DIR>        Log directory (default: {})",
-        paths::default_log_help()
-    );
     println!("      --no-log               Disable log file creation for maximum throughput");
+    println!("                              Value-taking legacy flags remain available for compatibility");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6 --rate 100");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverUpGeneral");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverDownGeneral");
-    println!("  {bin_name} send --port /dev/ttyUSB0,hex --monitor /dev/ttyUSB1,utf8,packetjfv1");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1,packetacv6+packetjfv1");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
+    println!("  {bin_name} send --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6,RATE=100");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketJFv1");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=RoverUpGeneral");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=RoverDownGeneral");
+    println!("  {bin_name} send --port /dev/ttyUSB0,hex --monitor /dev/ttyUSB1,utf8,packetjfv1 --config DISPLAY=output:default=hex");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1,packetacv6+packetjfv1 --config FORMAT=PacketACv6");
     println!("  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketACv6 --no-log");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketACv6 --no-log");
     println!(
         "  {bin_name} send -o main=/dev/ttyUSB0@921600,hex,packetacv6 -o sub=/dev/ttyUSB1@115200,utf8+packet,packetjfv1"
     );
@@ -261,51 +246,24 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     println!("  -p, --port <ID=PORT[@BAUD]> Port binding. IDs: `base`, `remote`");
     println!("                              PORT accepts a device path or `acs ports` index");
     println!("                              BAUD defaults to 115200 when omitted");
-    println!(
-        "      --mode <MODE>          Transfer mode: `flood`, `ping-pong`, or `polling` (default: flood)"
-    );
-    println!("      --poll-rate <HZ>       Base polling rate in `polling` mode (default: 100)");
-    println!(
-        "      --base-real-percent <N> Replace PollGreeting with AU+RU at N% in `polling` mode (0-100, default: 0)"
-    );
-    println!(
-        "      --remote-real-percent <N> Replace PollResponse with AD+RD at N% in `polling` mode (0-100, default: 0)"
-    );
-    println!(
-        "      --au-rate <HZ>         AU(PacketACv6) send rate from `base` to `remote` (default: 100)"
-    );
-    println!(
-        "      --ru-rate <HZ>         RU(RoverUpGeneral) send rate from `base` to `remote` (default: 100)"
-    );
-    println!(
-        "      --ad-rate <HZ>         AD(PacketJFv1) send rate from `remote` to `base` (default: 100)"
-    );
-    println!(
-        "                              Ignored in `ping-pong`; AD is sent once per valid AU receive"
-    );
-    println!(
-        "      --rd-rate <HZ>         RD(RoverDownGeneral) send rate from `remote` to `base` (default: 100)"
-    );
-    println!(
-        "                              Ignored in `ping-pong`; RD is sent once per valid RU receive"
-    );
-    println!(
-        "      --log-dir <DIR>        Log directory (default: {})",
-        paths::default_log_help()
-    );
+    println!("      --config <K=V,...>     Grouped settings: `MODE`, `POLL_RATE`, `BASE_REAL_PERCENT`,");
+    println!("                              `REMOTE_REAL_PERCENT`, `AU_RATE`, `RU_RATE`, `AD_RATE`, `RD_RATE`, `LOG_DIR`");
+    println!("                              `MODE`: `flood`, `ping-pong`, or `polling` (default: flood)");
+    println!("                              `AD_RATE` / `RD_RATE` are ignored in `ping-pong`");
     println!("      --no-log               Disable log file creation for maximum throughput");
+    println!("                              Value-taking legacy flags remain available for compatibility");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!("  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1");
     println!(
-        "  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ru-rate 50 --ad-rate 80 --rd-rate 40"
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --config AU_RATE=100,RU_RATE=50,AD_RATE=80,RD_RATE=40"
     );
     println!(
-        "  {bin_name} xbee-test --mode ping-pong --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ru-rate 50"
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --config MODE=ping-pong,AU_RATE=100,RU_RATE=50"
     );
     println!(
-        "  {bin_name} xbee-test --mode polling --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --poll-rate 100 --base-real-percent 10 --remote-real-percent 20"
+        "  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --config MODE=polling,POLL_RATE=100,BASE_REAL_PERCENT=10,REMOTE_REAL_PERCENT=20"
     );
     println!("  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --no-log");
 }
@@ -332,17 +290,8 @@ pub(crate) fn print_xbee_rtt_help(bin_name: &str) {
     println!("                              BAUD defaults to 115200 when omitted");
     println!("                              Omit to auto-select one serial port");
     println!("                              Specify twice only for one-PC local-pair mode");
-    println!("      --payload-size <BYTES> Probe payload size per direction (default: 32)");
-    println!("  -n, --count <COUNT>        RTT probe count per direction (default: 10)");
-    println!(
-        "      --interval-ms <MS>     Delay between probes from the current initiator (default: 100)"
-    );
-    println!(
-        "      --probe-timeout-ms <MS> Time to wait for one echo before counting timeout (default: 1000)"
-    );
-    println!(
-        "      --connect-timeout-ms <MS> Time limit for HELLO/start/result handshake phases (default: 3000)"
-    );
+    println!("      --config <K=V,...>      Grouped settings: `PAYLOAD_SIZE`, `COUNT`, `INTERVAL_MS`,");
+    println!("                              `PROBE_TIMEOUT_MS`, `CONNECT_TIMEOUT_MS`");
     println!(
         "      --show-wire            Continuously dump live TX/RX bytes in hex; TX is blue, RX is red"
     );
@@ -363,10 +312,10 @@ pub(crate) fn print_xbee_rtt_help(bin_name: &str) {
     println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0 --show-wire");
     println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0 --show-protocol");
     println!(
-        "  {bin_name} xbee-rtt --port /dev/ttyUSB0@921600 --payload-size 64 --count 20 --interval-ms 50"
+        "  {bin_name} xbee-rtt --port /dev/ttyUSB0@921600 --config PAYLOAD_SIZE=64,COUNT=20,INTERVAL_MS=50"
     );
     println!(
-        "  {bin_name} xbee-rtt --port /dev/ttyUSB0@921600 --port /dev/ttyUSB1@921600 --payload-size 64 --count 20 --interval-ms 50"
+        "  {bin_name} xbee-rtt --port /dev/ttyUSB0@921600 --port /dev/ttyUSB1@921600 --config PAYLOAD_SIZE=64,COUNT=20,INTERVAL_MS=50"
     );
 }
 
@@ -392,34 +341,31 @@ pub(crate) fn print_xbee_mock_help(bin_name: &str) {
     println!("  -p, --port <down=PORT[@BAUD]> Downlink binding for `PAIR=2`");
     println!("                              PORT accepts a device path or `acs ports` index");
     println!("                              BAUD defaults to 115200 when omitted");
-    println!("      --role <ROLE>          Role: `base` or `remote`");
     println!(
-        "      --option <K=V,...>    Xbee mock options: `PAIR`, `TX_FORMAT`, `RX_FORMAT`, `TRAFFIC_PATTERN`"
+        "      --config <K=V,...>     Grouped settings: `ROLE`, `PAIR`, `TX_FORMAT`, `RX_FORMAT`, `TRAFFIC_PATTERN`, `LOG_DIR`"
     );
     println!("                              `PAIR`: `1` or `2` (default: 1)");
     println!("                              `TX_FORMAT`: `<FORMAT[@RATE]>[+<FORMAT[@RATE]>...]`");
     println!("                              `RX_FORMAT`: `<FORMAT>[+<FORMAT>...]`");
     println!("                              `TRAFFIC_PATTERN`: `flood`, `ping-pong`, or `polling`");
     println!("                              Poll formats are `PollGreeting` / `PollResponse`");
-    println!(
-        "      --log-dir <DIR>        Log directory (default: {})",
-        paths::default_log_help()
-    );
+    println!("                              Legacy alias: `--option`");
     println!("      --no-log               Disable log file creation for maximum throughput");
+    println!("                              Value-taking legacy flags remain available for compatibility");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!(
-        "  {bin_name} xbee-mock base -p /dev/ttyUSB0 --option PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood"
+        "  {bin_name} xbee-mock base -p /dev/ttyUSB0@921600 --config PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood"
     );
     println!(
-        "  {bin_name} xbee-mock base -p up=/dev/ttyUSB0 -p down=/dev/ttyUSB1 --option PAIR=2,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=ping-pong"
+        "  {bin_name} xbee-mock base -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@921600 --config PAIR=2,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=ping-pong"
     );
     println!(
-        "  {bin_name} xbee-mock remote -p up=/dev/ttyUSB0 -p down=/dev/ttyUSB1 --option PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling"
+        "  {bin_name} xbee-mock remote -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@921600 --config PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling"
     );
     println!(
-        "  {bin_name} xbee-mock remote --role remote -p /dev/ttyUSB0 --option PAIR=1,TX_FORMAT=packetjfv1@80+roverdowngeneral@70,RX_FORMAT=packetacv6+roverupgeneral,TRAFFIC_PATTERN=flood --no-log"
+        "  {bin_name} xbee-mock -p /dev/ttyUSB0 --config ROLE=remote,PAIR=1,TX_FORMAT=packetjfv1@80+roverdowngeneral@70,RX_FORMAT=packetacv6+roverupgeneral,TRAFFIC_PATTERN=flood --no-log"
     );
 }
 
@@ -432,25 +378,23 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial port to monitor (repeatable)");
     println!("                              PORT accepts a device path or `acs ports` index");
     println!("                              BAUD defaults to 115200 when omitted");
-    println!("  -b, --baud <BAUD_RATE>     Default baud rate (default: 115200)");
-    println!("      --display <TARGET=MODE> Display mode for a port");
+    println!("      --config <K=V,...>     Grouped settings: `DISPLAY`, `LOG_DIR`");
+    println!("                              `DISPLAY`: display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("                                    + optional +line/+packet for monitor input");
-    println!(
-        "      --log-dir <DIR>        Log directory (default: {})",
-        paths::default_log_help()
-    );
+    println!("      --no-log               Disable log file creation for maximum throughput");
+    println!("                              Value-taking legacy flags remain available for compatibility");
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
     println!("  {bin_name} monitor --port /dev/ttyUSB0");
     println!("  {bin_name} monitor --port /dev/ttyUSB0,utf8+packet --port /dev/ttyUSB1,hex");
     println!(
-        "  {bin_name} monitor --display input:/dev/ttyUSB0=utf8+packet --display input:default=hex+utf8+line"
+        "  {bin_name} monitor --config DISPLAY=input:/dev/ttyUSB0=utf8+packet --config DISPLAY=input:default=hex+utf8+line"
     );
-    println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
+    println!("  {bin_name} monitor --port /dev/ttyUSB0@921600 --port /dev/ttyUSB1@115200 --no-log");
 }
 
 pub(crate) fn print_route_help(bin_name: &str) {
@@ -460,22 +404,20 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("Routing behavior can be selected from built-in route templates.");
     println!();
     println!("Options:");
-    println!("      --template <NAME>       Route template name (same as positional TEMPLATE)");
     println!("      --list-templates        Show built-in route templates");
     println!("  -i, --input-port <ID=PORT[@BAUD][,DISPLAY]>  Route input port (repeatable)");
     println!("  -o, --output-port <ID=PORT[@BAUD][,DISPLAY]> Route output port (repeatable)");
     println!("                               PORT accepts a device path or `acs ports` index");
     println!("                               BAUD defaults to 115200 when omitted");
-    println!("  -b, --baud <BAUD_RATE>      Default baud rate for ports without inline baud");
-    println!("      --display <TARGET=MODE> Display mode for a port");
+    println!("      --config <K=V,...>      Grouped settings: `TEMPLATE`, `DISPLAY`, `LOG_DIR`");
+    println!("                              `TEMPLATE` is the same as the positional TEMPLATE");
+    println!("                              `DISPLAY`: display mode for a port");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("                                    + optional +line/+packet for monitor input");
-    println!(
-        "      --log-dir <DIR>         Log directory (default: {})",
-        paths::default_log_help()
-    );
+    println!("      --no-log                Disable log file creation for maximum throughput");
+    println!("                              Value-taking legacy flags remain available for compatibility");
     println!("  -h, --help                  Show this help");
     println!();
     println!("Built-in templates:");
@@ -485,11 +427,11 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("Examples:");
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
     println!(
-        "  {bin_name} route merge -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2"
+        "  {bin_name} route merge -i in_a=/dev/ttyUSB0@921600 -i in_b=/dev/ttyUSB1@115200 -o out_main=/dev/ttyUSB2@921600"
     );
-    println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0,utf8 -o out_main=/dev/ttyUSB2,hex");
+    println!("  {bin_name} route -i in_a=/dev/ttyUSB0,utf8 -o out_main=/dev/ttyUSB2,hex --config TEMPLATE=merge");
     println!(
-        "  {bin_name} route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/ttyUSB2 -o out_b=/dev/ttyUSB3"
+        "  {bin_name} route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/ttyUSB2 -o out_b=/dev/ttyUSB3 --no-log"
     );
     println!("  {bin_name} route --list-templates");
 }

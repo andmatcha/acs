@@ -1,4 +1,6 @@
-use super::common::{default_baud_rate, next_value, parse_port_spec, parse_u32_arg};
+use super::common::{
+    default_baud_rate, next_value, parse_key_value_args, parse_port_spec, parse_u32_arg,
+};
 use super::help::{is_help_flag, print_xbee_rtt_help};
 use super::signal;
 use crate::common::format_bytes_hex;
@@ -1674,6 +1676,9 @@ fn parse_xbee_rtt_args(args: Vec<String>) -> Result<XbeeRttCliOptions, String> {
             "--port" | "-p" => options.ports.push(parse_xbee_rtt_port_binding(&next_value(
                 &mut iter, "--port",
             )?)?),
+            "--config" => {
+                apply_xbee_rtt_config_args(&mut options, &next_value(&mut iter, "--config")?)?
+            }
             "--payload-size" => {
                 let value = next_value(&mut iter, "--payload-size")?;
                 options.payload_size = Some(parse_usize_arg("--payload-size", &value)?);
@@ -1701,6 +1706,32 @@ fn parse_xbee_rtt_args(args: Vec<String>) -> Result<XbeeRttCliOptions, String> {
     }
 
     Ok(options)
+}
+
+fn apply_xbee_rtt_config_args(options: &mut XbeeRttCliOptions, value: &str) -> Result<(), String> {
+    for assignment in parse_key_value_args("--config", value)? {
+        let key = assignment.key.to_ascii_uppercase();
+        match key.as_str() {
+            "PAYLOAD_SIZE" => {
+                options.payload_size = Some(parse_usize_arg("PAYLOAD_SIZE", &assignment.value)?);
+            }
+            "COUNT" => options.probe_count = Some(parse_u32_arg("COUNT", &assignment.value)?),
+            "INTERVAL_MS" => {
+                options.interval_ms = Some(parse_u32_arg("INTERVAL_MS", &assignment.value)?);
+            }
+            "CONNECT_TIMEOUT_MS" => {
+                options.connect_timeout_ms =
+                    Some(parse_u32_arg("CONNECT_TIMEOUT_MS", &assignment.value)?);
+            }
+            "PROBE_TIMEOUT_MS" => {
+                options.probe_timeout_ms =
+                    Some(parse_u32_arg("PROBE_TIMEOUT_MS", &assignment.value)?);
+            }
+            other => return Err(format!("unknown xbee-rtt config key: {other}")),
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_xbee_rtt_port_binding(value: &str) -> Result<XbeeRttPortBinding, String> {
@@ -2052,6 +2083,28 @@ mod tests {
             parse_xbee_rtt_args(vec![String::from("--show-protocol")]).expect("should parse");
         assert!(options.show_protocol);
         assert!(!options.show_wire);
+    }
+
+    #[test]
+    fn parse_xbee_rtt_args_accepts_config_aliases() {
+        let options = parse_xbee_rtt_args(vec![
+            String::from("--port"),
+            String::from("/dev/ttyUSB0@921600"),
+            String::from("--config"),
+            String::from(
+                "PAYLOAD_SIZE=64,COUNT=20,INTERVAL_MS=50,CONNECT_TIMEOUT_MS=5000,PROBE_TIMEOUT_MS=750",
+            ),
+        ])
+        .expect("should parse");
+
+        assert_eq!(options.ports.len(), 1);
+        assert_eq!(options.ports[0].port, "/dev/ttyUSB0");
+        assert_eq!(options.ports[0].baud, Some(921_600));
+        assert_eq!(options.payload_size, Some(64));
+        assert_eq!(options.probe_count, Some(20));
+        assert_eq!(options.interval_ms, Some(50));
+        assert_eq!(options.connect_timeout_ms, Some(5_000));
+        assert_eq!(options.probe_timeout_ms, Some(750));
     }
 
     #[test]

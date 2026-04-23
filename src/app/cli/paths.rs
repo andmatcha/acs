@@ -3,10 +3,6 @@ use std::path::PathBuf;
 
 const LOCAL_LOG_DIR_NAME: &str = "logs";
 
-pub(crate) fn default_log_help() -> String {
-    String::from("./logs")
-}
-
 pub(crate) fn default_log_dir() -> PathBuf {
     current_dir_or_dot().join(LOCAL_LOG_DIR_NAME)
 }

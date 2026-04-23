@@ -1,5 +1,6 @@
 use super::common::{
-    PortSpec, default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
+    PortSpec, default_baud_rate, default_log_dir, next_value, parse_key_value_args,
+    parse_port_spec, parse_u32_arg,
 };
 use super::help::{is_help_flag, print_control_help};
 use super::signal;
@@ -29,6 +30,7 @@ struct ControlCliOptions {
     display: PortDisplayConfig,
     monitor_ports: Vec<PortSpec>,
     log_dir: Option<PathBuf>,
+    no_log: bool,
 }
 
 struct ControlSettings {
@@ -37,6 +39,12 @@ struct ControlSettings {
     controller: Option<String>,
     format: OutputFormat,
     log_dir: PathBuf,
+    logging_enabled: bool,
+}
+
+struct ControlRunResult {
+    logging_enabled: bool,
+    log_path: PathBuf,
 }
 
 pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
@@ -55,8 +63,10 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     };
 
     match run_with_options(cli_options) {
-        Ok(log_path) => {
-            println!("log saved to {}", log_path.display());
+        Ok(result) => {
+            if result.logging_enabled {
+                println!("log saved to {}", result.log_path.display());
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -66,7 +76,7 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     }
 }
 
-fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
+fn run_with_options(cli_options: ControlCliOptions) -> Result<ControlRunResult, String> {
     let settings = build_settings(cli_options)?;
 
     let mut controller = Ds4Controller::open(settings.controller.as_deref())
@@ -89,7 +99,7 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         title: String::from("acs control"),
         command_name: String::from("control"),
         log_dir: settings.log_dir.clone(),
-        logging_enabled: true,
+        logging_enabled: settings.logging_enabled,
         inputs: settings.inputs.clone(),
         outputs: vec![settings.output.clone()],
     })?;
@@ -119,10 +129,12 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
             extra_monitor_ports.join(", ")
         ));
     }
-    header_lines.extend([
-        format!("log: {log_path_display}"),
-        String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
-    ]);
+    if settings.logging_enabled {
+        header_lines.push(format!("log: {log_path_display}"));
+    } else {
+        header_lines.push(String::from("log: disabled (--no-log)"));
+    }
+    header_lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
     session.set_header_lines(header_lines);
     session.run_loop_with_tick(
         LOOP_INTERVAL,
@@ -166,7 +178,10 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
         },
     )?;
 
-    Ok(log_path)
+    Ok(ControlRunResult {
+        logging_enabled: settings.logging_enabled,
+        log_path,
+    })
 }
 
 fn build_control_pipeline_spec(controller_input_id: &str, format: OutputFormat) -> PipelineSpec {
@@ -268,6 +283,7 @@ fn build_settings(cli_options: ControlCliOptions) -> Result<ControlSettings, Str
         controller,
         format,
         log_dir,
+        logging_enabled: !cli_options.no_log,
     })
 }
 
@@ -282,6 +298,9 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
                     "--port",
                     &next_value(&mut iter, "--port")?,
                 )?)
+            }
+            "--config" => {
+                apply_control_config_args(&mut options, &next_value(&mut iter, "--config")?)?
             }
             "--baud" | "-b" => {
                 let value = next_value(&mut iter, "--baud")?;
@@ -303,9 +322,60 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
+            "--no-log" => options.no_log = true,
             other => return Err(format!("unknown option for control: {other}")),
         }
     }
 
     Ok(options)
+}
+
+fn apply_control_config_args(
+    options: &mut ControlCliOptions,
+    value: &str,
+) -> Result<(), String> {
+    for assignment in parse_key_value_args("--config", value)? {
+        let key = assignment.key.to_ascii_uppercase();
+        match key.as_str() {
+            "CONTROLLER" => options.controller = Some(assignment.value),
+            "FORMAT" => options.format = Some(assignment.value),
+            "DISPLAY" => {
+                let display = parse_display_assignment(&assignment.value)?;
+                display.apply_to(&mut options.display);
+            }
+            "LOG_DIR" => options.log_dir = Some(PathBuf::from(assignment.value)),
+            other => return Err(format!("unknown control config key: {other}")),
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_control_args;
+    use std::path::PathBuf;
+
+    #[test]
+    fn parse_control_args_accepts_config_and_no_log() {
+        let options = parse_control_args(vec![
+            String::from("--port"),
+            String::from("/dev/ttyUSB0@921600"),
+            String::from("--config"),
+            String::from("FORMAT=PacketACv6,CONTROLLER=0,DISPLAY=input:default=utf8+packet,LOG_DIR=tmp/control-logs"),
+            String::from("--monitor"),
+            String::from("/dev/ttyUSB1@115200,hex"),
+            String::from("--no-log"),
+        ])
+        .expect("should parse");
+
+        assert_eq!(options.port.as_ref().map(|port| port.port.as_str()), Some("/dev/ttyUSB0"));
+        assert_eq!(options.port.as_ref().and_then(|port| port.baud), Some(921_600));
+        assert_eq!(options.controller.as_deref(), Some("0"));
+        assert_eq!(options.format.as_deref(), Some("PacketACv6"));
+        assert_eq!(options.monitor_ports.len(), 1);
+        assert_eq!(options.monitor_ports[0].port, "/dev/ttyUSB1");
+        assert_eq!(options.log_dir, Some(PathBuf::from("tmp/control-logs")));
+        assert!(options.no_log);
+    }
 }

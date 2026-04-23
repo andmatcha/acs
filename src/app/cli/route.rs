@@ -1,5 +1,6 @@
 use super::common::{
-    default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
+    default_baud_rate, default_log_dir, next_value, parse_key_value_args, parse_port_spec,
+    parse_u32_arg,
 };
 use super::help::{is_help_flag, print_route_help};
 use super::signal;
@@ -27,6 +28,7 @@ struct RouteCliOptions {
     baud: Option<u32>,
     display: PortDisplayConfig,
     log_dir: Option<PathBuf>,
+    no_log: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +44,11 @@ struct RouteSettings {
     session: SessionSpec,
     pipeline: PipelineSpec,
     template_name: Option<String>,
+}
+
+struct RouteRunResult {
+    logging_enabled: bool,
+    log_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -72,8 +79,10 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     }
 
     match run_with_options(cli_options) {
-        Ok(log_path) => {
-            println!("log saved to {}", log_path.display());
+        Ok(result) => {
+            if result.logging_enabled {
+                println!("log saved to {}", result.log_path.display());
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -83,9 +92,10 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     }
 }
 
-fn run_with_options(cli_options: RouteCliOptions) -> Result<PathBuf, String> {
+fn run_with_options(cli_options: RouteCliOptions) -> Result<RouteRunResult, String> {
     let settings = build_settings(cli_options)?;
     let mut engine = PipelineEngine::new(&settings.pipeline)?;
+    let logging_enabled = settings.session.logging_enabled;
     let mut session = SessionRuntime::new(settings.session)?;
 
     let log_path = session.log_path().to_path_buf();
@@ -104,20 +114,22 @@ fn run_with_options(cli_options: RouteCliOptions) -> Result<PathBuf, String> {
     if let Some(template_name) = &settings.template_name {
         header_lines.push(format!("template: {template_name}"));
     }
-    header_lines.extend([
-        format!(
-            "pipelines: {}",
-            settings
-                .pipeline
-                .pipelines
-                .iter()
-                .map(|pipeline| pipeline.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        format!("log: {log_path_display}"),
-        String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
-    ]);
+    header_lines.push(format!(
+        "pipelines: {}",
+        settings
+            .pipeline
+            .pipelines
+            .iter()
+            .map(|pipeline| pipeline.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    if logging_enabled {
+        header_lines.push(format!("log: {log_path_display}"));
+    } else {
+        header_lines.push(String::from("log: disabled (--no-log)"));
+    }
+    header_lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
     session.set_header_lines(header_lines);
 
     signal::install_handler();
@@ -130,7 +142,11 @@ fn run_with_options(cli_options: RouteCliOptions) -> Result<PathBuf, String> {
             }
             Ok(())
         },
-    )
+    )?;
+    Ok(RouteRunResult {
+        logging_enabled,
+        log_path,
+    })
 }
 
 fn build_settings(cli_options: RouteCliOptions) -> Result<RouteSettings, String> {
@@ -151,7 +167,7 @@ fn build_settings(cli_options: RouteCliOptions) -> Result<RouteSettings, String>
             title: String::from("acs route"),
             command_name: String::from("route"),
             log_dir,
-            logging_enabled: true,
+            logging_enabled: !cli_options.no_log,
             inputs,
             outputs,
         },
@@ -446,6 +462,9 @@ fn parse_route_args(args: Vec<String>) -> Result<RouteCliOptions, String> {
 
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--config" => {
+                apply_route_config_args(&mut options, &next_value(&mut iter, "--config")?)?
+            }
             "--template" => options.template = Some(next_value(&mut iter, "--template")?),
             "--list-templates" => options.list_templates = true,
             "--input-port" | "-i" => options.inputs.push(parse_route_port_binding(&next_value(
@@ -468,6 +487,7 @@ fn parse_route_args(args: Vec<String>) -> Result<RouteCliOptions, String> {
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
+            "--no-log" => options.no_log = true,
             other if other.starts_with('-') => {
                 return Err(format!("unknown option for route: {other}"));
             }
@@ -481,6 +501,23 @@ fn parse_route_args(args: Vec<String>) -> Result<RouteCliOptions, String> {
     }
 
     Ok(options)
+}
+
+fn apply_route_config_args(options: &mut RouteCliOptions, value: &str) -> Result<(), String> {
+    for assignment in parse_key_value_args("--config", value)? {
+        let key = assignment.key.to_ascii_uppercase();
+        match key.as_str() {
+            "TEMPLATE" => options.template = Some(assignment.value),
+            "DISPLAY" => {
+                let display = parse_display_assignment(&assignment.value)?;
+                display.apply_to(&mut options.display);
+            }
+            "LOG_DIR" => options.log_dir = Some(PathBuf::from(assignment.value)),
+            other => return Err(format!("unknown route config key: {other}")),
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_route_port_binding(value: &str) -> Result<RoutePortBinding, String> {
@@ -537,6 +574,26 @@ mod tests {
         assert_eq!(options.template.as_deref(), Some("merge"));
         assert_eq!(options.inputs.len(), 1);
         assert_eq!(options.outputs.len(), 1);
+    }
+
+    #[test]
+    fn parse_route_args_accepts_config_and_no_log() {
+        let options = parse_route_args(vec![
+            String::from("--config"),
+            String::from("TEMPLATE=one-to-one,DISPLAY=input:default=utf8+packet,LOG_DIR=tmp/route-logs"),
+            String::from("-i"),
+            String::from("in_a=/dev/ttyUSB0@921600"),
+            String::from("-o"),
+            String::from("out_a=/dev/ttyUSB1@115200"),
+            String::from("--no-log"),
+        ])
+        .unwrap();
+
+        assert_eq!(options.template.as_deref(), Some("one-to-one"));
+        assert_eq!(options.inputs.len(), 1);
+        assert_eq!(options.outputs.len(), 1);
+        assert_eq!(options.log_dir, Some(std::path::PathBuf::from("tmp/route-logs")));
+        assert!(options.no_log);
     }
 
     #[test]
