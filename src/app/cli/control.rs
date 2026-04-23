@@ -330,10 +330,7 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
     Ok(options)
 }
 
-fn apply_control_config_args(
-    options: &mut ControlCliOptions,
-    value: &str,
-) -> Result<(), String> {
+fn apply_control_config_args(options: &mut ControlCliOptions, value: &str) -> Result<(), String> {
     for assignment in parse_key_value_args("--config", value)? {
         let key = assignment.key.to_ascii_uppercase();
         match key.as_str() {
@@ -369,8 +366,14 @@ mod tests {
         ])
         .expect("should parse");
 
-        assert_eq!(options.port.as_ref().map(|port| port.port.as_str()), Some("/dev/ttyUSB0"));
-        assert_eq!(options.port.as_ref().and_then(|port| port.baud), Some(921_600));
+        assert_eq!(
+            options.port.as_ref().map(|port| port.port.as_str()),
+            Some("/dev/ttyUSB0")
+        );
+        assert_eq!(
+            options.port.as_ref().and_then(|port| port.baud),
+            Some(921_600)
+        );
         assert_eq!(options.controller.as_deref(), Some("0"));
         assert_eq!(options.format.as_deref(), Some("PacketACv6"));
         assert_eq!(options.monitor_ports.len(), 1);

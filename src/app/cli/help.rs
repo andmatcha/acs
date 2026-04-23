@@ -1,45 +1,47 @@
 use std::process::ExitCode;
 
 pub(crate) fn print_usage(bin_name: &str) {
-    eprintln!("Usage: {bin_name} <COMMAND>");
+    eprintln!("使い方: {bin_name} <コマンド>");
     eprintln!();
-    eprintln!("Commands:");
-    eprintln!("  control    Read DUALSHOCK 4 input and send serial output");
-    eprintln!("  monitor    Monitor one or more serial ports");
-    eprintln!("  route      Route bytes between serial inputs and outputs");
-    eprintln!("  send       Repeatedly send dummy payloads to a serial port");
-    eprintln!("  xbee-mock  Run one side of the xbee-test traffic model on a single port");
-    eprintln!("  xbee-rtt   Check connectivity and round-trip time across one XBee pair");
-    eprintln!("  xbee-test  Cross-test AU/RU and AD/RD across base/remote ports");
-    eprintln!("  controllers List connected DUALSHOCK 4 controllers");
-    eprintln!("  ports      List available serial ports");
-    eprintln!("  version    Show build version and source metadata");
-    eprintln!("  help       Show help for a command");
-    eprintln!();
-    eprintln!("Use `{bin_name} --version` or `{bin_name} version` to inspect the installed build.");
+    eprintln!("コマンド:");
+    eprintln!("  control     DUALSHOCK 4 の入力を読み取り、シリアル出力へ送信");
+    eprintln!("  monitor     1 つ以上のシリアルポートを監視");
+    eprintln!("  route       シリアル入力と出力の間でバイト列を中継");
+    eprintln!("  send        ダミーペイロードをシリアルポートへ繰り返し送信");
+    eprintln!("  xbee-mock   xbee-test の通信モデルの片側を単一ポートで実行");
+    eprintln!("  xbee-rtt    1 組の XBee 間で接続性と往復時間を確認");
+    eprintln!("  xbee-test   base/remote ポート間で AU/RU と AD/RD を相互試験");
+    eprintln!("  controllers 接続中の DUALSHOCK 4 コントローラーを一覧表示");
+    eprintln!("  ports       利用可能なシリアルポートを一覧表示");
+    eprintln!("  version     ビルド版情報とソース情報を表示");
+    eprintln!("  help        コマンドのヘルプを表示");
     eprintln!();
     eprintln!(
-        "Use `{bin_name} help control`, `{bin_name} help monitor`, `{bin_name} help route`, `{bin_name} help send`, `{bin_name} help xbee-mock`, `{bin_name} help xbee-rtt`, or `{bin_name} help xbee-test` for details."
+        "インストール済みビルドの情報は `{bin_name} --version` または `{bin_name} version` で確認できます。"
+    );
+    eprintln!();
+    eprintln!(
+        "詳細は `{bin_name} help control`、`{bin_name} help monitor`、`{bin_name} help route`、`{bin_name} help send`、`{bin_name} help xbee-mock`、`{bin_name} help xbee-rtt`、`{bin_name} help xbee-test` で確認できます。"
     );
 }
 
 pub(crate) fn print_help(bin_name: &str) {
-    println!("Usage: {bin_name} <COMMAND>");
+    println!("使い方: {bin_name} <コマンド>");
     println!();
-    println!("Commands:");
-    println!("  control    Read DUALSHOCK 4 input and send serial output");
-    println!("  monitor    Monitor one or more serial ports");
-    println!("  route      Route bytes between serial inputs and outputs");
-    println!("  send       Repeatedly send dummy payloads to a serial port");
-    println!("  xbee-mock  Run one side of the xbee-test traffic model on a single port");
-    println!("  xbee-rtt   Check connectivity and round-trip time across one XBee pair");
-    println!("  xbee-test  Cross-test AU/RU and AD/RD across base/remote ports");
-    println!("  controllers List connected DUALSHOCK 4 controllers");
-    println!("  ports      List available serial ports");
-    println!("  version    Show build version and source metadata");
-    println!("  help       Show help for a command");
+    println!("コマンド:");
+    println!("  control     DUALSHOCK 4 の入力を読み取り、シリアル出力へ送信");
+    println!("  monitor     1 つ以上のシリアルポートを監視");
+    println!("  route       シリアル入力と出力の間でバイト列を中継");
+    println!("  send        ダミーペイロードをシリアルポートへ繰り返し送信");
+    println!("  xbee-mock   xbee-test の通信モデルの片側を単一ポートで実行");
+    println!("  xbee-rtt    1 組の XBee 間で接続性と往復時間を確認");
+    println!("  xbee-test   base/remote ポート間で AU/RU と AD/RD を相互試験");
+    println!("  controllers 接続中の DUALSHOCK 4 コントローラーを一覧表示");
+    println!("  ports       利用可能なシリアルポートを一覧表示");
+    println!("  version     ビルド版情報とソース情報を表示");
+    println!("  help        コマンドのヘルプを表示");
     println!();
-    println!("Examples:");
+    println!("例:");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
     println!(
         "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8 --config FORMAT=PacketACv6"
@@ -62,11 +64,9 @@ pub(crate) fn print_help(bin_name: &str) {
     );
     println!("  {bin_name} --version");
     println!();
-    println!(
-        "When exactly one controller or one serial port is available, it is selected automatically."
-    );
-    println!("If baud is omitted on any port option, 115200 is used.");
-    println!("Most non-boolean command settings can also be grouped with `--config KEY=VALUE,...`.");
+    println!("コントローラーまたはシリアルポートが 1 つだけ利用可能な場合は、自動で選択されます。");
+    println!("各ポート指定で baud を省略した場合は 115200 が使われます。");
+    println!("真偽値以外の多くの設定は `--config KEY=VALUE,...` でまとめて指定できます。");
 }
 
 pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode {
@@ -104,30 +104,32 @@ pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode 
             ExitCode::SUCCESS
         }
         Some("controllers") => {
-            println!("Usage: {bin_name} controllers");
+            println!("使い方: {bin_name} controllers");
             println!();
             println!(
-                "Lists connected DUALSHOCK 4 controllers and their transport, VID/PID, interface, product name, and path."
+                "接続中の DUALSHOCK 4 コントローラーと、その接続方式、VID/PID、インターフェース、製品名、パスを一覧表示します。"
             );
             ExitCode::SUCCESS
         }
         Some("ports") => {
-            println!("Usage: {bin_name} ports");
+            println!("使い方: {bin_name} ports");
             println!();
-            println!("Lists available serial ports and USB metadata when available.");
+            println!(
+                "利用可能なシリアルポートと、取得できる場合は USB メタデータを一覧表示します。"
+            );
             ExitCode::SUCCESS
         }
         Some("version") => {
-            println!("Usage: {bin_name} --version");
+            println!("使い方: {bin_name} --version");
             println!("       {bin_name} version");
             println!();
             println!(
-                "Shows the package version plus build source metadata such as commit, branch, source kind, and dirty/clean state."
+                "パッケージ版に加えて、コミット、ブランチ、取得元種別、ワークツリーが dirty/clean かといったビルド元情報を表示します。"
             );
             ExitCode::SUCCESS
         }
         Some(other) => {
-            eprintln!("unknown help topic: {other}");
+            eprintln!("不明なヘルプトピックです: {other}");
             print_help(bin_name);
             ExitCode::from(2)
         }
@@ -135,36 +137,48 @@ pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode 
 }
 
 pub(crate) fn print_control_help(bin_name: &str) {
-    println!("Usage: {bin_name} control [OPTIONS]");
+    println!("使い方: {bin_name} control [オプション]");
     println!();
-    println!("Reads a DUALSHOCK 4 controller and writes formatted bytes to a serial port.");
     println!(
-        "The output port is also monitored as input, and extra ports can be added with `--monitor`."
+        "DUALSHOCK 4 コントローラーを読み取り、整形したバイト列をシリアルポートへ書き込みます。"
     );
+    println!("出力ポートも入力として監視され、追加ポートは `--monitor` で増やせます。");
     println!();
-    println!("Options:");
-    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial output port");
-    println!("                              PORT accepts a device path or `acs ports` index");
-    println!("                              BAUD defaults to 115200 when omitted");
-    println!("                              Omit to auto-select a single USB serial or ST-LINK");
-    println!("  -m, --monitor <PORT[@BAUD][,DISPLAY]> Additional serial port to monitor");
-    println!("      --config <K=V,...>     Grouped settings: `CONTROLLER`, `FORMAT`, `DISPLAY`, `LOG_DIR`");
-    println!("                              `FORMAT`: output format (currently: packetacv6)");
-    println!("                              `DISPLAY`: display mode for a port");
+    println!("オプション:");
+    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> シリアル出力ポート");
+    println!(
+        "                              PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
+    );
+    println!("                              BAUD を省略した場合は 115200 が使われます");
+    println!(
+        "                              省略すると USB シリアルまたは ST-LINK が 1 つだけある場合に自動選択します"
+    );
+    println!("  -m, --monitor <PORT[@BAUD][,DISPLAY]> 追加で監視するシリアルポート");
+    println!(
+        "      --config <K=V,...>     設定をまとめて指定: `CONTROLLER`, `FORMAT`, `DISPLAY`, `LOG_DIR`"
+    );
+    println!("                              `FORMAT`: 出力フォーマット（現状: packetacv6）");
+    println!("                              `DISPLAY`: ポートの表示モード");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
-    println!("                                    + optional +line/+packet for monitor input");
-    println!("      --no-log               Disable log file creation for maximum throughput");
-    println!("                              Value-taking legacy flags remain available for compatibility");
-    println!("  -h, --help                 Show this help");
+    println!(
+        "                                    monitor の入力では任意で +line/+packet を追加できます"
+    );
+    println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!(
+        "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
+    );
+    println!("  -h, --help                 このヘルプを表示");
     println!();
-    println!("Examples:");
+    println!("例:");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
     println!(
         "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8 --config FORMAT=PacketACv6"
     );
-    println!("  {bin_name} control --config DISPLAY=input:default=utf8+packet --monitor /dev/ttyUSB1");
+    println!(
+        "  {bin_name} control --config DISPLAY=input:default=utf8+packet --monitor /dev/ttyUSB1"
+    );
     println!(
         "  {bin_name} control --config DISPLAY=input:/dev/ttyUSB0=utf8 --config DISPLAY=output:/dev/ttyUSB0=hex"
     );
@@ -172,46 +186,58 @@ pub(crate) fn print_control_help(bin_name: &str) {
 }
 
 pub(crate) fn print_send_help(bin_name: &str) {
-    println!("Usage: {bin_name} send [OPTIONS]");
+    println!("使い方: {bin_name} send [オプション]");
     println!();
-    println!("Repeatedly sends dummy payloads in the selected format to a serial port.");
-    println!("With --interactive, accepts terminal input and sends each line on Enter.");
-    println!("Sent packets are displayed live like `monitor`. Stops on Ctrl-C.");
-    println!("Default send rate is 50 Hz, which matches `control`'s 20 ms interval.");
+    println!("選択したフォーマットのダミーペイロードをシリアルポートへ繰り返し送信します。");
+    println!("`--interactive` を付けると、端末入力を受け取り Enter ごとに 1 行送信します。");
     println!(
-        "Known mixed-format input ports are decoded per format, and each format's RX Hz is shown in the header."
+        "送信したパケットは `monitor` と同様にリアルタイム表示されます。Ctrl-C で終了します。"
+    );
+    println!("既定の送信レートは 50 Hz で、`control` の 20 ms 間隔に対応します。");
+    println!(
+        "複数フォーマットが混在する既知の入力ポートはフォーマットごとにデコードされ、各フォーマットの RX Hz がヘッダーに表示されます。"
     );
     println!();
-    println!("Options:");
-    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial output port");
+    println!("オプション:");
+    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> シリアル出力ポート");
     println!(
-        "  -o, --output-port <ID=PORT[@BAUD][,DISPLAY][,FORMAT][,RATE]> Additional/repeatable serial output"
-    );
-    println!("                              PORT accepts a device path or `acs ports` index");
-    println!("                              BAUD defaults to 115200 when omitted");
-    println!(
-        "      --config <K=V,...>     Grouped settings: `FORMAT`, `RATE`, `DISPLAY`, `LOG_DIR`"
-    );
-    println!("                              `RATE` is ignored with --interactive");
-    println!("                              `DISPLAY` uses TARGET=MODE, for example `output:default=hex`");
-    println!(
-        "  -i, --interactive          Read lines from terminal and send on Enter (raw UTF-8 + \\r\\n)"
+        "  -o, --output-port <ID=PORT[@BAUD][,DISPLAY][,FORMAT][,RATE]> 追加で指定できるシリアル出力（繰り返し指定可）"
     );
     println!(
-        "  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]> Additional serial port to monitor"
+        "                              PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
     );
-    println!("      --no-log               Disable log file creation for maximum throughput");
-    println!("                              Value-taking legacy flags remain available for compatibility");
-    println!("  -h, --help                 Show this help");
+    println!("                              BAUD を省略した場合は 115200 が使われます");
+    println!(
+        "      --config <K=V,...>     設定をまとめて指定: `FORMAT`, `RATE`, `DISPLAY`, `LOG_DIR`"
+    );
+    println!("                              `RATE` は `--interactive` では無視されます");
+    println!(
+        "                              `DISPLAY` は TARGET=MODE 形式です。例: `output:default=hex`"
+    );
+    println!(
+        "  -i, --interactive          端末から 1 行ずつ読み取り、Enter ごとに送信（生 UTF-8 + \\r\\n）"
+    );
+    println!(
+        "  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]> 追加で監視するシリアルポート"
+    );
+    println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!(
+        "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
+    );
+    println!("  -h, --help                 このヘルプを表示");
     println!();
-    println!("Examples:");
+    println!("例:");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
     println!("  {bin_name} send --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6,RATE=100");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketJFv1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=RoverUpGeneral");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=RoverDownGeneral");
-    println!("  {bin_name} send --port /dev/ttyUSB0,hex --monitor /dev/ttyUSB1,utf8,packetjfv1 --config DISPLAY=output:default=hex");
-    println!("  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1,packetacv6+packetjfv1 --config FORMAT=PacketACv6");
+    println!(
+        "  {bin_name} send --port /dev/ttyUSB0,hex --monitor /dev/ttyUSB1,utf8,packetjfv1 --config DISPLAY=output:default=hex"
+    );
+    println!(
+        "  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1,packetacv6+packetjfv1 --config FORMAT=PacketACv6"
+    );
     println!("  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketACv6 --no-log");
     println!(
@@ -226,35 +252,43 @@ pub(crate) fn print_send_help(bin_name: &str) {
 }
 
 pub(crate) fn print_xbee_test_help(bin_name: &str) {
-    println!("Usage: {bin_name} xbee-test [OPTIONS]");
+    println!("使い方: {bin_name} xbee-test [オプション]");
     println!();
     println!(
-        "Sends AU(PacketACv6) + RU(RoverUpGeneral) from `base` to `remote`, and AD(PacketJFv1) + RD(RoverDownGeneral) from `remote` to `base`."
+        "`base` から `remote` へ AU(PacketACv6) + RU(RoverUpGeneral)、`remote` から `base` へ AD(PacketJFv1) + RD(RoverDownGeneral) を送信します。"
     );
-    println!("Modes: `flood`, `ping-pong`, and `polling`.");
+    println!("モードは `flood`、`ping-pong`、`polling` です。");
     println!(
-        "Each port is monitored simultaneously, and the dashboard shows per-port TX/RX packet rates plus matched/error statistics."
+        "各ポートを同時に監視し、ダッシュボードにはポートごとの TX/RX パケットレートと一致数/エラー数を表示します。"
     );
+    println!("高レート監視を軽量に行うため、入出力表示は hex packet に固定されています。");
     println!(
-        "Input and output are fixed to hex packet display for lightweight high-rate monitoring."
-    );
-    println!(
-        "The header also shows the actual display FPS, while RX rate/error counters continue to track packets independently of terminal refresh speed."
+        "ヘッダーには実際の表示 FPS も表示され、RX レートやエラーカウンタは端末更新速度とは独立して追跡されます。"
     );
     println!();
-    println!("Options:");
-    println!("  -p, --port <ID=PORT[@BAUD]> Port binding. IDs: `base`, `remote`");
-    println!("                              PORT accepts a device path or `acs ports` index");
-    println!("                              BAUD defaults to 115200 when omitted");
-    println!("      --config <K=V,...>     Grouped settings: `MODE`, `POLL_RATE`, `BASE_REAL_PERCENT`,");
-    println!("                              `REMOTE_REAL_PERCENT`, `AU_RATE`, `RU_RATE`, `AD_RATE`, `RD_RATE`, `LOG_DIR`");
-    println!("                              `MODE`: `flood`, `ping-pong`, or `polling` (default: flood)");
-    println!("                              `AD_RATE` / `RD_RATE` are ignored in `ping-pong`");
-    println!("      --no-log               Disable log file creation for maximum throughput");
-    println!("                              Value-taking legacy flags remain available for compatibility");
-    println!("  -h, --help                 Show this help");
+    println!("オプション:");
+    println!("  -p, --port <ID=PORT[@BAUD]> ポート割り当て。ID: `base`, `remote`");
+    println!(
+        "                              PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
+    );
+    println!("                              BAUD を省略した場合は 115200 が使われます");
+    println!(
+        "      --config <K=V,...>     設定をまとめて指定: `MODE`, `POLL_RATE`, `BASE_REAL_PERCENT`,"
+    );
+    println!(
+        "                              `REMOTE_REAL_PERCENT`, `AU_RATE`, `RU_RATE`, `AD_RATE`, `RD_RATE`, `LOG_DIR`"
+    );
+    println!(
+        "                              `MODE`: `flood`, `ping-pong`, `polling`（既定値: flood）"
+    );
+    println!("                              `AD_RATE` / `RD_RATE` は `ping-pong` では無視されます");
+    println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!(
+        "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
+    );
+    println!("  -h, --help                 このヘルプを表示");
     println!();
-    println!("Examples:");
+    println!("例:");
     println!("  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1");
     println!(
         "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --config AU_RATE=100,RU_RATE=50,AD_RATE=80,RD_RATE=40"
@@ -269,46 +303,48 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
 }
 
 pub(crate) fn print_xbee_rtt_help(bin_name: &str) {
-    println!("Usage: {bin_name} xbee-rtt [OPTIONS]");
+    println!("使い方: {bin_name} xbee-rtt [オプション]");
     println!();
+    println!("1 組の XBee 間で、対称な接続確認と双方向 RTT 計測を行います。");
     println!(
-        "Runs a symmetric connectivity check and bidirectional RTT measurement across one XBee pair."
+        "通常モードでは各 PC にローカルなシリアルポートを 1 つずつ使い、両方の PC で同じコマンドを実行すると、どちらが先に測定するかを自動交渉します。"
     );
     println!(
-        "The normal mode is one local serial port per PC: run the same command on both PCs, and the peers negotiate who measures first."
+        "`--port` を 2 回指定した場合だけ、1 プロセスで 2 つのローカル XBee を駆動し、ローカルペアとして扱います。"
     );
     println!(
-        "Only when `--port` is given twice does one process drive two local XBee modules and treat them as a local pair."
-    );
-    println!(
-        "A compact binary frame with negotiated session ID, length, and CRC16 is used so the decoder can resynchronize after noise."
+        "ノイズ後にもデコーダーが再同期できるよう、セッション ID・長さ・CRC16 を含むコンパクトなバイナリフレームを使います。"
     );
     println!();
-    println!("Options:");
-    println!("  -p, --port <PORT[@BAUD]>    Local serial port for one XBee module");
-    println!("                              PORT accepts a device path or `acs ports` index");
-    println!("                              BAUD defaults to 115200 when omitted");
-    println!("                              Omit to auto-select one serial port");
-    println!("                              Specify twice only for one-PC local-pair mode");
-    println!("      --config <K=V,...>      Grouped settings: `PAYLOAD_SIZE`, `COUNT`, `INTERVAL_MS`,");
+    println!("オプション:");
+    println!(
+        "  -p, --port <PORT[@BAUD]>    1 台の XBee モジュールに接続するローカルシリアルポート"
+    );
+    println!(
+        "                              PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
+    );
+    println!("                              BAUD を省略した場合は 115200 が使われます");
+    println!(
+        "                              省略するとシリアルポートが 1 つだけある場合に自動選択します"
+    );
+    println!("                              1 PC ローカルペアモードのときだけ 2 回指定します");
+    println!(
+        "      --config <K=V,...>      設定をまとめて指定: `PAYLOAD_SIZE`, `COUNT`, `INTERVAL_MS`,"
+    );
     println!("                              `PROBE_TIMEOUT_MS`, `CONNECT_TIMEOUT_MS`");
+    println!("      --show-wire            送受信バイト列を hex で継続表示。TX は青、RX は赤");
     println!(
-        "      --show-wire            Continuously dump live TX/RX bytes in hex; TX is blue, RX is red"
+        "                            1 PC ローカルペアモードでは各チャンクに [0>] / [1<] を付けます"
     );
     println!(
-        "                            In one-PC local-pair mode, chunks are prefixed as [0>] / [1<]"
+        "      --show-protocol        デコード済みの HELLO / PROBE / RESULT 形式ログを継続表示"
     );
-    println!(
-        "      --show-protocol        Continuously dump decoded HELLO / PROBE / RESULT-style logs"
-    );
-    println!(
-        "                            Uses the same blue/red color split and [0>] / [1<] prefixes"
-    );
-    println!("  -h, --help                 Show this help");
+    println!("                            同じ青/赤の色分けと [0>] / [1<] 接頭辞を使います");
+    println!("  -h, --help                 このヘルプを表示");
     println!();
-    println!("Examples:");
+    println!("例:");
     println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0");
-    println!("  # Run the same command on the other PC too");
+    println!("  # もう片方の PC でも同じコマンドを実行");
     println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0 --show-wire");
     println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0 --show-protocol");
     println!(
@@ -320,41 +356,47 @@ pub(crate) fn print_xbee_rtt_help(bin_name: &str) {
 }
 
 pub(crate) fn print_xbee_mock_help(bin_name: &str) {
-    println!("Usage: {bin_name} xbee-mock <ROLE> [OPTIONS]");
-    println!("       {bin_name} xbee-mock --role <ROLE> [OPTIONS]");
+    println!("使い方: {bin_name} xbee-mock <ロール> [オプション]");
+    println!("       {bin_name} xbee-mock --role <ロール> [オプション]");
     println!();
     println!(
-        "Runs either the `base` side or the `remote` side of the xbee traffic model with explicit uplink/downlink bindings."
+        "明示的な uplink/downlink 割り当てで、xbee 通信モデルの `base` 側または `remote` 側を実行します。"
     );
     println!(
-        "With `PAIR=1`, one port is shared for both directions. With `PAIR=2`, `up` and `down` are bound separately."
+        "`PAIR=1` では 1 つのポートを両方向で共有します。`PAIR=2` では `up` と `down` を別々に割り当てます。"
     );
-    println!("Display is fixed to hex packet mode for lightweight high-rate monitoring.");
+    println!("高レート監視を軽量に行うため、表示は hex packet モード固定です。");
     println!();
-    println!("Roles:");
-    println!("  base    Uplink is TX, downlink is RX");
-    println!("  remote  Uplink is RX, downlink is TX");
+    println!("ロール:");
+    println!("  base    uplink が TX、downlink が RX");
+    println!("  remote  uplink が RX、downlink が TX");
     println!();
-    println!("Options:");
-    println!("  -p, --port <PORT[@BAUD]>   Port binding for `PAIR=1`");
-    println!("  -p, --port <up=PORT[@BAUD]> Uplink binding for `PAIR=2`");
-    println!("  -p, --port <down=PORT[@BAUD]> Downlink binding for `PAIR=2`");
-    println!("                              PORT accepts a device path or `acs ports` index");
-    println!("                              BAUD defaults to 115200 when omitted");
+    println!("オプション:");
+    println!("  -p, --port <PORT[@BAUD]>   `PAIR=1` 用のポート割り当て");
+    println!("  -p, --port <up=PORT[@BAUD]> `PAIR=2` 用の uplink 割り当て");
+    println!("  -p, --port <down=PORT[@BAUD]> `PAIR=2` 用の downlink 割り当て");
     println!(
-        "      --config <K=V,...>     Grouped settings: `ROLE`, `PAIR`, `TX_FORMAT`, `RX_FORMAT`, `TRAFFIC_PATTERN`, `LOG_DIR`"
+        "                              PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
     );
-    println!("                              `PAIR`: `1` or `2` (default: 1)");
+    println!("                              BAUD を省略した場合は 115200 が使われます");
+    println!(
+        "      --config <K=V,...>     設定をまとめて指定: `ROLE`, `PAIR`, `TX_FORMAT`, `RX_FORMAT`, `TRAFFIC_PATTERN`, `LOG_DIR`"
+    );
+    println!("                              `PAIR`: `1` または `2`（既定値: 1）");
     println!("                              `TX_FORMAT`: `<FORMAT[@RATE]>[+<FORMAT[@RATE]>...]`");
     println!("                              `RX_FORMAT`: `<FORMAT>[+<FORMAT>...]`");
-    println!("                              `TRAFFIC_PATTERN`: `flood`, `ping-pong`, or `polling`");
-    println!("                              Poll formats are `PollGreeting` / `PollResponse`");
-    println!("                              Legacy alias: `--option`");
-    println!("      --no-log               Disable log file creation for maximum throughput");
-    println!("                              Value-taking legacy flags remain available for compatibility");
-    println!("  -h, --help                 Show this help");
+    println!("                              `TRAFFIC_PATTERN`: `flood`, `ping-pong`, `polling`");
+    println!(
+        "                              Poll 系フォーマットは `PollGreeting` / `PollResponse` です"
+    );
+    println!("                              旧エイリアス: `--option`");
+    println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!(
+        "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
+    );
+    println!("  -h, --help                 このヘルプを表示");
     println!();
-    println!("Examples:");
+    println!("例:");
     println!(
         "  {bin_name} xbee-mock base -p /dev/ttyUSB0@921600 --config PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood"
     );
@@ -370,25 +412,31 @@ pub(crate) fn print_xbee_mock_help(bin_name: &str) {
 }
 
 pub(crate) fn print_monitor_help(bin_name: &str) {
-    println!("Usage: {bin_name} monitor [OPTIONS]");
+    println!("使い方: {bin_name} monitor [オプション]");
     println!();
-    println!("Monitors one or more serial ports and displays the most recent 10 entries per port.");
+    println!("1 つ以上のシリアルポートを監視し、各ポートにつき最新 10 件を表示します。");
     println!();
-    println!("Options:");
-    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> Serial port to monitor (repeatable)");
-    println!("                              PORT accepts a device path or `acs ports` index");
-    println!("                              BAUD defaults to 115200 when omitted");
-    println!("      --config <K=V,...>     Grouped settings: `DISPLAY`, `LOG_DIR`");
-    println!("                              `DISPLAY`: display mode for a port");
+    println!("オプション:");
+    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> 監視するシリアルポート（繰り返し指定可）");
+    println!(
+        "                              PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
+    );
+    println!("                              BAUD を省略した場合は 115200 が使われます");
+    println!("      --config <K=V,...>     設定をまとめて指定: `DISPLAY`, `LOG_DIR`");
+    println!("                              `DISPLAY`: ポートの表示モード");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
-    println!("                                    + optional +line/+packet for monitor input");
-    println!("      --no-log               Disable log file creation for maximum throughput");
-    println!("                              Value-taking legacy flags remain available for compatibility");
-    println!("  -h, --help                 Show this help");
+    println!(
+        "                                    monitor の入力では任意で +line/+packet を追加できます"
+    );
+    println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!(
+        "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
+    );
+    println!("  -h, --help                 このヘルプを表示");
     println!();
-    println!("Examples:");
+    println!("例:");
     println!("  {bin_name} monitor --port /dev/ttyUSB0");
     println!("  {bin_name} monitor --port /dev/ttyUSB0,utf8+packet --port /dev/ttyUSB1,hex");
     println!(
@@ -398,38 +446,46 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
 }
 
 pub(crate) fn print_route_help(bin_name: &str) {
-    println!("Usage: {bin_name} route [TEMPLATE] [OPTIONS]");
+    println!("使い方: {bin_name} route [テンプレート] [オプション]");
     println!();
-    println!("Routes bytes from one or more serial inputs to one or more serial outputs.");
-    println!("Routing behavior can be selected from built-in route templates.");
+    println!("1 つ以上のシリアル入力から 1 つ以上のシリアル出力へバイト列を中継します。");
+    println!("中継動作は組み込みルートテンプレートから選べます。");
     println!();
-    println!("Options:");
-    println!("      --list-templates        Show built-in route templates");
-    println!("  -i, --input-port <ID=PORT[@BAUD][,DISPLAY]>  Route input port (repeatable)");
-    println!("  -o, --output-port <ID=PORT[@BAUD][,DISPLAY]> Route output port (repeatable)");
-    println!("                               PORT accepts a device path or `acs ports` index");
-    println!("                               BAUD defaults to 115200 when omitted");
-    println!("      --config <K=V,...>      Grouped settings: `TEMPLATE`, `DISPLAY`, `LOG_DIR`");
-    println!("                              `TEMPLATE` is the same as the positional TEMPLATE");
-    println!("                              `DISPLAY`: display mode for a port");
+    println!("オプション:");
+    println!("      --list-templates        組み込みルートテンプレートを表示");
+    println!("  -i, --input-port <ID=PORT[@BAUD][,DISPLAY]>  中継元の入力ポート（繰り返し指定可）");
+    println!("  -o, --output-port <ID=PORT[@BAUD][,DISPLAY]> 中継先の出力ポート（繰り返し指定可）");
+    println!(
+        "                               PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
+    );
+    println!("                               BAUD を省略した場合は 115200 が使われます");
+    println!("      --config <K=V,...>      設定をまとめて指定: `TEMPLATE`, `DISPLAY`, `LOG_DIR`");
+    println!("                              `TEMPLATE` は位置引数の TEMPLATE と同じです");
+    println!("                              `DISPLAY`: ポートの表示モード");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
-    println!("                                    + optional +line/+packet for monitor input");
-    println!("      --no-log                Disable log file creation for maximum throughput");
-    println!("                              Value-taking legacy flags remain available for compatibility");
-    println!("  -h, --help                  Show this help");
+    println!(
+        "                                    monitor の入力では任意で +line/+packet を追加できます"
+    );
+    println!("      --no-log                ログファイル作成を無効化して最大スループットを優先");
+    println!(
+        "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
+    );
+    println!("  -h, --help                  このヘルプを表示");
     println!();
-    println!("Built-in templates:");
-    println!("  merge            Forward bytes in arrival order to all outputs");
-    println!("  one-to-one       Pair input/output arrays by order and pass bytes through");
+    println!("組み込みテンプレート:");
+    println!("  merge            到着順のバイト列をすべての出力へそのまま転送");
+    println!("  one-to-one       入出力配列を順番で対応付けてそのまま中継");
     println!();
-    println!("Examples:");
+    println!("例:");
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
     println!(
         "  {bin_name} route merge -i in_a=/dev/ttyUSB0@921600 -i in_b=/dev/ttyUSB1@115200 -o out_main=/dev/ttyUSB2@921600"
     );
-    println!("  {bin_name} route -i in_a=/dev/ttyUSB0,utf8 -o out_main=/dev/ttyUSB2,hex --config TEMPLATE=merge");
+    println!(
+        "  {bin_name} route -i in_a=/dev/ttyUSB0,utf8 -o out_main=/dev/ttyUSB2,hex --config TEMPLATE=merge"
+    );
     println!(
         "  {bin_name} route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/ttyUSB2 -o out_b=/dev/ttyUSB3 --no-log"
     );

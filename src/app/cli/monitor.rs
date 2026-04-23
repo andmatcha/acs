@@ -177,10 +177,7 @@ fn parse_monitor_args(args: Vec<String>) -> Result<MonitorCliOptions, String> {
     Ok(options)
 }
 
-fn apply_monitor_config_args(
-    options: &mut MonitorCliOptions,
-    value: &str,
-) -> Result<(), String> {
+fn apply_monitor_config_args(options: &mut MonitorCliOptions, value: &str) -> Result<(), String> {
     for assignment in parse_key_value_args("--config", value)? {
         let key = assignment.key.to_ascii_uppercase();
         match key.as_str() {

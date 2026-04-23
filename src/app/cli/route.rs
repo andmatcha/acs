@@ -320,24 +320,24 @@ fn resolve_pipeline_spec(
         .pipelines),
         "one-to-one" => Ok(builtin_one_to_one_template(inputs, outputs).pipelines),
         _ => Err(format!(
-            "unknown route template `{template_name}`; use `acs route --list-templates` to inspect available templates"
+            "不明なルートテンプレート `{template_name}` です。利用可能なテンプレートは `acs route --list-templates` で確認できます"
         )),
     }
 }
 
 fn print_available_templates(bin_name: &str) {
-    println!("Available route templates:");
+    println!("利用可能なルートテンプレート:");
     for template in builtin_route_templates() {
         println!(
             "  {:<16} {}",
             template.id,
             template
                 .description
-                .unwrap_or_else(|| String::from("built-in template"))
+                .unwrap_or_else(|| String::from("組み込みテンプレート"))
         );
     }
     println!();
-    println!("Examples:");
+    println!("例:");
     println!(
         "  {bin_name} route merge -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2"
     );
@@ -580,7 +580,9 @@ mod tests {
     fn parse_route_args_accepts_config_and_no_log() {
         let options = parse_route_args(vec![
             String::from("--config"),
-            String::from("TEMPLATE=one-to-one,DISPLAY=input:default=utf8+packet,LOG_DIR=tmp/route-logs"),
+            String::from(
+                "TEMPLATE=one-to-one,DISPLAY=input:default=utf8+packet,LOG_DIR=tmp/route-logs",
+            ),
             String::from("-i"),
             String::from("in_a=/dev/ttyUSB0@921600"),
             String::from("-o"),
@@ -592,7 +594,10 @@ mod tests {
         assert_eq!(options.template.as_deref(), Some("one-to-one"));
         assert_eq!(options.inputs.len(), 1);
         assert_eq!(options.outputs.len(), 1);
-        assert_eq!(options.log_dir, Some(std::path::PathBuf::from("tmp/route-logs")));
+        assert_eq!(
+            options.log_dir,
+            Some(std::path::PathBuf::from("tmp/route-logs"))
+        );
         assert!(options.no_log);
     }
 

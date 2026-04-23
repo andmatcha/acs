@@ -198,8 +198,11 @@ mod tests {
     #[test]
     fn parse_key_value_args_accepts_csv_assignments() {
         assert_eq!(
-            parse_key_value_args("--config", "FORMAT=PacketACv6,RATE=100,DISPLAY=input:default=utf8+packet")
-                .unwrap(),
+            parse_key_value_args(
+                "--config",
+                "FORMAT=PacketACv6,RATE=100,DISPLAY=input:default=utf8+packet"
+            )
+            .unwrap(),
             vec![
                 KeyValueArg {
                     key: String::from("FORMAT"),

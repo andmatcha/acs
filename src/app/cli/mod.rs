@@ -37,7 +37,7 @@ pub fn run() -> ExitCode {
         Some("xbee-rtt") => xbee_rtt::run(args.collect(), &bin_name),
         Some("xbee-test") => xbee_test::run(args.collect(), &bin_name),
         Some(command) => {
-            eprintln!("unknown subcommand: {command}");
+            eprintln!("不明なサブコマンドです: {command}");
             help::print_usage(&bin_name);
             ExitCode::from(2)
         }

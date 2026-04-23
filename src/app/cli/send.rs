@@ -1631,7 +1631,9 @@ mod tests {
             String::from("--port"),
             String::from("/dev/ttyUSB0@921600"),
             String::from("--config"),
-            String::from("FORMAT=PacketACv6,RATE=100,DISPLAY=output:default=hex,LOG_DIR=tmp/send-logs"),
+            String::from(
+                "FORMAT=PacketACv6,RATE=100,DISPLAY=output:default=hex,LOG_DIR=tmp/send-logs",
+            ),
             String::from("--interactive"),
         ])
         .expect("should parse");
@@ -1640,7 +1642,10 @@ mod tests {
             options.port.as_ref().map(|port| port.port.as_str()),
             Some("/dev/ttyUSB0")
         );
-        assert_eq!(options.port.as_ref().and_then(|port| port.baud), Some(921_600));
+        assert_eq!(
+            options.port.as_ref().and_then(|port| port.baud),
+            Some(921_600)
+        );
         assert_eq!(options.rate_hz, Some(100));
         assert_eq!(options.format.as_deref(), Some("PacketACv6"));
         assert_eq!(
