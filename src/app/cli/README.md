@@ -13,7 +13,8 @@
 - `route.rs` で入力・出力・パイプライン・テンプレートを解決して中継処理を起動します。
 - `send.rs` でダミーペイロードを一定周期で送信します。
 - `xbee_rtt.rs` で対称な XBee RTT プロトコルを実装し、通常の 1-port/2-PC 実行と、明示的な 2-port/1-PC ローカルペア実行の両方を扱います。必要なら `--show-wire` で hex dump、`--show-protocol` で意味付き frame log も出せます。
-- `xbee_test.rs` で `base` / `remote` 間の AU/RU と AD/RD の往復試験と、その片側だけを動かす `xbee-mock` を実装します。
+- `xbee_test.rs` で `base` / `remote` 間の AU/RU と AD/RD の往復試験を実装します。
+- `xbee_mock.rs` でその片側だけを動かす `xbee-mock` を実装します。
 - `paths.rs` と `signal.rs` でログの保存先解決と Ctrl-C 停止を共通化しています。
 
 ## 実装の要点
