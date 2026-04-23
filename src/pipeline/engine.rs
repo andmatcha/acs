@@ -1,9 +1,9 @@
+use crate::ingress::IngressFrame;
 use crate::pipeline::config::PipelineSpec;
 use crate::pipeline::message::{DispatchPlan, RouteMessage};
 use crate::pipeline::modules::{
     build_classifier, build_filter, build_router, build_transform_chain,
 };
-use crate::session::event::IngressFrame;
 
 pub(crate) struct PipelineEngine {
     pipelines: Vec<PipelineInstance>,
@@ -101,11 +101,11 @@ pub(crate) mod traits {
 #[cfg(test)]
 mod tests {
     use super::PipelineEngine;
+    use crate::ingress::IngressFrame;
     use crate::pipeline::{
         ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineSpec,
         RouterModuleConfig, TransformChainConfig, TransformModuleConfig,
     };
-    use crate::session::event::IngressFrame;
 
     #[test]
     fn identity_broadcast_routes_bytes_to_target() {

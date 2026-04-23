@@ -3,6 +3,7 @@ use super::common::{
 };
 use super::help::{is_help_flag, print_control_help};
 use super::signal;
+use crate::ingress::IngressFrame;
 use crate::input::ds4_hid::Ds4Controller;
 use crate::output::OutputFormat;
 use crate::pipeline::{
@@ -11,7 +12,6 @@ use crate::pipeline::{
 };
 use crate::port_display::{PortDisplayConfig, parse_display_assignment};
 use crate::serial;
-use crate::session::event::IngressFrame;
 use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntime, SessionSpec};
 use std::path::PathBuf;
 use std::process::ExitCode;

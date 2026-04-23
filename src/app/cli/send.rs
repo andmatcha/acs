@@ -3,11 +3,11 @@ use super::common::{
 };
 use super::help::{is_help_flag, print_send_help};
 use super::signal;
+use crate::ingress::IngressFrame;
 use crate::output::OutputFormat;
 use crate::output::formats::{DummyPayloadGenerator, crc16_ccitt_false};
 use crate::port_display::{PortDisplayConfig, PortDisplayMode, parse_display_assignment};
 use crate::serial;
-use crate::session::event::IngressFrame;
 use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntime, SessionSpec};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

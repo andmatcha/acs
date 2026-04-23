@@ -1,10 +1,11 @@
+use crate::ingress::IngressFrame;
 use crate::output::OutputFormat;
 use crate::port_display::{LineBreakMode, PortDisplayMode};
 use crate::serial::{
     SerialCallback, SerialConfig, SerialEvent, SerialMonitor, SerialWriter, open_monitor_and_writer,
 };
 use crate::session::dashboard::SessionDashboard;
-use crate::session::event::{IngressFrame, SessionEvent};
+use crate::session::event::SessionEvent;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;

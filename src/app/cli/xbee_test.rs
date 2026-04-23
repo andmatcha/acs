@@ -3,9 +3,9 @@ use super::common::{
 };
 use super::help::{is_help_flag, print_xbee_mock_help, print_xbee_test_help};
 use super::signal;
+use crate::ingress::IngressFrame;
 use crate::output::OutputFormat;
 use crate::output::formats::{DummyPayloadGenerator, crc16_ccitt_false};
-use crate::session::event::IngressFrame;
 use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntime, SessionSpec};
 use crate::{port_display::LineBreakMode, port_display::PortDisplayMode, serial};
 use std::cell::RefCell;

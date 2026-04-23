@@ -1,5 +1,6 @@
 mod app;
 mod common;
+mod ingress;
 mod input;
 mod output;
 mod pipeline;

@@ -1,4 +1,4 @@
-use crate::session::event::IngressFrame;
+use crate::ingress::IngressFrame;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RouteMessage {

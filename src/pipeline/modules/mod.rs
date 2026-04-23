@@ -1,3 +1,4 @@
+use crate::ingress::IngressFrame;
 use crate::input::compact;
 use crate::output::OutputFormat;
 use crate::pipeline::config::{
@@ -8,7 +9,6 @@ use crate::pipeline::engine::traits::{
     FrameFilter, MessageClassifier, MessageRouter, MessageTransform,
 };
 use crate::pipeline::message::RouteMessage;
-use crate::session::event::IngressFrame;
 use std::collections::BTreeMap;
 
 pub(crate) fn build_filter(config: &FilterModuleConfig) -> Box<dyn FrameFilter> {
