@@ -3508,12 +3508,12 @@ fn build_settings(cli_options: XbeeTestCliOptions) -> Result<XbeeTestSettings, S
         );
     }
 
-    let base_binding = ports
-        .remove(BASE_PORT_ID)
-        .ok_or_else(|| String::from("xbee-test requires `--port base=PORT[@BAUD]`"))?;
-    let remote_binding = ports
-        .remove(REMOTE_PORT_ID)
-        .ok_or_else(|| String::from("xbee-test requires `--port remote=PORT[@BAUD]`"))?;
+    let base_binding = ports.remove(BASE_PORT_ID).ok_or_else(|| {
+        String::from("xbee-test requires `--port base=PORT` (optional `@BAUD`, default: 115200)")
+    })?;
+    let remote_binding = ports.remove(REMOTE_PORT_ID).ok_or_else(|| {
+        String::from("xbee-test requires `--port remote=PORT` (optional `@BAUD`, default: 115200)")
+    })?;
 
     let base_port =
         serial::resolve_port(Some(&base_binding.port)).map_err(|error| error.to_string())?;
@@ -3780,7 +3780,7 @@ fn parse_xbee_mock_args(args: Vec<String>) -> Result<XbeeMockCliOptions, String>
 fn parse_xbee_test_port_binding(value: &str) -> Result<XbeeTestPortBinding, String> {
     let Some((id, port_text)) = value.split_once('=') else {
         return Err(format!(
-            "invalid xbee-test port binding: {value} (expected base=PORT[@BAUD] or remote=PORT[@BAUD])"
+            "invalid xbee-test port binding: {value} (expected base=PORT or remote=PORT; append `@BAUD` to override 115200)"
         ));
     };
 
@@ -3825,14 +3825,14 @@ fn resolve_xbee_mock_ports(
 ) -> Result<(XbeeMockResolvedPortBinding, XbeeMockResolvedPortBinding), String> {
     if ports.is_empty() {
         return Err(String::from(
-            "xbee-mock requires at least one `-p PORT[@BAUD]`",
+            "xbee-mock requires at least one `-p PORT` (optional `@BAUD`, default: 115200)",
         ));
     }
 
     if pair_number == 1 {
         if ports.len() != 1 {
             return Err(String::from(
-                "xbee-mock PAIR=1 requires exactly one `-p PORT[@BAUD]`",
+                "xbee-mock PAIR=1 requires exactly one `-p PORT` (optional `@BAUD`, default: 115200)",
             ));
         }
         let binding = ports.into_iter().next().expect("one binding exists");
@@ -3848,7 +3848,7 @@ fn resolve_xbee_mock_ports(
     for binding in ports {
         let Some(id) = binding.id else {
             return Err(String::from(
-                "xbee-mock PAIR=2 requires labeled ports: `-p up=PORT[@BAUD] -p down=PORT[@BAUD]`",
+                "xbee-mock PAIR=2 requires labeled ports: `-p up=PORT -p down=PORT` (optional `@BAUD`, default: 115200)",
             ));
         };
         match id {
@@ -3877,9 +3877,12 @@ fn resolve_xbee_mock_ports(
         }
     }
 
-    let up = up.ok_or_else(|| String::from("xbee-mock PAIR=2 requires `-p up=PORT[@BAUD]`"))?;
-    let down =
-        down.ok_or_else(|| String::from("xbee-mock PAIR=2 requires `-p down=PORT[@BAUD]`"))?;
+    let up = up.ok_or_else(|| {
+        String::from("xbee-mock PAIR=2 requires `-p up=PORT` (optional `@BAUD`, default: 115200)")
+    })?;
+    let down = down.ok_or_else(|| {
+        String::from("xbee-mock PAIR=2 requires `-p down=PORT` (optional `@BAUD`, default: 115200)")
+    })?;
     Ok((up, down))
 }
 
@@ -4201,6 +4204,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_xbee_test_args_accepts_labeled_ports_without_baud() {
+        let options = parse_xbee_test_args(vec![
+            String::from("--port"),
+            String::from("base=/dev/ttyUSB0"),
+            String::from("--port"),
+            String::from("remote=/dev/ttyUSB1"),
+        ])
+        .expect("should parse");
+
+        assert_eq!(options.ports.len(), 2);
+        assert_eq!(options.ports[0].id, "base");
+        assert_eq!(options.ports[0].port, "/dev/ttyUSB0");
+        assert_eq!(options.ports[0].baud, None);
+        assert_eq!(options.ports[1].id, "remote");
+        assert_eq!(options.ports[1].port, "/dev/ttyUSB1");
+        assert_eq!(options.ports[1].baud, None);
+    }
+
+    #[test]
     fn parse_xbee_test_port_binding_rejects_display_override() {
         let error = parse_xbee_test_port_binding("base=/dev/ttyUSB0@921600,hex")
             .expect_err("should reject");
@@ -4259,6 +4281,27 @@ mod tests {
         );
         assert_eq!(options.log_dir, Some(std::path::PathBuf::from("tmp/logs")));
         assert!(options.no_log);
+    }
+
+    #[test]
+    fn parse_xbee_mock_args_accepts_ports_without_baud() {
+        let options = parse_xbee_mock_args(vec![
+            String::from("base"),
+            String::from("-p"),
+            String::from("up=/dev/ttyUSB2"),
+            String::from("-p"),
+            String::from("down=/dev/ttyUSB3"),
+            String::from("--option"),
+            String::from(
+                "PAIR=2,TX_FORMAT=packetacv6@100,RX_FORMAT=packetjfv1,TRAFFIC_PATTERN=flood",
+            ),
+        ])
+        .expect("should parse");
+
+        assert_eq!(options.role.as_deref(), Some("base"));
+        assert_eq!(options.ports.len(), 2);
+        assert_eq!(options.ports[0].baud, None);
+        assert_eq!(options.ports[1].baud, None);
     }
 
     #[test]
@@ -4330,7 +4373,7 @@ mod tests {
             }],
         )
         .expect_err("should reject missing down");
-        assert!(missing_down_error.contains("requires `-p down=PORT[@BAUD]`"));
+        assert!(missing_down_error.contains("requires `-p down=PORT`"));
     }
 
     #[test]
