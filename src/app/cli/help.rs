@@ -10,6 +10,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!("  route      Route bytes between serial inputs and outputs");
     eprintln!("  send       Repeatedly send dummy payloads to a serial port");
     eprintln!("  xbee-mock  Run one side of the xbee-test traffic model on a single port");
+    eprintln!("  xbee-rtt   Check connectivity and round-trip time across one XBee pair");
     eprintln!("  xbee-test  Cross-test AU/RU and AD/RD across base/remote ports");
     eprintln!("  controllers List connected DUALSHOCK 4 controllers");
     eprintln!("  ports      List available serial ports");
@@ -19,7 +20,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!("Use `{bin_name} --version` or `{bin_name} version` to inspect the installed build.");
     eprintln!();
     eprintln!(
-        "Use `{bin_name} help control`, `{bin_name} help monitor`, `{bin_name} help route`, `{bin_name} help send`, `{bin_name} help xbee-mock`, or `{bin_name} help xbee-test` for details."
+        "Use `{bin_name} help control`, `{bin_name} help monitor`, `{bin_name} help route`, `{bin_name} help send`, `{bin_name} help xbee-mock`, `{bin_name} help xbee-rtt`, or `{bin_name} help xbee-test` for details."
     );
 }
 
@@ -32,6 +33,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  route      Route bytes between serial inputs and outputs");
     println!("  send       Repeatedly send dummy payloads to a serial port");
     println!("  xbee-mock  Run one side of the xbee-test traffic model on a single port");
+    println!("  xbee-rtt   Check connectivity and round-trip time across one XBee pair");
     println!("  xbee-test  Cross-test AU/RU and AD/RD across base/remote ports");
     println!("  controllers List connected DUALSHOCK 4 controllers");
     println!("  ports      List available serial ports");
@@ -52,6 +54,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverUpGeneral");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverDownGeneral");
+    println!("  {bin_name} xbee-rtt --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1");
     println!(
         "  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ad-rate 100"
     );
@@ -90,6 +93,10 @@ pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode 
         }
         Some("xbee-mock") => {
             print_xbee_mock_help(bin_name);
+            ExitCode::SUCCESS
+        }
+        Some("xbee-rtt") => {
+            print_xbee_rtt_help(bin_name);
             ExitCode::SUCCESS
         }
         Some("xbee-test") => {
@@ -301,6 +308,43 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
         "  {bin_name} xbee-test --mode polling --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --poll-rate 100 --base-real-percent 10 --remote-real-percent 20"
     );
     println!("  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --no-log");
+}
+
+pub(crate) fn print_xbee_rtt_help(bin_name: &str) {
+    println!("Usage: {bin_name} xbee-rtt [OPTIONS]");
+    println!();
+    println!(
+        "Runs a lightweight connectivity check across one XBee pair, then measures RTT in both directions."
+    );
+    println!(
+        "The command first exchanges HELLO/ACK frames to confirm both links, elects which side starts, then runs PROBE/ECHO RTT sampling in each direction and shares the summaries before exiting."
+    );
+    println!(
+        "A compact binary frame with session ID, length, and CRC16 is used so the decoder can resynchronize after noise."
+    );
+    println!();
+    println!("Options:");
+    println!("  -p, --port <ID=PORT[@BAUD]> Port binding. IDs: `base`, `remote`");
+    println!("                              PORT accepts a device path or `acs ports` index");
+    println!("                              BAUD defaults to 115200 when omitted");
+    println!("      --payload-size <BYTES> Probe payload size per direction (default: 32)");
+    println!("  -n, --count <COUNT>        RTT probe count per direction (default: 10)");
+    println!(
+        "      --interval-ms <MS>     Delay between probe sends from the same side (default: 100)"
+    );
+    println!(
+        "      --probe-timeout-ms <MS> Time to wait for one echo before counting timeout (default: 1000)"
+    );
+    println!(
+        "      --connect-timeout-ms <MS> Time limit for HELLO/start/result handshake phases (default: 3000)"
+    );
+    println!("  -h, --help                 Show this help");
+    println!();
+    println!("Examples:");
+    println!("  {bin_name} xbee-rtt --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1");
+    println!(
+        "  {bin_name} xbee-rtt --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --payload-size 64 --count 20 --interval-ms 50"
+    );
 }
 
 pub(crate) fn print_xbee_mock_help(bin_name: &str) {

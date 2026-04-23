@@ -9,6 +9,7 @@ mod send;
 mod signal;
 mod version;
 mod xbee_mock;
+mod xbee_rtt;
 mod xbee_test;
 
 use std::env;
@@ -33,6 +34,7 @@ pub fn run() -> ExitCode {
         Some("route") => route::run(args.collect(), &bin_name),
         Some("send") => send::run(args.collect(), &bin_name),
         Some("xbee-mock") => xbee_mock::run(args.collect(), &bin_name),
+        Some("xbee-rtt") => xbee_rtt::run(args.collect(), &bin_name),
         Some("xbee-test") => xbee_test::run(args.collect(), &bin_name),
         Some(command) => {
             eprintln!("unknown subcommand: {command}");

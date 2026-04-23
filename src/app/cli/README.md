@@ -7,11 +7,12 @@
 
 ## 主な処理
 
-- `mod.rs` で `control` / `monitor` / `route` / `send` / `xbee-mock` / `xbee-test` / `controllers` / `ports` / `version` を振り分けます。
+- `mod.rs` で `control` / `monitor` / `route` / `send` / `xbee-mock` / `xbee-rtt` / `xbee-test` / `controllers` / `ports` / `version` を振り分けます。
 - `control.rs` で DS4 入力を `compact` 化し、出力フォーマットへエンコードして送信します。
 - `monitor.rs` で 1 個以上のシリアル入力を監視します。
 - `route.rs` で入力・出力・パイプライン・テンプレートを解決して中継処理を起動します。
 - `send.rs` でダミーペイロードを一定周期で送信します。
+- `xbee_rtt.rs` で XBee 1 ペアの疎通確認、先攻決定、双方向 RTT 計測、測定値共有までを有限ステップで実行します。
 - `xbee_test.rs` で `base` / `remote` 間の AU/RU と AD/RD の往復試験と、その片側だけを動かす `xbee-mock` を実装します。
 - `paths.rs` と `signal.rs` でログの保存先解決と Ctrl-C 停止を共通化しています。
 
