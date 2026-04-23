@@ -9,7 +9,7 @@
 - `acs route`: シリアル入力を built-in template に応じてシリアル出力へ振り分ける
 - `acs send`: 指定形式のダミーデータを継続してシリアルポートへ送信する
 - `acs xbee-mock`: `xbee-test` の片側だけを up/down 明示の port binding で実行する。`PAIR=1` なら 1 port 共用、`PAIR=2` なら uplink/downlink を分けて、実機や別プロセスの peer と組み合わせて片側だけの traffic model を流せる
-- `acs xbee-rtt`: XBee 1 ペアに対して疎通確認と RTT 計測を行う。`HELLO/ACK` で疎通確認して先攻を決め、両方向の `PROBE/ECHO` 往復時間を順番に測り、最後に測定値を共有して終了する
+- `acs xbee-rtt`: XBee 1 ペアに対して対称な疎通確認と RTT 計測を行う。通常は 2 台の PC で同じコマンドを 1 port ずつ使って実行し、`-p/--port` を 2 個指定したときだけ 1 台の PC 上で 2 個の XBee モジュールを相手にして測定する
 - `acs xbee-test`: `base` / `remote` の 2 ポート間で AU(PacketACv6) / RU(RoverUpGeneral) と AD(PacketJFv1) / RD(RoverDownGeneral) の往復試験を行う。`flood` / `ping-pong` / `polling` を切り替えられ、ヘッダに実際の表示更新 fps も表示する
 
 ## グローバルインストール
@@ -102,8 +102,9 @@ acs send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1,packetacv6+packetjfv1
 acs xbee-mock base -p /dev/ttyUSB0 --option PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood
 acs xbee-mock base -p up=/dev/ttyUSB0 -p down=/dev/ttyUSB1 --option PAIR=2,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=ping-pong
 acs xbee-mock remote -p up=/dev/ttyUSB0 -p down=/dev/ttyUSB1 --option PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling
-acs xbee-rtt --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1
-acs xbee-rtt --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --payload-size 64 --count 20 --interval-ms 50
+acs xbee-rtt --port /dev/ttyUSB0
+acs xbee-rtt --port /dev/ttyUSB0@921600 --payload-size 64 --count 20 --interval-ms 50
+acs xbee-rtt --port /dev/ttyUSB0@921600 --port /dev/ttyUSB1@921600 --payload-size 64 --count 20 --interval-ms 50
 acs xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ru-rate 100 --ad-rate 100 --rd-rate 100
 acs xbee-test --mode ping-pong --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ru-rate 50
 acs xbee-test --mode polling --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --poll-rate 100 --base-real-percent 10 --remote-real-percent 20
@@ -116,6 +117,8 @@ acs --version
 - 詳しいオプションや表示形式は `acs help <command>` を参照してください。
 - `acs xbee-mock` は `PAIR=1` で 1 port を共用し、`PAIR=2` で uplink/downlink を分離できます。
 - `acs xbee-mock` は `TX_FORMAT` に rate を持たせ、`RX_FORMAT` は monitor/decoder 対象 format を指定します。
+- `acs xbee-rtt` は通常、各 PC で 1 個の XBee port を指定して同じコマンドを実行します。`--port` を 2 回指定したときだけ、1 プロセスでローカル 2 port を同時に動かします。
+- `acs xbee-rtt` には `base` / `remote` の固定ロールはなく、hello nonce で測定順を対称に決めます。
 - `acs xbee-rtt` は `payload-size` / `count` / `interval-ms` を省略すると、そのまま 32B を 10 回、100 ms 間隔で測定します。
 - `acs xbee-rtt` は session ID と CRC16 付きの軽量バイナリフレームで再同期し、最終結果には payload bytes、回数、間隔、両方向の平均 RTT を表示します。
 - `acs xbee-test` は表示更新が遅い場合も受信レートとエラー率の集計を優先し、packet 表示は別キューで追いかけます。

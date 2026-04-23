@@ -54,7 +54,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} send --port /dev/ttyUSB0 --format PacketJFv1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverUpGeneral");
     println!("  {bin_name} send --port /dev/ttyUSB0 --format RoverDownGeneral");
-    println!("  {bin_name} xbee-rtt --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1");
+    println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0");
     println!(
         "  {bin_name} xbee-test --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1 --au-rate 100 --ad-rate 100"
     );
@@ -314,23 +314,28 @@ pub(crate) fn print_xbee_rtt_help(bin_name: &str) {
     println!("Usage: {bin_name} xbee-rtt [OPTIONS]");
     println!();
     println!(
-        "Runs a lightweight connectivity check across one XBee pair, then measures RTT in both directions."
+        "Runs a symmetric connectivity check and bidirectional RTT measurement across one XBee pair."
     );
     println!(
-        "The command first exchanges HELLO/ACK frames to confirm both links, elects which side starts, then runs PROBE/ECHO RTT sampling in each direction and shares the summaries before exiting."
+        "The normal mode is one local serial port per PC: run the same command on both PCs, and the peers negotiate who measures first."
     );
     println!(
-        "A compact binary frame with session ID, length, and CRC16 is used so the decoder can resynchronize after noise."
+        "Only when `--port` is given twice does one process drive two local XBee modules and treat them as a local pair."
+    );
+    println!(
+        "A compact binary frame with negotiated session ID, length, and CRC16 is used so the decoder can resynchronize after noise."
     );
     println!();
     println!("Options:");
-    println!("  -p, --port <ID=PORT[@BAUD]> Port binding. IDs: `base`, `remote`");
+    println!("  -p, --port <PORT[@BAUD]>    Local serial port for one XBee module");
     println!("                              PORT accepts a device path or `acs ports` index");
     println!("                              BAUD defaults to 115200 when omitted");
+    println!("                              Omit to auto-select one serial port");
+    println!("                              Specify twice only for one-PC local-pair mode");
     println!("      --payload-size <BYTES> Probe payload size per direction (default: 32)");
     println!("  -n, --count <COUNT>        RTT probe count per direction (default: 10)");
     println!(
-        "      --interval-ms <MS>     Delay between probe sends from the same side (default: 100)"
+        "      --interval-ms <MS>     Delay between probes from the current initiator (default: 100)"
     );
     println!(
         "      --probe-timeout-ms <MS> Time to wait for one echo before counting timeout (default: 1000)"
@@ -341,9 +346,13 @@ pub(crate) fn print_xbee_rtt_help(bin_name: &str) {
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
-    println!("  {bin_name} xbee-rtt --port base=/dev/ttyUSB0 --port remote=/dev/ttyUSB1");
+    println!("  {bin_name} xbee-rtt --port /dev/ttyUSB0");
+    println!("  # Run the same command on the other PC too");
     println!(
-        "  {bin_name} xbee-rtt --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --payload-size 64 --count 20 --interval-ms 50"
+        "  {bin_name} xbee-rtt --port /dev/ttyUSB0@921600 --payload-size 64 --count 20 --interval-ms 50"
+    );
+    println!(
+        "  {bin_name} xbee-rtt --port /dev/ttyUSB0@921600 --port /dev/ttyUSB1@921600 --payload-size 64 --count 20 --interval-ms 50"
     );
 }
 
