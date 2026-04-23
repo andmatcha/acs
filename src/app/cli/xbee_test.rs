@@ -173,13 +173,6 @@ impl XbeeMockPortId {
             )),
         }
     }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Up => "up",
-            Self::Down => "down",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4249,10 +4242,10 @@ mod tests {
 
         assert_eq!(options.role.as_deref(), Some("remote"));
         assert_eq!(options.ports.len(), 2);
-        assert_eq!(options.ports[0].id.map(|id| id.as_str()), Some("up"));
+        assert_eq!(options.ports[0].id, Some(XbeeMockPortId::Up));
         assert_eq!(options.ports[0].port, "/dev/ttyUSB2");
         assert_eq!(options.ports[0].baud, Some(460_800));
-        assert_eq!(options.ports[1].id.map(|id| id.as_str()), Some("down"));
+        assert_eq!(options.ports[1].id, Some(XbeeMockPortId::Down));
         assert_eq!(options.ports[1].port, "/dev/ttyUSB3");
         assert_eq!(options.ports[1].baud, Some(115_200));
         assert_eq!(options.pair_number, Some(2));

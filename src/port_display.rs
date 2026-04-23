@@ -119,14 +119,6 @@ impl PortDisplayConfig {
         self.output.set(target, mode);
     }
 
-    pub fn set_input(&mut self, target: impl Into<String>, mode: PortDisplayMode) {
-        self.input.set(target, mode);
-    }
-
-    pub fn set_output(&mut self, target: impl Into<String>, mode: PortDisplayMode) {
-        self.output.set(target, mode);
-    }
-
     pub fn set_for_stream(
         &mut self,
         stream: Option<PortDisplayStream>,
@@ -333,8 +325,16 @@ mod tests {
     fn display_config_resolves_per_direction() {
         let mut config = PortDisplayConfig::default();
         config.set_both("default", PortDisplayMode::HexUtf8);
-        config.set_input("/dev/ttyUSB0", PortDisplayMode::Utf8);
-        config.set_output("/dev/ttyUSB0", PortDisplayMode::Hex);
+        config.set_for_stream(
+            Some(PortDisplayStream::Input),
+            "/dev/ttyUSB0",
+            PortDisplayMode::Utf8,
+        );
+        config.set_for_stream(
+            Some(PortDisplayStream::Output),
+            "/dev/ttyUSB0",
+            PortDisplayMode::Hex,
+        );
 
         assert_eq!(config.resolve_input("/dev/ttyUSB0"), PortDisplayMode::Utf8);
         assert_eq!(config.resolve_output("/dev/ttyUSB0"), PortDisplayMode::Hex);
