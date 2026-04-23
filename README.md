@@ -8,7 +8,7 @@
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
 - `acs route`: シリアル入力を設定に応じてシリアル出力へ振り分ける
 - `acs send`: 指定形式のダミーデータを継続してシリアルポートへ送信する
-- `acs xbee-mock`: `xbee-test` の `base` 側または `remote` 側だけを 1 ポートで実行する。実機や別プロセスの peer と組み合わせて、片側だけの traffic model を流せる
+- `acs xbee-mock`: `xbee-test` の片側だけを up/down 明示の port binding で実行する。`PAIR=1` なら 1 port 共用、`PAIR=2` なら uplink/downlink を分けて、実機や別プロセスの peer と組み合わせて片側だけの traffic model を流せる
 - `acs xbee-test`: `base` / `remote` の 2 ポート間で AU(PacketACv6) / RU(RoverUpGeneral) と AD(PacketJFv1) / RD(RoverDownGeneral) の往復試験を行う。`flood` / `ping-pong` / `polling` を切り替えられ、ヘッダに実際の表示更新 fps も表示する
 
 ## グローバルインストール
@@ -100,8 +100,9 @@ acs send --port /dev/ttyUSB0 --format PacketJFv1 --rate 100
 acs send --port /dev/ttyUSB0 --format PacketACv6 --no-log
 acs send -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100 -o up=/dev/ttyUSB0@921600,utf8,roverupgeneral,10
 acs send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1@115200,packetacv6+packetjfv1
-acs xbee-mock base --port /dev/ttyUSB0@921600 --mode ping-pong --au-rate 100 --ru-rate 50
-acs xbee-mock remote --port /dev/ttyUSB1@115200 --mode polling --poll-rate 100 --base-real-percent 10 --remote-real-percent 20
+acs xbee-mock base -p /dev/ttyUSB0@921600 --option PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood
+acs xbee-mock base -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@115200 --option PAIR=2,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=ping-pong
+acs xbee-mock remote -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@115200 --option PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling
 acs xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --au-rate 100 --ru-rate 100 --ad-rate 100 --rd-rate 100
 acs xbee-test --mode ping-pong --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --au-rate 100 --ru-rate 50
 acs xbee-test --mode polling --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --poll-rate 100 --base-real-percent 10 --remote-real-percent 20
@@ -111,7 +112,8 @@ acs --version
 - 1 台だけコントローラーやシリアルポートが見つかる場合は、自動選択されます。
 - `--config` には JSON ファイルだけでなくディレクトリも指定できます。
 - 詳しいオプションや表示形式は `acs help <command>` を参照してください。
-- `acs xbee-mock` は `xbee-test` の片側だけを 1 ポートで実行し、相手側は同じ traffic model を期待値として扱います。
+- `acs xbee-mock` は `PAIR=1` で 1 port を共用し、`PAIR=2` で uplink/downlink を分離できます。
+- `acs xbee-mock` は `TX_FORMAT` に rate を持たせ、`RX_FORMAT` は monitor/decoder 対象 format を指定します。
 - `acs xbee-test` は表示更新が遅い場合も受信レートとエラー率の集計を優先し、packet 表示は別キューで追いかけます。
 - `acs xbee-test` は `AU(PacketACv6) + RU(RoverUpGeneral)` と `AD(PacketJFv1) + RD(RoverDownGeneral)` をそれぞれ混在送信でき、各 format の送受信 Hz と照合結果を表示します。
 - `acs xbee-test --mode polling` は `PollGreeting` / `PollResponse` を基本にしつつ、`base` 側と `remote` 側で独立した確率で実パケット対へ差し替えます。

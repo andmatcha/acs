@@ -59,7 +59,9 @@ pub(crate) fn print_help(bin_name: &str) {
     println!(
         "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --au-rate 100 --ad-rate 100"
     );
-    println!("  {bin_name} xbee-mock base --port /dev/ttyUSB0@921600 --mode ping-pong");
+    println!(
+        "  {bin_name} xbee-mock base -p /dev/ttyUSB0@921600 --option PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood"
+    );
     println!("  {bin_name} control --config config");
     println!("  {bin_name} --version");
     println!();
@@ -330,50 +332,30 @@ pub(crate) fn print_xbee_mock_help(bin_name: &str) {
     println!("       {bin_name} xbee-mock --role <ROLE> [OPTIONS]");
     println!();
     println!(
-        "Runs either the `base` side or the `remote` side of `xbee-test` on a single serial port."
+        "Runs either the `base` side or the `remote` side of the xbee traffic model with explicit uplink/downlink bindings."
     );
     println!(
-        "Use it to pair with a real peer or another mock while keeping the same AU/RU, AD/RD, and polling traffic model."
+        "With `PAIR=1`, one port is shared for both directions. With `PAIR=2`, `up` and `down` are bound separately."
     );
-    println!(
-        "Input and output are fixed to hex packet display for lightweight high-rate monitoring."
-    );
+    println!("Display is fixed to hex packet mode for lightweight high-rate monitoring.");
     println!();
     println!("Roles:");
-    println!("  base    Send AU/RU (or PollGreeting) and expect AD/RD (or PollResponse)");
-    println!("  remote  Expect AU/RU (or PollGreeting) and send AD/RD (or PollResponse)");
+    println!("  base    Uplink is TX, downlink is RX");
+    println!("  remote  Uplink is RX, downlink is TX");
     println!();
     println!("Options:");
-    println!("  -p, --port <PORT[@BAUD]>   Serial port used for both input and output");
+    println!("  -p, --port <PORT[@BAUD]>   Port binding for `PAIR=1`");
+    println!("  -p, --port <up=PORT[@BAUD]> Uplink binding for `PAIR=2`");
+    println!("  -p, --port <down=PORT[@BAUD]> Downlink binding for `PAIR=2`");
     println!("      --role <ROLE>          Role: `base` or `remote`");
     println!(
-        "      --mode <MODE>          Transfer mode: `flood`, `ping-pong`, or `polling` (default: flood)"
+        "      --option <K=V,...>    Xbee mock options: `PAIR`, `TX_FORMAT`, `RX_FORMAT`, `TRAFFIC_PATTERN`"
     );
-    println!("      --poll-rate <HZ>       Base polling rate in `polling` mode (default: 100)");
-    println!(
-        "      --base-real-percent <N> Base side sends AU+RU instead of PollGreeting at N% in `polling` mode (0-100, default: 0)"
-    );
-    println!(
-        "      --remote-real-percent <N> Remote side sends AD+RD instead of PollResponse at N% in `polling` mode (0-100, default: 0)"
-    );
-    println!(
-        "      --au-rate <HZ>         AU(PacketACv6) rate for the base-side model (default: 100)"
-    );
-    println!(
-        "      --ru-rate <HZ>         RU(RoverUpGeneral) rate for the base-side model (default: 100)"
-    );
-    println!(
-        "      --ad-rate <HZ>         AD(PacketJFv1) rate for the remote-side model (default: 100)"
-    );
-    println!(
-        "                              Ignored in `ping-pong`; AD is sent once per valid AU receive on the remote role"
-    );
-    println!(
-        "      --rd-rate <HZ>         RD(RoverDownGeneral) rate for the remote-side model (default: 100)"
-    );
-    println!(
-        "                              Ignored in `ping-pong`; RD is sent once per valid RU receive on the remote role"
-    );
+    println!("                              `PAIR`: `1` or `2` (default: 1)");
+    println!("                              `TX_FORMAT`: `<FORMAT[@RATE]>[+<FORMAT[@RATE]>...]`");
+    println!("                              `RX_FORMAT`: `<FORMAT>[+<FORMAT>...]`");
+    println!("                              `TRAFFIC_PATTERN`: `flood`, `ping-pong`, or `polling`");
+    println!("                              Poll formats are `PollGreeting` / `PollResponse`");
     println!("      --config <PATH>        Read options from a JSON file or directory");
     println!(
         "                              Defaults: {}",
@@ -387,12 +369,14 @@ pub(crate) fn print_xbee_mock_help(bin_name: &str) {
     println!("  -h, --help                 Show this help");
     println!();
     println!("Examples:");
-    println!("  {bin_name} xbee-mock base --port /dev/ttyUSB0@921600");
     println!(
-        "  {bin_name} xbee-mock remote --port /dev/ttyUSB1@115200 --mode ping-pong --au-rate 100 --ru-rate 50"
+        "  {bin_name} xbee-mock base -p /dev/ttyUSB0@921600 --option PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood"
     );
     println!(
-        "  {bin_name} xbee-mock --role base --port /dev/ttyUSB0@921600 --mode polling --poll-rate 100 --base-real-percent 10 --remote-real-percent 20"
+        "  {bin_name} xbee-mock base -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@115200 --option PAIR=2,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=ping-pong"
+    );
+    println!(
+        "  {bin_name} xbee-mock remote -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@115200 --option PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling"
     );
     println!("  {bin_name} xbee-mock remote --config config --no-log");
 }

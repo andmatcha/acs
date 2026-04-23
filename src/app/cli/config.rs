@@ -73,7 +73,13 @@ pub(crate) struct XbeeTestConfig {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct XbeeMockConfig {
     pub role: Option<String>,
+    pub ports: Vec<XbeeMockBindingConfig>,
+    pub pair: Option<u32>,
+    pub tx_format: Option<String>,
+    pub rx_format: Option<String>,
+    pub traffic_pattern: Option<String>,
     pub port: Option<XbeeMockPortConfig>,
+    pub monitor_ports: Vec<XbeeMockPortConfig>,
     pub mode: Option<String>,
     pub poll_rate_hz: Option<u32>,
     pub base_real_percent: Option<u32>,
@@ -126,6 +132,13 @@ pub(crate) struct XbeeTestPortConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct XbeeMockPortConfig {
+    pub port: String,
+    pub baud: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct XbeeMockBindingConfig {
+    pub id: String,
     pub port: String,
     pub baud: Option<u32>,
 }
@@ -236,7 +249,13 @@ impl XbeeTestConfig {
 impl XbeeMockConfig {
     fn merge_from(&mut self, other: XbeeMockConfig) {
         merge_option(&mut self.role, other.role);
+        merge_xbee_mock_bindings(&mut self.ports, other.ports);
+        merge_option(&mut self.pair, other.pair);
+        merge_option(&mut self.tx_format, other.tx_format);
+        merge_option(&mut self.rx_format, other.rx_format);
+        merge_option(&mut self.traffic_pattern, other.traffic_pattern);
         merge_option(&mut self.port, other.port);
+        merge_xbee_mock_monitor_ports(&mut self.monitor_ports, other.monitor_ports);
         merge_option(&mut self.mode, other.mode);
         merge_option(&mut self.poll_rate_hz, other.poll_rate_hz);
         merge_option(&mut self.base_real_percent, other.base_real_percent);
@@ -330,6 +349,35 @@ fn merge_send_monitors(target: &mut Vec<SendMonitorConfig>, monitors: Vec<SendMo
 }
 
 fn merge_xbee_test_ports(target: &mut Vec<XbeeTestPortConfig>, ports: Vec<XbeeTestPortConfig>) {
+    for port in ports {
+        if let Some(existing) = target.iter_mut().find(|existing| existing.id == port.id) {
+            *existing = port;
+        } else {
+            target.push(port);
+        }
+    }
+}
+
+fn merge_xbee_mock_monitor_ports(
+    target: &mut Vec<XbeeMockPortConfig>,
+    ports: Vec<XbeeMockPortConfig>,
+) {
+    for port in ports {
+        if let Some(existing) = target
+            .iter_mut()
+            .find(|existing| existing.port == port.port)
+        {
+            *existing = port;
+        } else {
+            target.push(port);
+        }
+    }
+}
+
+fn merge_xbee_mock_bindings(
+    target: &mut Vec<XbeeMockBindingConfig>,
+    ports: Vec<XbeeMockBindingConfig>,
+) {
     for port in ports {
         if let Some(existing) = target.iter_mut().find(|existing| existing.id == port.id) {
             *existing = port;
@@ -520,7 +568,13 @@ fn parse_xbee_mock_config(
 
     Ok(XbeeMockConfig {
         role: optional_string(object, "role")?,
+        ports: optional_xbee_mock_bindings(object, "ports")?,
+        pair: optional_u32(object, "pair")?,
+        tx_format: optional_string(object, "tx_format")?,
+        rx_format: optional_string(object, "rx_format")?,
+        traffic_pattern: optional_string(object, "traffic_pattern")?,
         port: optional_xbee_mock_port(object, "port")?,
+        monitor_ports: optional_xbee_mock_ports(object, "monitor_ports")?,
         mode: optional_string(object, "mode")?,
         poll_rate_hz: optional_u32(object, "poll_rate")?,
         base_real_percent: optional_u32(object, "base_real_percent")?,
@@ -1007,6 +1061,121 @@ fn optional_xbee_mock_port(
         return Ok(None);
     };
 
+    parse_xbee_mock_port_value(value, key)
+}
+
+fn optional_xbee_mock_ports(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Vec<XbeeMockPortConfig>, String> {
+    match object.get(key) {
+        None | Some(JsonValue::Null) => Ok(Vec::new()),
+        Some(JsonValue::String(_)) | Some(JsonValue::Object(_)) => {
+            parse_xbee_mock_port_value(object.get(key).expect("value exists"), key)
+                .map(|value| value.into_iter().collect())
+        }
+        Some(JsonValue::Array(values)) => values
+            .iter()
+            .filter_map(|value| match parse_xbee_mock_port_value(value, key) {
+                Ok(Some(spec)) => Some(Ok(spec)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect(),
+        Some(_) => Err(type_error(key, "string, object, or array")),
+    }
+}
+
+fn optional_xbee_mock_bindings(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Vec<XbeeMockBindingConfig>, String> {
+    match object.get(key) {
+        None | Some(JsonValue::Null) => Ok(Vec::new()),
+        Some(JsonValue::String(_)) | Some(JsonValue::Object(_)) => {
+            parse_xbee_mock_binding_value(object.get(key).expect("value exists"), key)
+                .map(|value| value.into_iter().collect())
+        }
+        Some(JsonValue::Array(values)) => values
+            .iter()
+            .filter_map(|value| match parse_xbee_mock_binding_value(value, key) {
+                Ok(Some(spec)) => Some(Ok(spec)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect(),
+        Some(_) => Err(type_error(key, "string, object, or array")),
+    }
+}
+
+fn parse_xbee_mock_binding_value(
+    value: &JsonValue,
+    key: &str,
+) -> Result<Option<XbeeMockBindingConfig>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(parse_xbee_mock_binding_text(trimmed, key)?))
+        }
+        JsonValue::Object(object) => parse_xbee_mock_binding_object(object, key),
+        _ => Err(type_error(key, "string or object")),
+    }
+}
+
+fn parse_xbee_mock_binding_text(value: &str, key: &str) -> Result<XbeeMockBindingConfig, String> {
+    let Some((id, port_text)) = value.split_once('=') else {
+        return Err(format!(
+            "`{key}` entry must be `up=PORT[@BAUD]` or `down=PORT[@BAUD]`"
+        ));
+    };
+
+    let port_spec = parse_port_spec_text(port_text, key)?;
+    if port_spec.display_mode.is_some() || port_spec.line_break_mode.is_some() {
+        return Err(format!(
+            "`{key}` entry must not specify display mode; xbee_mock uses fixed hex packet display"
+        ));
+    }
+
+    Ok(XbeeMockBindingConfig {
+        id: normalize_xbee_mock_port_id(id)?,
+        port: port_spec.port,
+        baud: port_spec.baud,
+    })
+}
+
+fn parse_xbee_mock_binding_object(
+    object: &JsonObject,
+    key: &str,
+) -> Result<Option<XbeeMockBindingConfig>, String> {
+    let id = optional_string(object, "id")?.unwrap_or_default();
+    let id = id.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+
+    let port = optional_string(object, "path")?
+        .or(optional_string(object, "port")?)
+        .unwrap_or_default();
+    let port = port.trim();
+    if port.is_empty() {
+        return Err(format!("`{key}.port` is required"));
+    }
+
+    Ok(Some(XbeeMockBindingConfig {
+        id: normalize_xbee_mock_port_id(id)?,
+        port: port.to_owned(),
+        baud: optional_u32(object, "baud")?,
+    }))
+}
+
+fn parse_xbee_mock_port_value(
+    value: &JsonValue,
+    key: &str,
+) -> Result<Option<XbeeMockPortConfig>, String> {
     match value {
         JsonValue::Null => Ok(None),
         JsonValue::String(text) => {
@@ -1146,6 +1315,16 @@ fn normalize_xbee_test_port_id(value: &str) -> Result<String, String> {
         "base" | "remote" => Ok(value),
         _ => Err(format!(
             "xbee_test port id must be `base` or `remote`, got `{value}`"
+        )),
+    }
+}
+
+fn normalize_xbee_mock_port_id(value: &str) -> Result<String, String> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "up" | "down" => Ok(value),
+        _ => Err(format!(
+            "xbee_mock port id must be `up` or `down`, got `{value}`"
         )),
     }
 }
@@ -1632,7 +1811,7 @@ impl<'a> JsonParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        JsonParser, SendMonitorConfig, XbeeMockPortConfig, XbeeTestPortConfig, load_config,
+        JsonParser, SendMonitorConfig, XbeeMockBindingConfig, XbeeTestPortConfig, load_config,
     };
     use crate::app::cli::common::PortSpec;
     use crate::output::OutputFormat;
@@ -2085,15 +2264,14 @@ mod tests {
             {
               "xbee_mock": {
                 "role": "remote",
-                "port": { "port": "/dev/ttyUSB2", "baud": 460800 },
-                "mode": "polling",
-                "poll_rate": 100,
-                "base_real_percent": 10,
-                "remote_real_percent": 20,
-                "au_rate": 100,
-                "ru_rate": 90,
-                "ad_rate": 80,
-                "rd_rate": 70
+                "ports": [
+                  "up=/dev/ttyUSB2@460800",
+                  { "id": "down", "port": "/dev/ttyUSB3", "baud": 115200 }
+                ]
+                ,"pair": 2,
+                "tx_format": "packetjfv1@80+roverdowngeneral@70",
+                "rx_format": "packetacv6+roverupgeneral",
+                "traffic_pattern": "ping-pong"
               }
             }
             "#,
@@ -2104,20 +2282,33 @@ mod tests {
 
         assert_eq!(config.xbee_mock.role.as_deref(), Some("remote"));
         assert_eq!(
-            config.xbee_mock.port,
-            Some(XbeeMockPortConfig {
-                port: String::from("/dev/ttyUSB2"),
-                baud: Some(460_800),
-            })
+            config.xbee_mock.ports,
+            vec![
+                XbeeMockBindingConfig {
+                    id: String::from("up"),
+                    port: String::from("/dev/ttyUSB2"),
+                    baud: Some(460_800),
+                },
+                XbeeMockBindingConfig {
+                    id: String::from("down"),
+                    port: String::from("/dev/ttyUSB3"),
+                    baud: Some(115_200),
+                },
+            ]
         );
-        assert_eq!(config.xbee_mock.mode.as_deref(), Some("polling"));
-        assert_eq!(config.xbee_mock.poll_rate_hz, Some(100));
-        assert_eq!(config.xbee_mock.base_real_percent, Some(10));
-        assert_eq!(config.xbee_mock.remote_real_percent, Some(20));
-        assert_eq!(config.xbee_mock.au_rate_hz, Some(100));
-        assert_eq!(config.xbee_mock.ru_rate_hz, Some(90));
-        assert_eq!(config.xbee_mock.ad_rate_hz, Some(80));
-        assert_eq!(config.xbee_mock.rd_rate_hz, Some(70));
+        assert_eq!(config.xbee_mock.pair, Some(2));
+        assert_eq!(
+            config.xbee_mock.tx_format.as_deref(),
+            Some("packetjfv1@80+roverdowngeneral@70")
+        );
+        assert_eq!(
+            config.xbee_mock.rx_format.as_deref(),
+            Some("packetacv6+roverupgeneral")
+        );
+        assert_eq!(
+            config.xbee_mock.traffic_pattern.as_deref(),
+            Some("ping-pong")
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
