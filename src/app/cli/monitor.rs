@@ -1,7 +1,6 @@
 use super::common::{
     PortSpec, default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
 };
-use super::config;
 use super::help::{is_help_flag, print_monitor_help};
 use super::signal;
 use crate::port_display::{PortDisplayConfig, parse_display_assignment};
@@ -18,7 +17,6 @@ struct MonitorCliOptions {
     ports: Vec<PortSpec>,
     baud: Option<u32>,
     display: PortDisplayConfig,
-    config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
 }
 
@@ -55,8 +53,7 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
-    let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
-    let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
+    let settings = build_settings(cli_options)?;
     let mut session = SessionRuntime::new(SessionSpec {
         title: String::from("acs monitor"),
         command_name: String::from("monitor"),
@@ -83,37 +80,10 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<PathBuf, String> {
     session.run_loop(WAIT_INTERVAL, signal::is_stop_requested, |_, _| Ok(()))
 }
 
-fn build_settings(
-    cli_options: MonitorCliOptions,
-    file_config: config::AppConfig,
-    config_lookup: &super::paths::ConfigLookup,
-) -> Result<MonitorSettings, String> {
-    let using_cli_ports = !cli_options.ports.is_empty();
-    let requested_ports = if using_cli_ports {
-        cli_options.ports
-    } else {
-        file_config.monitor.ports
-    };
-    let default_baud = cli_options
-        .baud
-        .or(file_config.monitor.baud)
-        .unwrap_or_else(default_baud_rate);
-    let mut display = file_config.monitor.display;
-    if !using_cli_ports {
-        for port in &requested_ports {
-            if let Some(mode) = port.display_mode {
-                display.set_input(port.port.clone(), mode);
-            }
-            if let Some(mode) = port.line_break_mode {
-                display.set_line_break_for_stream(
-                    Some(crate::port_display::PortDisplayStream::Input),
-                    port.port.clone(),
-                    mode,
-                );
-            }
-        }
-    }
-    display.merge_from(cli_options.display);
+fn build_settings(cli_options: MonitorCliOptions) -> Result<MonitorSettings, String> {
+    let requested_ports = cli_options.ports;
+    let default_baud = cli_options.baud.unwrap_or_else(default_baud_rate);
+    let display = cli_options.display;
     let inputs = if requested_ports.is_empty() {
         let port = serial::resolve_port(None).map_err(|error| error.to_string())?;
         vec![SessionInputSpec {
@@ -148,11 +118,7 @@ fn build_settings(
         }
         inputs
     };
-    let log_dir = cli_options
-        .log_dir
-        .or(file_config.monitor.log_dir)
-        .or(file_config.log_dir)
-        .unwrap_or_else(|| default_log_dir(config_lookup));
+    let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
 
     Ok(MonitorSettings { inputs, log_dir })
 }
@@ -175,9 +141,6 @@ fn parse_monitor_args(args: Vec<String>) -> Result<MonitorCliOptions, String> {
                 let value = next_value(&mut iter, "--display")?;
                 let assignment = parse_display_assignment(&value)?;
                 assignment.apply_to(&mut options.display);
-            }
-            "--config" => {
-                options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
             }
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))

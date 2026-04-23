@@ -1,8 +1,6 @@
 use super::common::{
     PortSpec, default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
-    resolve_requested_port_spec,
 };
-use super::config;
 use super::help::{is_help_flag, print_send_help};
 use super::signal;
 use crate::output::OutputFormat;
@@ -35,7 +33,6 @@ struct SendCliOptions {
     format: Option<String>,
     display: PortDisplayConfig,
     monitor_ports: Vec<SendMonitorBinding>,
-    config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
     no_log: bool,
     interactive: bool,
@@ -812,8 +809,7 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String> {
-    let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
-    let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
+    let settings = build_settings(cli_options)?;
     let output_specs = settings.outputs.clone();
 
     let mut payload_lengths = BTreeMap::new();
@@ -990,12 +986,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     })
 }
 
-fn build_settings(
-    cli_options: SendCliOptions,
-    file_config: config::AppConfig,
-    config_lookup: &super::paths::ConfigLookup,
-) -> Result<SendSettings, String> {
-    let config = file_config.send;
+fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
     let using_cli_outputs = !cli_options.outputs.is_empty();
     let using_cli_port = cli_options.port.is_some();
     if using_cli_outputs && using_cli_port {
@@ -1003,61 +994,22 @@ fn build_settings(
             "cannot combine --port with --output-port; use one style or the other",
         ));
     }
-    if !config.outputs.is_empty() && using_cli_port {
-        return Err(String::from(
-            "cannot use --port when `send.outputs` is configured; use --output-port instead",
-        ));
-    }
 
-    let using_cli_monitor_ports = !cli_options.monitor_ports.is_empty();
-    let default_baud = cli_options
-        .baud
-        .or(config.baud)
-        .unwrap_or_else(default_baud_rate);
-    let default_rate_hz = cli_options
-        .rate_hz
-        .or(config.rate_hz)
-        .unwrap_or(DEFAULT_SEND_RATE_HZ);
+    let default_baud = cli_options.baud.unwrap_or_else(default_baud_rate);
+    let default_rate_hz = cli_options.rate_hz.unwrap_or(DEFAULT_SEND_RATE_HZ);
     if default_rate_hz == 0 {
         return Err(String::from("--rate must be greater than 0"));
     }
     let default_format_name = cli_options
         .format
         .clone()
-        .or(config.format.clone())
         .unwrap_or_else(|| String::from("packetacv6"));
     let default_format = OutputFormat::parse(&default_format_name)?;
-    let output_bindings = resolve_output_bindings(
-        &cli_options,
-        &config,
-        default_baud,
-        default_rate_hz,
-        default_format,
-    )?;
-    let monitor_port_specs =
-        resolve_monitor_bindings(&cli_options, &config, using_cli_monitor_ports)?;
-
-    let mut display = config.display;
-    if !using_cli_monitor_ports {
-        for port_spec in &monitor_port_specs {
-            if let Some(mode) = port_spec.display_mode {
-                display.set_input(port_spec.port.clone(), mode);
-            }
-            if let Some(mode) = port_spec.line_break_mode {
-                display.set_line_break_for_stream(
-                    Some(crate::port_display::PortDisplayStream::Input),
-                    port_spec.port.clone(),
-                    mode,
-                );
-            }
-        }
-    }
-    display.merge_from(cli_options.display);
-    let log_dir = cli_options
-        .log_dir
-        .or(config.log_dir)
-        .or(file_config.log_dir)
-        .unwrap_or_else(|| default_log_dir(config_lookup));
+    let output_bindings =
+        resolve_output_bindings(&cli_options, default_baud, default_rate_hz, default_format)?;
+    let monitor_port_specs = resolve_monitor_bindings(&cli_options)?;
+    let display = cli_options.display;
+    let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
 
     let mut outputs = Vec::new();
     let mut inputs = Vec::new();
@@ -1294,7 +1246,6 @@ fn realign_output_schedule(schedule: &mut OutputSchedule, now: Instant) {
 
 fn resolve_output_bindings(
     cli_options: &SendCliOptions,
-    config: &config::SendConfig,
     default_baud: u32,
     default_rate_hz: u32,
     default_format: OutputFormat,
@@ -1310,30 +1261,7 @@ fn resolve_output_bindings(
             .collect();
     }
 
-    if !config.outputs.is_empty() {
-        return config
-            .outputs
-            .iter()
-            .map(|output| {
-                resolve_send_output_binding(
-                    SendOutputBinding {
-                        id: output.id.clone(),
-                        port: output.port.clone(),
-                        baud: output.baud,
-                        rate_hz: output.rate_hz,
-                        format: output.format.clone(),
-                        display_mode: output.display_mode,
-                        line_break_mode: output.line_break_mode,
-                    },
-                    default_baud,
-                    default_rate_hz,
-                    default_format,
-                )
-            })
-            .collect();
-    }
-
-    let selected_port = resolve_requested_port_spec(cli_options.port.clone(), config.port.clone());
+    let selected_port = cli_options.port.clone().and_then(PortSpec::normalized);
     let port = match &selected_port {
         Some(port_spec) => {
             serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?
@@ -1409,34 +1337,12 @@ struct ResolvedSendMonitorBinding {
 
 fn resolve_monitor_bindings(
     cli_options: &SendCliOptions,
-    config: &config::SendConfig,
-    using_cli_monitor_ports: bool,
 ) -> Result<Vec<ResolvedSendMonitorBinding>, String> {
-    if using_cli_monitor_ports {
-        return cli_options
-            .monitor_ports
-            .iter()
-            .cloned()
-            .map(resolve_send_monitor_binding)
-            .collect();
-    }
-
-    config
+    cli_options
         .monitor_ports
         .iter()
-        .map(|binding| {
-            resolve_send_monitor_binding(SendMonitorBinding {
-                port: binding.port.clone(),
-                baud: binding.baud,
-                formats: binding
-                    .format
-                    .iter()
-                    .map(|format| format.to_owned())
-                    .collect(),
-                display_mode: binding.display_mode,
-                line_break_mode: binding.line_break_mode,
-            })
-        })
+        .cloned()
+        .map(resolve_send_monitor_binding)
         .collect()
 }
 
@@ -1494,9 +1400,6 @@ fn parse_send_args(args: Vec<String>) -> Result<SendCliOptions, String> {
                     )?)?)
             }
             "--interactive" | "-i" => options.interactive = true,
-            "--config" => {
-                options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
-            }
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
@@ -1604,14 +1507,11 @@ mod tests {
         MixedFormatDecoder, ObservedInput, OutputSchedule, SendOutputSettings,
         estimated_output_line_bps, matches_rover_down_packet, parse_output_format_list,
         parse_send_args, parse_send_monitor_binding, parse_send_output_binding,
-        realign_output_schedule, resolve_display_mode, resolve_requested_port_spec,
-        validate_output_port_loads,
+        realign_output_schedule, resolve_display_mode, validate_output_port_loads,
     };
-    use crate::app::cli::common::PortSpec;
     use crate::output::OutputFormat;
     use crate::port_display::{LineBreakMode, PortDisplayMode};
     use crate::session::runtime::SessionOutputSpec;
-    use std::path::PathBuf;
     use std::time::Instant;
 
     #[test]
@@ -1682,50 +1582,10 @@ mod tests {
     }
 
     #[test]
-    fn requested_port_falls_back_to_config_when_cli_port_is_empty() {
-        assert_eq!(
-            resolve_requested_port_spec(
-                Some(PortSpec {
-                    port: String::from(""),
-                    baud: None,
-                    display_mode: None,
-                    line_break_mode: None,
-                }),
-                Some(PortSpec {
-                    port: String::from("/dev/ttyUSB0"),
-                    baud: Some(115_200),
-                    display_mode: Some(PortDisplayMode::Hex),
-                    line_break_mode: Some(LineBreakMode::Packet),
-                }),
-            ),
-            Some(PortSpec {
-                port: String::from("/dev/ttyUSB0"),
-                baud: Some(115_200),
-                display_mode: Some(PortDisplayMode::Hex),
-                line_break_mode: Some(LineBreakMode::Packet),
-            })
-        );
-        assert_eq!(
-            resolve_requested_port_spec(
-                None,
-                Some(PortSpec {
-                    port: String::from("   "),
-                    baud: None,
-                    display_mode: None,
-                    line_break_mode: None,
-                })
-            ),
-            None
-        );
-    }
-
-    #[test]
     fn parse_send_args_accepts_display_and_log_dir() {
         let options = parse_send_args(vec![
             String::from("--display"),
             String::from("output:default=hex"),
-            String::from("--config"),
-            String::from("config"),
             String::from("--log-dir"),
             String::from("tmp/send-logs"),
             String::from("--no-log"),
@@ -1736,8 +1596,10 @@ mod tests {
             options.display.resolve_output("/dev/ttyUSB0"),
             PortDisplayMode::Hex
         );
-        assert_eq!(options.config_path, Some(PathBuf::from("config")));
-        assert_eq!(options.log_dir, Some(PathBuf::from("tmp/send-logs")));
+        assert_eq!(
+            options.log_dir,
+            Some(std::path::PathBuf::from("tmp/send-logs"))
+        );
         assert!(options.no_log);
     }
 

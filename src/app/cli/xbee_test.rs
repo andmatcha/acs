@@ -1,7 +1,6 @@
 use super::common::{
     default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
 };
-use super::config;
 use super::help::{is_help_flag, print_xbee_mock_help, print_xbee_test_help};
 use super::signal;
 use crate::output::OutputFormat;
@@ -56,7 +55,6 @@ struct XbeeTestCliOptions {
     ru_rate_hz: Option<u32>,
     ad_rate_hz: Option<u32>,
     rd_rate_hz: Option<u32>,
-    config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
     no_log: bool,
 }
@@ -119,7 +117,6 @@ struct XbeeMockCliOptions {
     tx_formats: Option<Vec<XbeeMockTxFormat>>,
     rx_formats: Option<Vec<XbeeTestFrameKind>>,
     traffic_pattern: Option<String>,
-    config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
     no_log: bool,
 }
@@ -188,6 +185,12 @@ impl XbeeMockPortId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct XbeeMockPortBinding {
     id: Option<XbeeMockPortId>,
+    port: String,
+    baud: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct XbeeMockResolvedPortBinding {
     port: String,
     baud: Option<u32>,
 }
@@ -3276,8 +3279,7 @@ pub(crate) fn run_mock(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: XbeeTestCliOptions) -> Result<XbeeTestRunResult, String> {
-    let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
-    let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
+    let settings = build_settings(cli_options)?;
     let mut outputs = vec![
         SessionOutputSpec {
             id: BASE_AU_OUTPUT_ID.to_owned(),
@@ -3405,8 +3407,7 @@ fn run_with_options(cli_options: XbeeTestCliOptions) -> Result<XbeeTestRunResult
 }
 
 fn run_mock_with_options(cli_options: XbeeMockCliOptions) -> Result<XbeeMockRunResult, String> {
-    let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
-    let settings = build_mock_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
+    let settings = build_mock_settings(cli_options)?;
     let input_id = settings.role.as_str();
     let rx_port = settings.rx_port().clone();
     let tx_port = settings.tx_port().clone();
@@ -3493,26 +3494,8 @@ fn run_mock_with_options(cli_options: XbeeMockCliOptions) -> Result<XbeeMockRunR
     Ok(state.into_inner().run_result(log_path))
 }
 
-fn build_settings(
-    cli_options: XbeeTestCliOptions,
-    file_config: config::AppConfig,
-    config_lookup: &super::paths::ConfigLookup,
-) -> Result<XbeeTestSettings, String> {
-    let mut ports = file_config
-        .xbee_test
-        .ports
-        .into_iter()
-        .map(|binding| {
-            (
-                binding.id,
-                XbeeTestPortBinding {
-                    id: String::new(),
-                    port: binding.port,
-                    baud: binding.baud,
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+fn build_settings(cli_options: XbeeTestCliOptions) -> Result<XbeeTestSettings, String> {
+    let mut ports = BTreeMap::new();
 
     for binding in cli_options.ports {
         ports.insert(
@@ -3545,39 +3528,21 @@ fn build_settings(
     let mode = cli_options
         .mode
         .as_deref()
-        .or(file_config.xbee_test.mode.as_deref())
         .map(XbeeTestMode::parse)
         .transpose()?
         .unwrap_or(XbeeTestMode::Flood);
-    let poll_rate_hz = cli_options
-        .poll_rate_hz
-        .or(file_config.xbee_test.poll_rate_hz)
-        .unwrap_or(DEFAULT_RATE_HZ);
+    let poll_rate_hz = cli_options.poll_rate_hz.unwrap_or(DEFAULT_RATE_HZ);
     let base_real_percent = cli_options
         .base_real_percent
-        .or(file_config.xbee_test.base_real_percent)
         .unwrap_or(DEFAULT_REAL_PERCENT);
     let remote_real_percent = cli_options
         .remote_real_percent
-        .or(file_config.xbee_test.remote_real_percent)
         .unwrap_or(DEFAULT_REAL_PERCENT);
 
-    let au_rate_hz = cli_options
-        .au_rate_hz
-        .or(file_config.xbee_test.au_rate_hz)
-        .unwrap_or(DEFAULT_RATE_HZ);
-    let ru_rate_hz = cli_options
-        .ru_rate_hz
-        .or(file_config.xbee_test.ru_rate_hz)
-        .unwrap_or(DEFAULT_RATE_HZ);
-    let ad_rate_hz = cli_options
-        .ad_rate_hz
-        .or(file_config.xbee_test.ad_rate_hz)
-        .unwrap_or(DEFAULT_RATE_HZ);
-    let rd_rate_hz = cli_options
-        .rd_rate_hz
-        .or(file_config.xbee_test.rd_rate_hz)
-        .unwrap_or(DEFAULT_RATE_HZ);
+    let au_rate_hz = cli_options.au_rate_hz.unwrap_or(DEFAULT_RATE_HZ);
+    let ru_rate_hz = cli_options.ru_rate_hz.unwrap_or(DEFAULT_RATE_HZ);
+    let ad_rate_hz = cli_options.ad_rate_hz.unwrap_or(DEFAULT_RATE_HZ);
+    let rd_rate_hz = cli_options.rd_rate_hz.unwrap_or(DEFAULT_RATE_HZ);
     if au_rate_hz == 0 {
         return Err(String::from("--au-rate must be greater than 0"));
     }
@@ -3607,11 +3572,7 @@ fn build_settings(
     let ad_rate_hz = ad_rate_hz.max(1);
     let rd_rate_hz = rd_rate_hz.max(1);
 
-    let log_dir = cli_options
-        .log_dir
-        .or(file_config.xbee_test.log_dir)
-        .or(file_config.log_dir)
-        .unwrap_or_else(|| default_log_dir(config_lookup));
+    let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
 
     Ok(XbeeTestSettings {
         base_port: ResolvedXbeeTestPort {
@@ -3635,50 +3596,18 @@ fn build_settings(
     })
 }
 
-fn build_mock_settings(
-    cli_options: XbeeMockCliOptions,
-    file_config: config::AppConfig,
-    config_lookup: &super::paths::ConfigLookup,
-) -> Result<XbeeMockSettings, String> {
-    let config::AppConfig {
-        log_dir: app_log_dir,
-        xbee_mock: file_xbee_mock,
-        ..
-    } = file_config;
+fn build_mock_settings(cli_options: XbeeMockCliOptions) -> Result<XbeeMockSettings, String> {
     let role = cli_options
         .role
         .as_deref()
-        .or(file_xbee_mock.role.as_deref())
         .map(XbeeMockRole::parse)
         .transpose()?
         .ok_or_else(|| String::from("xbee-mock requires a role: `base` or `remote`"))?;
-    let pair_number = cli_options.pair_number.or(file_xbee_mock.pair).unwrap_or(1);
+    let pair_number = cli_options.pair_number.unwrap_or(1);
     if !matches!(pair_number, 1 | 2) {
         return Err(String::from("xbee-mock PAIR must be 1 or 2"));
     }
-    let requested_ports = if !cli_options.ports.is_empty() {
-        cli_options.ports
-    } else if !file_xbee_mock.ports.is_empty() {
-        file_xbee_mock
-            .ports
-            .into_iter()
-            .map(|binding| {
-                Ok::<XbeeMockPortBinding, String>(XbeeMockPortBinding {
-                    id: Some(XbeeMockPortId::parse(&binding.id)?),
-                    port: binding.port,
-                    baud: binding.baud,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    } else if let Some(binding) = file_xbee_mock.port {
-        vec![XbeeMockPortBinding {
-            id: None,
-            port: binding.port,
-            baud: binding.baud,
-        }]
-    } else {
-        Vec::new()
-    };
+    let requested_ports = cli_options.ports;
     let (uplink_binding, downlink_binding) = resolve_xbee_mock_ports(pair_number, requested_ports)?;
     let uplink_port = ResolvedXbeeTestPort {
         port: serial::resolve_port(Some(&uplink_binding.port))
@@ -3694,27 +3623,16 @@ fn build_mock_settings(
     let traffic_pattern = cli_options
         .traffic_pattern
         .as_deref()
-        .or(file_xbee_mock.traffic_pattern.as_deref())
         .map(XbeeTestMode::parse)
         .transpose()?
         .unwrap_or(XbeeTestMode::Flood);
     let tx_formats = match cli_options.tx_formats {
         Some(tx_formats) => tx_formats,
-        None => file_xbee_mock
-            .tx_format
-            .as_deref()
-            .map(parse_xbee_mock_tx_format_list)
-            .transpose()?
-            .ok_or_else(|| String::from("xbee-mock requires TX_FORMAT"))?,
+        None => return Err(String::from("xbee-mock requires TX_FORMAT")),
     };
     let rx_formats = match cli_options.rx_formats {
         Some(rx_formats) => rx_formats,
-        None => file_xbee_mock
-            .rx_format
-            .as_deref()
-            .map(parse_xbee_mock_rx_format_list)
-            .transpose()?
-            .ok_or_else(|| String::from("xbee-mock requires RX_FORMAT"))?,
+        None => return Err(String::from("xbee-mock requires RX_FORMAT")),
     };
     validate_xbee_mock_traffic(role, traffic_pattern, &tx_formats, &rx_formats)?;
 
@@ -3749,11 +3667,7 @@ fn build_mock_settings(
         .map(|format| format.rate_hz)
         .unwrap_or(DEFAULT_RATE_HZ);
 
-    let log_dir = cli_options
-        .log_dir
-        .or(file_xbee_mock.log_dir)
-        .or(app_log_dir)
-        .unwrap_or_else(|| default_log_dir(config_lookup));
+    let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
 
     Ok(XbeeMockSettings {
         role,
@@ -3819,9 +3733,6 @@ fn parse_xbee_test_args(args: Vec<String>) -> Result<XbeeTestCliOptions, String>
                 let value = next_value(&mut iter, "--rd-rate")?;
                 options.rd_rate_hz = Some(parse_u32_arg("--rd-rate", &value)?);
             }
-            "--config" => {
-                options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
-            }
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
@@ -3848,9 +3759,6 @@ fn parse_xbee_mock_args(args: Vec<String>) -> Result<XbeeMockCliOptions, String>
                     &mut options,
                     &next_value(&mut iter, "--option")?,
                 )?;
-            }
-            "--config" => {
-                options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
             }
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
@@ -3914,7 +3822,7 @@ fn parse_xbee_mock_port_binding(value: &str) -> Result<XbeeMockPortBinding, Stri
 fn resolve_xbee_mock_ports(
     pair_number: u32,
     ports: Vec<XbeeMockPortBinding>,
-) -> Result<(config::XbeeMockPortConfig, config::XbeeMockPortConfig), String> {
+) -> Result<(XbeeMockResolvedPortBinding, XbeeMockResolvedPortBinding), String> {
     if ports.is_empty() {
         return Err(String::from(
             "xbee-mock requires at least one `-p PORT[@BAUD]`",
@@ -3928,7 +3836,7 @@ fn resolve_xbee_mock_ports(
             ));
         }
         let binding = ports.into_iter().next().expect("one binding exists");
-        let resolved = config::XbeeMockPortConfig {
+        let resolved = XbeeMockResolvedPortBinding {
             port: binding.port,
             baud: binding.baud,
         };
@@ -3946,7 +3854,7 @@ fn resolve_xbee_mock_ports(
         match id {
             XbeeMockPortId::Up => {
                 if up
-                    .replace(config::XbeeMockPortConfig {
+                    .replace(XbeeMockResolvedPortBinding {
                         port: binding.port,
                         baud: binding.baud,
                     })
@@ -3957,7 +3865,7 @@ fn resolve_xbee_mock_ports(
             }
             XbeeMockPortId::Down => {
                 if down
-                    .replace(config::XbeeMockPortConfig {
+                    .replace(XbeeMockResolvedPortBinding {
                         port: binding.port,
                         baud: binding.baud,
                     })
@@ -4245,7 +4153,6 @@ mod tests {
         build_poll_frame, matches_poll_frame, parse_xbee_mock_args, parse_xbee_mock_port_binding,
         parse_xbee_test_args, parse_xbee_test_port_binding, resolve_xbee_mock_ports,
     };
-    use std::path::PathBuf;
 
     #[test]
     fn parse_xbee_test_args_accepts_labeled_ports_and_rates() {
@@ -4270,8 +4177,6 @@ mod tests {
             String::from("80"),
             String::from("--rd-rate"),
             String::from("70"),
-            String::from("--config"),
-            String::from("config"),
             String::from("--log-dir"),
             String::from("tmp/logs"),
             String::from("--no-log"),
@@ -4291,8 +4196,7 @@ mod tests {
         assert_eq!(options.ru_rate_hz, Some(90));
         assert_eq!(options.ad_rate_hz, Some(80));
         assert_eq!(options.rd_rate_hz, Some(70));
-        assert_eq!(options.config_path, Some(PathBuf::from("config")));
-        assert_eq!(options.log_dir, Some(PathBuf::from("tmp/logs")));
+        assert_eq!(options.log_dir, Some(std::path::PathBuf::from("tmp/logs")));
         assert!(options.no_log);
     }
 
@@ -4315,8 +4219,6 @@ mod tests {
             String::from(
                 "PAIR=2,TX_FORMAT=packetjfv1@80+roverdowngeneral@70,RX_FORMAT=packetacv6+roverupgeneral,TRAFFIC_PATTERN=ping-pong",
             ),
-            String::from("--config"),
-            String::from("config"),
             String::from("--log-dir"),
             String::from("tmp/logs"),
             String::from("--no-log"),
@@ -4355,8 +4257,7 @@ mod tests {
                 XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral),
             ])
         );
-        assert_eq!(options.config_path, Some(PathBuf::from("config")));
-        assert_eq!(options.log_dir, Some(PathBuf::from("tmp/logs")));
+        assert_eq!(options.log_dir, Some(std::path::PathBuf::from("tmp/logs")));
         assert!(options.no_log);
     }
 

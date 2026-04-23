@@ -1,6 +1,5 @@
 mod commands;
 pub(crate) mod common;
-mod config;
 mod control;
 mod help;
 mod monitor;

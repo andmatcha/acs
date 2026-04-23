@@ -90,5 +90,4 @@ install_binary_from_source \
     "$BUILD_SOURCE_REF"
 
 ensure_standard_global_layout
-install_example_configs "$SOURCE_DIR/config.example" "$(acs_config_dir)"
 print_global_install_summary

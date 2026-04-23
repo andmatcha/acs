@@ -62,7 +62,6 @@ pub(crate) fn print_help(bin_name: &str) {
     println!(
         "  {bin_name} xbee-mock base -p /dev/ttyUSB0@921600 --option PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood"
     );
-    println!("  {bin_name} control --config config");
     println!("  {bin_name} --version");
     println!();
     println!(
@@ -151,11 +150,6 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("                                    + optional +line/+packet for monitor input");
     println!("      --monitor <PORT[@BAUD][,DISPLAY]> Additional serial port to monitor");
-    println!("      --config <PATH>        Read options from a JSON file or directory");
-    println!(
-        "                              Defaults: {}",
-        paths::default_config_help()
-    );
     println!(
         "      --log-dir <DIR>        Log directory (default: {})",
         paths::default_log_help()
@@ -173,7 +167,6 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "  {bin_name} control --display input:/dev/ttyUSB0=utf8 --display output:/dev/ttyUSB0=hex"
     );
     println!("  {bin_name} control --controller 0 --monitor /dev/ttyUSB1");
-    println!("  {bin_name} control --config config");
 }
 
 pub(crate) fn print_send_help(bin_name: &str) {
@@ -211,11 +204,6 @@ pub(crate) fn print_send_help(bin_name: &str) {
     );
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("                                    + optional +line/+packet for monitor input");
-    println!("      --config <PATH>        Read options from a JSON file or directory");
-    println!(
-        "                              Defaults: {}",
-        paths::default_config_help()
-    );
     println!(
         "      --log-dir <DIR>        Log directory (default: {})",
         paths::default_log_help()
@@ -246,7 +234,6 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("  {bin_name} send --interactive --port /dev/ttyUSB0@115200");
     println!("  {bin_name} send -i --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
     println!("  {bin_name} send --display output:default=hex --display input:default=utf8+packet");
-    println!("  {bin_name} send --config config");
 }
 
 pub(crate) fn print_xbee_test_help(bin_name: &str) {
@@ -296,11 +283,6 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     println!(
         "                              Ignored in `ping-pong`; RD is sent once per valid RU receive"
     );
-    println!("      --config <PATH>        Read options from a JSON file or directory");
-    println!(
-        "                              Defaults: {}",
-        paths::default_config_help()
-    );
     println!(
         "      --log-dir <DIR>        Log directory (default: {})",
         paths::default_log_help()
@@ -324,7 +306,6 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     println!(
         "  {bin_name} xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@115200 --no-log"
     );
-    println!("  {bin_name} xbee-test --config config");
 }
 
 pub(crate) fn print_xbee_mock_help(bin_name: &str) {
@@ -356,11 +337,6 @@ pub(crate) fn print_xbee_mock_help(bin_name: &str) {
     println!("                              `RX_FORMAT`: `<FORMAT>[+<FORMAT>...]`");
     println!("                              `TRAFFIC_PATTERN`: `flood`, `ping-pong`, or `polling`");
     println!("                              Poll formats are `PollGreeting` / `PollResponse`");
-    println!("      --config <PATH>        Read options from a JSON file or directory");
-    println!(
-        "                              Defaults: {}",
-        paths::default_config_help()
-    );
     println!(
         "      --log-dir <DIR>        Log directory (default: {})",
         paths::default_log_help()
@@ -378,7 +354,9 @@ pub(crate) fn print_xbee_mock_help(bin_name: &str) {
     println!(
         "  {bin_name} xbee-mock remote -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@115200 --option PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling"
     );
-    println!("  {bin_name} xbee-mock remote --config config --no-log");
+    println!(
+        "  {bin_name} xbee-mock remote --role remote -p /dev/ttyUSB0@921600 --option PAIR=1,TX_FORMAT=packetjfv1@80+roverdowngeneral@70,RX_FORMAT=packetacv6+roverupgeneral,TRAFFIC_PATTERN=flood --no-log"
+    );
 }
 
 pub(crate) fn print_monitor_help(bin_name: &str) {
@@ -394,11 +372,6 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("                                    + optional +line/+packet for monitor input");
-    println!("      --config <PATH>        Read options from a JSON file or directory");
-    println!(
-        "                              Defaults: {}",
-        paths::default_config_help()
-    );
     println!(
         "      --log-dir <DIR>        Log directory (default: {})",
         paths::default_log_help()
@@ -414,20 +387,17 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
         "  {bin_name} monitor --display input:/dev/ttyUSB0=utf8+packet --display input:default=hex+utf8+line"
     );
     println!("  {bin_name} monitor --port /dev/ttyUSB0 --port /dev/ttyUSB1");
-    println!("  {bin_name} monitor --config config");
 }
 
 pub(crate) fn print_route_help(bin_name: &str) {
     println!("Usage: {bin_name} route [TEMPLATE] [OPTIONS]");
     println!();
     println!("Routes bytes from one or more serial inputs to one or more serial outputs.");
-    println!(
-        "Routing behavior can be defined directly in config, or selected from route templates."
-    );
+    println!("Routing behavior can be selected from built-in route templates.");
     println!();
     println!("Options:");
     println!("      --template <NAME>       Route template name (same as positional TEMPLATE)");
-    println!("      --list-templates        Show built-in and config-defined route templates");
+    println!("      --list-templates        Show built-in route templates");
     println!("  -i, --input-port <ID=PORT[@BAUD][,DISPLAY]>  Route input port (repeatable)");
     println!("  -o, --output-port <ID=PORT[@BAUD][,DISPLAY]> Route output port (repeatable)");
     println!("  -b, --baud <BAUD_RATE>      Default baud rate for ports without inline baud");
@@ -436,11 +406,6 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("                                    + optional +line/+packet for monitor input");
-    println!("      --config <PATH>         Read options from a JSON file or directory");
-    println!(
-        "                               Defaults: {}",
-        paths::default_config_help()
-    );
     println!(
         "      --log-dir <DIR>         Log directory (default: {})",
         paths::default_log_help()
@@ -463,7 +428,6 @@ pub(crate) fn print_route_help(bin_name: &str) {
         "  {bin_name} route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/ttyUSB2 -o out_b=/dev/ttyUSB3"
     );
     println!("  {bin_name} route --list-templates");
-    println!("  {bin_name} route --config config");
 }
 
 pub(crate) fn is_help_flag(arg: &str) -> bool {

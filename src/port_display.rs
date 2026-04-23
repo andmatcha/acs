@@ -67,16 +67,6 @@ impl PortDisplayScopeConfig {
         }
     }
 
-    fn merge_from(&mut self, other: PortDisplayScopeConfig) {
-        if let Some(mode) = other.default_mode {
-            self.default_mode = Some(mode);
-        }
-
-        for (port, mode) in other.per_port {
-            self.per_port.insert(port, mode);
-        }
-    }
-
     fn resolve(&self, port: &str) -> PortDisplayMode {
         self.per_port
             .get(port)
@@ -103,15 +93,6 @@ impl LineBreakScopeConfig {
             self.default_mode = Some(mode);
         } else {
             self.per_port.insert(target, mode);
-        }
-    }
-
-    fn merge_from(&mut self, other: LineBreakScopeConfig) {
-        if let Some(mode) = other.default_mode {
-            self.default_mode = Some(mode);
-        }
-        for (port, mode) in other.per_port {
-            self.per_port.insert(port, mode);
         }
     }
 
@@ -171,12 +152,6 @@ impl PortDisplayConfig {
             Some(PortDisplayStream::Output) => {} // line break only applies to input
             _ => self.input_line_break.set(target, mode),
         }
-    }
-
-    pub fn merge_from(&mut self, other: PortDisplayConfig) {
-        self.input.merge_from(other.input);
-        self.output.merge_from(other.output);
-        self.input_line_break.merge_from(other.input_line_break);
     }
 
     pub fn resolve_input(&self, port: &str) -> PortDisplayMode {

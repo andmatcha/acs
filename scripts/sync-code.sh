@@ -28,5 +28,4 @@ install_binary_from_source \
     "$BUILD_SOURCE_REF"
 
 ensure_standard_global_layout
-info "left existing global config files untouched"
 print_global_install_summary

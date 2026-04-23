@@ -1,8 +1,6 @@
 use super::common::{
     PortSpec, default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
-    resolve_requested_port_spec,
 };
-use super::config;
 use super::help::{is_help_flag, print_control_help};
 use super::signal;
 use crate::input::ds4_hid::Ds4Controller;
@@ -30,7 +28,6 @@ struct ControlCliOptions {
     format: Option<String>,
     display: PortDisplayConfig,
     monitor_ports: Vec<PortSpec>,
-    config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
 }
 
@@ -70,8 +67,7 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
 }
 
 fn run_with_options(cli_options: ControlCliOptions) -> Result<PathBuf, String> {
-    let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
-    let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
+    let settings = build_settings(cli_options)?;
 
     let mut controller = Ds4Controller::open(settings.controller.as_deref())
         .map_err(|error| format!("failed to open controller: {error}"))?;
@@ -197,62 +193,16 @@ fn control_transform_modules(format: OutputFormat) -> Vec<TransformModuleConfig>
     ]
 }
 
-fn build_settings(
-    cli_options: ControlCliOptions,
-    file_config: config::AppConfig,
-    config_lookup: &super::paths::ConfigLookup,
-) -> Result<ControlSettings, String> {
-    let config = file_config.control;
-    let using_cli_port = cli_options.port.is_some();
-    let using_cli_monitor_ports = !cli_options.monitor_ports.is_empty();
-    let selected_port = resolve_requested_port_spec(cli_options.port, config.port);
-    let default_baud = cli_options
-        .baud
-        .or(config.baud)
-        .unwrap_or_else(default_baud_rate);
-    let controller = cli_options.controller.or(config.controller);
+fn build_settings(cli_options: ControlCliOptions) -> Result<ControlSettings, String> {
+    let selected_port = cli_options.port.and_then(PortSpec::normalized);
+    let default_baud = cli_options.baud.unwrap_or_else(default_baud_rate);
+    let controller = cli_options.controller;
     let format_name = cli_options
         .format
-        .or(config.format)
         .unwrap_or_else(|| String::from("packetacv6"));
     let format = OutputFormat::parse(&format_name)?;
-    let mut display = config.display;
-    if !using_cli_port
-        && let Some(port_spec) = selected_port.as_ref()
-        && let Some(mode) = port_spec.display_mode
-    {
-        display.set_output(port_spec.port.clone(), mode);
-    }
-    if !using_cli_port
-        && let Some(port_spec) = selected_port.as_ref()
-        && let Some(mode) = port_spec.line_break_mode
-    {
-        display.set_line_break_for_stream(
-            Some(crate::port_display::PortDisplayStream::Input),
-            port_spec.port.clone(),
-            mode,
-        );
-    }
-    let monitor_port_specs = if using_cli_monitor_ports {
-        cli_options.monitor_ports
-    } else {
-        config.monitor_ports
-    };
-    if !using_cli_monitor_ports {
-        for port_spec in &monitor_port_specs {
-            if let Some(mode) = port_spec.display_mode {
-                display.set_input(port_spec.port.clone(), mode);
-            }
-            if let Some(mode) = port_spec.line_break_mode {
-                display.set_line_break_for_stream(
-                    Some(crate::port_display::PortDisplayStream::Input),
-                    port_spec.port.clone(),
-                    mode,
-                );
-            }
-        }
-    }
-    display.merge_from(cli_options.display);
+    let display = cli_options.display;
+    let monitor_port_specs = cli_options.monitor_ports;
     let port = match &selected_port {
         Some(port_spec) => {
             serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?
@@ -268,11 +218,7 @@ fn build_settings(
         .and_then(|port_spec| port_spec.display_mode)
         .or(display.resolve_output_override(&port))
         .unwrap_or(format.default_display_mode());
-    let log_dir = cli_options
-        .log_dir
-        .or(config.log_dir)
-        .or(file_config.log_dir)
-        .unwrap_or_else(|| default_log_dir(config_lookup));
+    let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
     let mut inputs = vec![SessionInputSpec {
         id: port.clone(),
         port: port.clone(),
@@ -300,16 +246,10 @@ fn build_settings(
             id: monitor_port.clone(),
             port: monitor_port.clone(),
             baud_rate: port_spec.baud.unwrap_or(default_baud),
-            display_mode: if using_cli_monitor_ports {
-                port_spec
-                    .display_mode
-                    .or(display.resolve_input_override(&monitor_port))
-                    .unwrap_or_default()
-            } else {
-                display
-                    .resolve_input_override(&monitor_port)
-                    .unwrap_or_default()
-            },
+            display_mode: port_spec
+                .display_mode
+                .or(display.resolve_input_override(&monitor_port))
+                .unwrap_or_default(),
             line_break_mode: port_spec
                 .line_break_mode
                 .unwrap_or(display.resolve_line_break_input(&monitor_port)),
@@ -360,9 +300,6 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
                 "--monitor",
                 &next_value(&mut iter, "--monitor")?,
             )?),
-            "--config" => {
-                options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
-            }
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
@@ -371,49 +308,4 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
     }
 
     Ok(options)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::resolve_requested_port_spec;
-    use crate::app::cli::common::PortSpec;
-    use crate::port_display::{LineBreakMode, PortDisplayMode};
-
-    #[test]
-    fn requested_port_falls_back_to_config_when_cli_port_is_empty() {
-        assert_eq!(
-            resolve_requested_port_spec(
-                Some(PortSpec {
-                    port: String::from(""),
-                    baud: None,
-                    display_mode: None,
-                    line_break_mode: None,
-                }),
-                Some(PortSpec {
-                    port: String::from("/dev/ttyUSB0"),
-                    baud: Some(115_200),
-                    display_mode: Some(PortDisplayMode::Hex),
-                    line_break_mode: Some(LineBreakMode::Packet),
-                }),
-            ),
-            Some(PortSpec {
-                port: String::from("/dev/ttyUSB0"),
-                baud: Some(115_200),
-                display_mode: Some(PortDisplayMode::Hex),
-                line_break_mode: Some(LineBreakMode::Packet),
-            })
-        );
-        assert_eq!(
-            resolve_requested_port_spec(
-                None,
-                Some(PortSpec {
-                    port: String::from("   "),
-                    baud: None,
-                    display_mode: None,
-                    line_break_mode: None,
-                })
-            ),
-            None
-        );
-    }
 }

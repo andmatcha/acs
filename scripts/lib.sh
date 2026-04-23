@@ -3,7 +3,6 @@ set -eu
 
 ACS_NAME="acs"
 ACS_REPO_URL_DEFAULT="https://github.com/andmatcha/acs.git"
-ACS_MANAGED_LOCAL_CONFIG_DIR_NAME="zz-local"
 
 info() {
     printf '%s\n' "$*"
@@ -25,27 +24,6 @@ acs_os() {
 acs_home_dir() {
     [ -n "${HOME:-}" ] || fail "HOME is not set"
     printf '%s\n' "$HOME"
-}
-
-acs_config_dir() {
-    home_dir=$(acs_home_dir)
-    case "$(acs_os)" in
-        Darwin)
-            printf '%s\n' "$home_dir/Library/Application Support/$ACS_NAME"
-            ;;
-        MINGW*|MSYS*|CYGWIN*|Windows_NT)
-            base_dir=${APPDATA:-"$home_dir/AppData/Roaming"}
-            printf '%s\n' "$base_dir/$ACS_NAME"
-            ;;
-        *)
-            base_dir=${XDG_CONFIG_HOME:-"$home_dir/.config"}
-            printf '%s\n' "$base_dir/$ACS_NAME"
-            ;;
-    esac
-}
-
-acs_managed_local_config_dir() {
-    printf '%s\n' "$(acs_config_dir)/$ACS_MANAGED_LOCAL_CONFIG_DIR_NAME"
 }
 
 acs_log_dir() {
@@ -107,57 +85,6 @@ require_clean_ref_selection() {
 
 ensure_dir() {
     mkdir -p "$1"
-}
-
-remove_dir_if_exists() {
-    if [ -e "$1" ]; then
-        rm -rf "$1"
-    fi
-}
-
-install_example_configs() {
-    example_dir=$1
-    config_dir=$2
-
-    if [ ! -d "$example_dir" ]; then
-        info "no example config directory found at $example_dir"
-        return 0
-    fi
-
-    ensure_dir "$config_dir"
-
-    for src in "$example_dir"/*.json; do
-        if [ ! -e "$src" ]; then
-            continue
-        fi
-
-        dest="$config_dir/$(basename "$src")"
-        if [ -e "$dest" ]; then
-            info "kept $dest"
-            continue
-        fi
-
-        cp "$src" "$dest"
-        info "installed $dest"
-    done
-}
-
-find_local_config_source() {
-    repo_root=$1
-    config_dir="$repo_root/config"
-    config_file="$repo_root/acs.config.json"
-
-    if [ -d "$config_dir" ]; then
-        printf 'dir:%s\n' "$config_dir"
-        return 0
-    fi
-
-    if [ -f "$config_file" ]; then
-        printf 'file:%s\n' "$config_file"
-        return 0
-    fi
-
-    return 1
 }
 
 acs_is_globally_installed() {
@@ -268,13 +195,11 @@ install_binary_from_source() {
 }
 
 ensure_standard_global_layout() {
-    ensure_dir "$(acs_config_dir)"
     ensure_dir "$(acs_log_dir)"
 }
 
 print_global_install_summary() {
     info "binary installed to $(acs_global_binary_path)"
-    info "config dir: $(acs_config_dir)"
     info "log dir: $(acs_log_dir)"
     if acs_is_globally_installed; then
         info "installed build: $(installed_version_line)"
@@ -283,8 +208,6 @@ print_global_install_summary() {
 }
 
 print_path_summary() {
-    info "config dir: $(acs_config_dir)"
-    info "config overlay dir: $(acs_managed_local_config_dir)"
     info "log dir: $(acs_log_dir)"
     info "cargo bin: $(acs_cargo_bin_dir)"
 }

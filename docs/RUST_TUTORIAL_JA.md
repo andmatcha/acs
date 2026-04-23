@@ -404,7 +404,7 @@ Rust には例外機構がありません。代わりに、失敗や未設定を
 
 「値があるかもしれないし、無いかもしれない」という場合に使います。
 
-出典: `src/app/cli/config.rs`
+参考例:
 
 ```rust
 fn optional_path(
@@ -881,7 +881,7 @@ Rust 学習で最も身構えやすいのがライフタイムです。しかし
 
 ### 明示ライフタイムの典型例
 
-出典: `src/app/cli/config.rs`
+参考例:
 
 ```rust
 fn expect_object<'a>(value: &'a JsonValue, name: &str) -> Result<&'a JsonObject, String> {
@@ -1178,7 +1178,7 @@ fn main() {
 2. `src/output/formats/mod.rs` と `src/output/formats/packetacv6/mod.rs` を読み、enum と trait を確認する
 3. `src/pipeline/engine.rs` と `src/pipeline/modules/mod.rs` を読み、trait object とイテレータに慣れる
 4. `src/session/runtime.rs` と `src/serial/mod.rs` を読み、所有権と並行処理を意識する
-5. `src/app/cli/config.rs` を読み、`Option`、`Result`、ライフタイム、パーサ実装を追う
+5. `src/app/cli/send.rs` や `src/app/cli/route.rs` を読み、`Option`、`Result`、ライフタイム、引数解析を追う
 
 ### 最後に
 

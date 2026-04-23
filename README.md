@@ -6,7 +6,7 @@
 
 - `acs control`: DUALSHOCK 4 の入力を読み取り、整形したシリアル出力を送信する
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
-- `acs route`: シリアル入力を設定に応じてシリアル出力へ振り分ける
+- `acs route`: シリアル入力を built-in template に応じてシリアル出力へ振り分ける
 - `acs send`: 指定形式のダミーデータを継続してシリアルポートへ送信する
 - `acs xbee-mock`: `xbee-test` の片側だけを up/down 明示の port binding で実行する。`PAIR=1` なら 1 port 共用、`PAIR=2` なら uplink/downlink を分けて、実機や別プロセスの peer と組み合わせて片側だけの traffic model を流せる
 - `acs xbee-test`: `base` / `remote` の 2 ポート間で AU(PacketACv6) / RU(RoverUpGeneral) と AD(PacketJFv1) / RD(RoverDownGeneral) の往復試験を行う。`flood` / `ping-pong` / `polling` を切り替えられ、ヘッダに実際の表示更新 fps も表示する
@@ -27,7 +27,6 @@ make install
 
 - 既定では、このチェックアウトの「コミット済みの HEAD」の内容だけを使ってグローバルインストールします。未コミット変更は含まれません。
 - 通常は `~/.cargo/bin/acs` に入るので、そのディレクトリに `PATH` が通っていればどのディレクトリからでも `acs` を実行できます。
-- 初回インストール時には、標準ユーザ設定ディレクトリへ `config.example/` の内容を「未作成のものだけ」コピーします。
 - すでにグローバルに `acs` が入っている場合、`make install` は再インストールせず終了します。差し替えたい場合は `make update` か `make sync-code` を使ってください。
 
 特定の ref からインストールしたい場合は `TAG` / `BRANCH` / `COMMIT` を 1 つだけ指定できます。
@@ -56,7 +55,6 @@ make sync-code
 ```
 
 - 現在の working tree から再インストールするので、未コミット変更も取り込みます。
-- 既存のグローバル設定ファイルはそのまま残ります。
 - dirty な状態から反映した場合は、`acs --version` に `dirty` が出るので見分けられます。
 
 ### `make update`
@@ -72,7 +70,6 @@ make update COMMIT=50d3137a75b821d46b5308f7c7693e513836e11d
 
 - 引数なしなら GitHub 上の最新 tag を使って更新します。
 - `TAG` / `BRANCH` / `COMMIT` を指定すると、その ref を使って更新します。
-- `make install` と同様に、設定例のコピーは「まだ無いものだけ」です。
 
 ## 基本的な使い方
 
@@ -110,7 +107,6 @@ acs --version
 ```
 
 - 1 台だけコントローラーやシリアルポートが見つかる場合は、自動選択されます。
-- `--config` には JSON ファイルだけでなくディレクトリも指定できます。
 - 詳しいオプションや表示形式は `acs help <command>` を参照してください。
 - `acs xbee-mock` は `PAIR=1` で 1 port を共用し、`PAIR=2` で uplink/downlink を分離できます。
 - `acs xbee-mock` は `TX_FORMAT` に rate を持たせ、`RX_FORMAT` は monitor/decoder 対象 format を指定します。
@@ -121,22 +117,7 @@ acs --version
 - `acs send --monitor` は `packetacv6+packetjfv1` のように複数 format を指定でき、それぞれの built-in 既定表示で表示します。
 - `acs send --no-log` と `acs xbee-test --no-log` と `acs xbee-mock --no-log` はログファイル作成を止め、I/O 負荷を減らします。
 
-## 設定ファイル
-
-`--config` を省略した場合は、次の順で設定を探します。
-
-1. カレントディレクトリの `config/`
-2. カレントディレクトリの `acs.config.json`
-3. 標準ユーザ設定ディレクトリ
-
-分割設定の例は [config.example](config.example)、単一ファイルの例は [acs.config.example.json](acs.config.example.json) を参照してください。
-
-標準ディレクトリは次のとおりです。
-
-- macOS の設定ディレクトリ: `~/Library/Application Support/acs`
-- macOS のログディレクトリ: `~/Library/Logs/acs`
-- Linux の設定ディレクトリ: `$XDG_CONFIG_HOME/acs` または `~/.config/acs`
-- Linux のログディレクトリ: `$XDG_STATE_HOME/acs/logs` または `~/.local/state/acs/logs`
+ログは既定で `./logs` に出力され、必要なら `--log-dir` で切り替えられます。
 
 ## その他の `make` コマンド
 
@@ -145,7 +126,6 @@ acs --version
 - `make init`: Rust が未導入の環境を初期化し、ローカル release ビルドまで実行する
 - `make build` / `make build-release`: ローカルでビルドする
 - `make fmt` / `make test`: 整形とテストを実行する
-- `make sync-config` / `make unsync-config`: ローカル設定をグローバル設定オーバーレイへ同期・解除する
 - `make uninstall` / `make purge`: グローバルの `acs` を削除する
-- `make paths`: 標準の設定・ログ・バイナリ配置先を表示する
+- `make paths`: 標準のログ・バイナリ配置先を表示する
 - `make release VERSION=...`: バージョン更新、テスト、ビルド、コミット、タグ作成をまとめて行う
