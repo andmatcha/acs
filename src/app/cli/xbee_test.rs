@@ -44,6 +44,8 @@ const POLL_GREETING_FORMAT_NAME: &str = "PollGreeting";
 const POLL_RESPONSE_FORMAT_NAME: &str = "PollResponse";
 const POLL_GREETING_HEADER: [u8; 2] = *b"HI";
 const POLL_RESPONSE_HEADER: [u8; 2] = *b"OK";
+const ROVER_DOWN_GENERAL_PREFIX_LEN: usize = 6;
+const ROVER_DOWN_GENERAL_MAX_PACKET_LEN: usize = 256;
 
 #[derive(Debug, Default)]
 struct XbeeTestCliOptions {
@@ -279,6 +281,19 @@ impl PacketStreamDecoder {
                 self.buffer.drain(..header_index);
             }
 
+            if is_rover_down_kind(self.kind) {
+                if let Some(packet_len) = rover_down_packet_len(&self.buffer) {
+                    packets.push(self.buffer.drain(..packet_len).collect());
+                    continue;
+                }
+                if matches_rover_down_prefix(&self.buffer) {
+                    break;
+                }
+                self.buffer.drain(..1);
+                invalid_packets = invalid_packets.saturating_add(1);
+                continue;
+            }
+
             if self.buffer.len() < packet_len(self.kind) {
                 break;
             }
@@ -315,7 +330,7 @@ fn packet_start_len(kind: XbeeTestFrameKind) -> usize {
         | XbeeTestFrameKind::Format(OutputFormat::PacketIv1)
         | XbeeTestFrameKind::Format(OutputFormat::PacketBv1) => 1,
         XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => 6,
-        XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => 4,
+        XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => ROVER_DOWN_GENERAL_PREFIX_LEN,
     }
 }
 
@@ -372,12 +387,16 @@ fn find_rover_up_start(buffer: &[u8]) -> Option<usize> {
 }
 
 fn find_rover_down_start(buffer: &[u8]) -> Option<usize> {
-    buffer.windows(4).position(|window| {
-        window[0] == b'4'
-            && window[1].is_ascii_hexdigit()
-            && window[2].is_ascii_hexdigit()
-            && window[3] == b','
-    })
+    buffer
+        .windows(ROVER_DOWN_GENERAL_PREFIX_LEN)
+        .position(|window| {
+            window[0] == b'0'
+                && window[1] == b'x'
+                && matches!(window[2], b'3' | b'4')
+                && window[3].is_ascii_hexdigit()
+                && window[4].is_ascii_hexdigit()
+                && window[5] == b','
+        })
 }
 
 struct DecodedPacketBatch {
@@ -2342,17 +2361,84 @@ fn matches_rover_up_packet(bytes: &[u8]) -> bool {
 }
 
 fn matches_rover_down_packet(bytes: &[u8]) -> bool {
-    bytes.len() == OutputFormat::RoverDownGeneral.packet_len()
-        && bytes.iter().enumerate().all(|(index, byte)| match index {
-            0 => *byte == b'4',
-            1 | 2 => byte.is_ascii_hexdigit(),
-            3 => *byte == b',',
-            4 | 5 | 7 | 8 => byte.is_ascii_digit(),
-            6 => *byte == b'.',
-            9 => *byte == b'\r',
-            10 => *byte == b'\n',
-            _ => false,
-        })
+    if bytes.len() < ROVER_DOWN_GENERAL_PREFIX_LEN + 3
+        || bytes.len() > ROVER_DOWN_GENERAL_MAX_PACKET_LEN
+        || !bytes.ends_with(b"\r\n")
+        || !rover_down_header_matches(bytes)
+    {
+        return false;
+    }
+
+    let data = &bytes[ROVER_DOWN_GENERAL_PREFIX_LEN..bytes.len() - 2];
+    !data.is_empty() && !data.iter().any(|byte| matches!(*byte, b'\r' | b'\n'))
+}
+
+fn matches_rover_down_prefix(bytes: &[u8]) -> bool {
+    if bytes.len() > ROVER_DOWN_GENERAL_MAX_PACKET_LEN {
+        return false;
+    }
+
+    if bytes.len() <= ROVER_DOWN_GENERAL_PREFIX_LEN {
+        return bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| rover_down_header_byte_matches(index, *byte));
+    }
+
+    if !rover_down_header_matches(bytes) {
+        return false;
+    }
+
+    let data = &bytes[ROVER_DOWN_GENERAL_PREFIX_LEN..];
+    if let Some(end_index) = find_crlf(data) {
+        let packet_len = ROVER_DOWN_GENERAL_PREFIX_LEN + end_index + 2;
+        return packet_len == bytes.len() && matches_rover_down_packet(&bytes[..packet_len]);
+    }
+
+    data.iter().enumerate().all(|(index, byte)| match *byte {
+        b'\n' => false,
+        b'\r' => index + 1 == data.len(),
+        _ => true,
+    })
+}
+
+fn rover_down_packet_len(bytes: &[u8]) -> Option<usize> {
+    if !rover_down_header_matches(bytes) {
+        return None;
+    }
+    let packet_len =
+        ROVER_DOWN_GENERAL_PREFIX_LEN + find_crlf(&bytes[ROVER_DOWN_GENERAL_PREFIX_LEN..])? + 2;
+    matches_rover_down_packet(&bytes[..packet_len]).then_some(packet_len)
+}
+
+fn rover_down_header_matches(bytes: &[u8]) -> bool {
+    bytes.len() >= ROVER_DOWN_GENERAL_PREFIX_LEN
+        && bytes[..ROVER_DOWN_GENERAL_PREFIX_LEN]
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| rover_down_header_byte_matches(index, *byte))
+}
+
+fn rover_down_header_byte_matches(index: usize, byte: u8) -> bool {
+    match index {
+        0 => byte == b'0',
+        1 => byte == b'x',
+        2 => matches!(byte, b'3' | b'4'),
+        3 | 4 => byte.is_ascii_hexdigit(),
+        5 => byte == b',',
+        _ => false,
+    }
+}
+
+fn is_rover_down_kind(kind: XbeeTestFrameKind) -> bool {
+    matches!(
+        kind,
+        XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral)
+    )
+}
+
+fn find_crlf(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(2).position(|window| window == b"\r\n")
 }
 
 #[cfg(test)]
@@ -2360,7 +2446,7 @@ mod tests {
     use super::{
         ExpectedPacketTracker, OutputFormat, PacketDefinition, PacketStreamDecoder,
         XbeeTestFrameKind, XbeeTestMode, build_poll_frame, matches_poll_frame,
-        parse_xbee_test_args, parse_xbee_test_port_binding,
+        matches_rover_down_packet, parse_xbee_test_args, parse_xbee_test_port_binding,
     };
 
     #[test]
@@ -2502,6 +2588,24 @@ mod tests {
 
         assert_eq!(batch.invalid_packets, 1);
         assert_eq!(batch.packets, vec![payload]);
+    }
+
+    #[test]
+    fn rover_down_decoder_accepts_variable_length_0x3xx_and_0x4xx_lines() {
+        let mut decoder =
+            PacketStreamDecoder::new(XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral));
+
+        assert!(matches_rover_down_packet(b"0x300,OK\r\n"));
+        assert!(matches_rover_down_packet(b"0x4A2,TEMP=21.10;MODE=A\r\n"));
+        assert!(!matches_rover_down_packet(b"400,21.10\r\n"));
+        assert!(decoder.push(b"noise0x4A2,TEMP=21.10").packets.is_empty());
+
+        let batch = decoder.push(b"\r\n0x300,OK\r\n");
+
+        assert_eq!(
+            batch.packets,
+            vec![b"0x4A2,TEMP=21.10\r\n".to_vec(), b"0x300,OK\r\n".to_vec()]
+        );
     }
 
     #[test]

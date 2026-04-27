@@ -2,23 +2,30 @@ use super::common::{
     PortSpec, default_baud_rate, default_log_dir, next_value, parse_key_value_args,
     parse_port_spec, parse_u32_arg,
 };
-use super::help::{is_help_flag, print_send_help};
+use super::help::{is_help_flag, print_io_help, print_send_help};
 use super::signal;
 use crate::ingress::IngressFrame;
 use crate::output::OutputFormat;
 use crate::output::formats::{DummyPayloadGenerator, crc16_ccitt_false};
 use crate::port_display::{
     LineBreakMode, PortDisplayConfig, PortDisplayMode, parse_display_assignment,
+    parse_display_value,
 };
 use crate::serial;
 use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntime, SessionSpec};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(unix)]
+use std::io::Read;
+use std::io::{self, IsTerminal, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 const DEFAULT_SEND_RATE_HZ: u32 = 50;
+const DEFAULT_IO_SEND_RATE_HZ: u32 = 10;
 const SEND_LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
 const RATE_WINDOW: Duration = Duration::from_secs(1);
@@ -26,6 +33,8 @@ const DISPLAY_FLUSH_SLICE: usize = 32;
 const DISPLAY_FLUSH_PACKET_BUDGET: usize = 256;
 const DISPLAY_QUEUE_LIMIT: usize = 65_536;
 const SERIAL_FRAME_BITS_PER_BYTE: u64 = 10;
+const ROVER_DOWN_GENERAL_PREFIX_LEN: usize = 6;
+const ROVER_DOWN_GENERAL_MAX_PACKET_LEN: usize = 256;
 
 #[derive(Debug, Default)]
 struct SendCliOptions {
@@ -40,6 +49,9 @@ struct SendCliOptions {
     no_log: bool,
     interactive: bool,
     s3b: bool,
+    allow_receive_only: bool,
+    title: Option<String>,
+    command_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +97,8 @@ struct SendSettings {
     logging_enabled: bool,
     interactive: bool,
     s3b: bool,
+    title: String,
+    command_name: String,
 }
 
 struct SendOutputRunResult {
@@ -580,15 +594,10 @@ impl MixedFormatDecoder {
 
     fn try_decode_packet(&mut self) -> Option<DecodedPacket> {
         for format in &self.formats {
-            if self.buffer.len() < format.packet_len() {
-                continue;
-            }
-
-            let candidate = &self.buffer[..format.packet_len()];
-            if format.matches_packet(candidate) {
+            if let Some(packet_len) = format.matching_packet_len(&self.buffer) {
                 return Some(DecodedPacket {
                     format: format.format(),
-                    bytes: self.buffer.drain(..format.packet_len()).collect(),
+                    bytes: self.buffer.drain(..packet_len).collect(),
                 });
             }
         }
@@ -640,6 +649,19 @@ impl PacketMatcher {
 
     fn packet_len(self) -> usize {
         self.format().packet_len()
+    }
+
+    fn matching_packet_len(self, bytes: &[u8]) -> Option<usize> {
+        if matches!(self, Self::RoverDownGeneral) {
+            return rover_down_packet_len(bytes);
+        }
+
+        if bytes.len() < self.packet_len() {
+            return None;
+        }
+
+        self.matches_packet(&bytes[..self.packet_len()])
+            .then_some(self.packet_len())
     }
 
     fn matches_packet(self, bytes: &[u8]) -> bool {
@@ -738,31 +760,77 @@ fn rover_up_byte_matches(index: usize, byte: u8) -> bool {
 }
 
 fn matches_rover_down_prefix(bytes: &[u8]) -> bool {
-    if bytes.len() > OutputFormat::RoverDownGeneral.packet_len() {
+    if bytes.len() > ROVER_DOWN_GENERAL_MAX_PACKET_LEN {
         return false;
     }
 
-    bytes
-        .iter()
-        .enumerate()
-        .all(|(index, byte)| rover_down_byte_matches(index, *byte))
+    if bytes.len() <= ROVER_DOWN_GENERAL_PREFIX_LEN {
+        return bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| rover_down_header_byte_matches(index, *byte));
+    }
+
+    if !rover_down_header_matches(bytes) {
+        return false;
+    }
+
+    let data = &bytes[ROVER_DOWN_GENERAL_PREFIX_LEN..];
+    if let Some(end_index) = find_crlf(data) {
+        let packet_len = ROVER_DOWN_GENERAL_PREFIX_LEN + end_index + 2;
+        return packet_len == bytes.len() && matches_rover_down_packet(&bytes[..packet_len]);
+    }
+
+    data.iter().enumerate().all(|(index, byte)| match *byte {
+        b'\n' => false,
+        b'\r' => index + 1 == data.len(),
+        _ => true,
+    })
 }
 
 fn matches_rover_down_packet(bytes: &[u8]) -> bool {
-    bytes.len() == OutputFormat::RoverDownGeneral.packet_len() && matches_rover_down_prefix(bytes)
+    if bytes.len() < ROVER_DOWN_GENERAL_PREFIX_LEN + 3
+        || bytes.len() > ROVER_DOWN_GENERAL_MAX_PACKET_LEN
+        || !bytes.ends_with(b"\r\n")
+        || !rover_down_header_matches(bytes)
+    {
+        return false;
+    }
+
+    let data = &bytes[ROVER_DOWN_GENERAL_PREFIX_LEN..bytes.len() - 2];
+    !data.is_empty() && !data.iter().any(|byte| matches!(*byte, b'\r' | b'\n'))
 }
 
-fn rover_down_byte_matches(index: usize, byte: u8) -> bool {
+fn rover_down_packet_len(bytes: &[u8]) -> Option<usize> {
+    if !rover_down_header_matches(bytes) {
+        return None;
+    }
+    let packet_len =
+        ROVER_DOWN_GENERAL_PREFIX_LEN + find_crlf(&bytes[ROVER_DOWN_GENERAL_PREFIX_LEN..])? + 2;
+    matches_rover_down_packet(&bytes[..packet_len]).then_some(packet_len)
+}
+
+fn rover_down_header_matches(bytes: &[u8]) -> bool {
+    bytes.len() >= ROVER_DOWN_GENERAL_PREFIX_LEN
+        && bytes[..ROVER_DOWN_GENERAL_PREFIX_LEN]
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| rover_down_header_byte_matches(index, *byte))
+}
+
+fn rover_down_header_byte_matches(index: usize, byte: u8) -> bool {
     match index {
-        0 => byte == b'4',
-        1 | 2 => byte.is_ascii_hexdigit(),
-        3 => byte == b',',
-        4 | 5 | 7 | 8 => byte.is_ascii_digit(),
-        6 => byte == b'.',
-        9 => byte == b'\r',
-        10 => byte == b'\n',
+        0 => byte == b'0',
+        1 => byte == b'x',
+        2 => matches!(byte, b'3' | b'4'),
+        3 | 4 => byte.is_ascii_hexdigit(),
+        5 => byte == b',',
         _ => false,
     }
+}
+
+fn find_crlf(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(2).position(|window| window == b"\r\n")
 }
 
 pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
@@ -840,6 +908,605 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     }
 }
 
+#[derive(Debug, Default)]
+struct IoCliOptions {
+    inputs: Vec<IoBindingArg>,
+    outputs: Vec<IoBindingArg>,
+    send_options: SendCliOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IoBindingArg {
+    Provided(String),
+    Prompt,
+}
+
+pub(crate) fn run_io(args: Vec<String>, bin_name: &str) -> ExitCode {
+    if args.iter().any(|arg| is_help_flag(arg)) {
+        print_io_help(bin_name);
+        return ExitCode::SUCCESS;
+    }
+
+    let io_options = match parse_io_args(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            print_io_help(bin_name);
+            return ExitCode::from(2);
+        }
+    };
+
+    let send_options = match resolve_io_options(io_options) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+
+    match run_with_options(send_options) {
+        Ok(result) => {
+            print_io_result(&result);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn print_io_result(result: &SendRunResult) {
+    if result.outputs.is_empty() {
+        println!("io session finished (receive only)");
+    } else if result.outputs.len() == 1 {
+        let output = &result.outputs[0];
+        println!(
+            "sent {} packets ({} bytes each) to {} @ {} baud, format={}, target={} Hz",
+            output.sent_count,
+            output.payload_len,
+            output.port,
+            output.baud_rate,
+            output.format.as_str(),
+            output.rate_hz
+        );
+    } else {
+        println!("sent dummy packets to {} outputs", result.outputs.len());
+        for output in &result.outputs {
+            println!(
+                "  {}: {} packets ({} bytes each) to {} @ {} baud, format={}, target={} Hz",
+                output.id,
+                output.sent_count,
+                output.payload_len,
+                output.port,
+                output.baud_rate,
+                output.format.as_str(),
+                output.rate_hz
+            );
+        }
+    }
+    if result.logging_enabled {
+        println!("log saved to {}", result.log_path.display());
+    }
+}
+
+fn parse_io_args(args: Vec<String>) -> Result<IoCliOptions, String> {
+    let mut options = IoCliOptions {
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        send_options: SendCliOptions {
+            rate_hz: Some(DEFAULT_IO_SEND_RATE_HZ),
+            allow_receive_only: true,
+            title: Some(String::from("acs io")),
+            command_name: Some(String::from("io")),
+            ..SendCliOptions::default()
+        },
+    };
+    let mut iter = args.into_iter().peekable();
+
+    while let Some(arg) = iter.next() {
+        if let Some(value) = strip_io_value(&arg, &["-i", "--input", "--input-port"]) {
+            options.inputs.push(IoBindingArg::Provided(value));
+            continue;
+        }
+        if let Some(value) = strip_io_value(&arg, &["-o", "--output", "--output-port"]) {
+            options.outputs.push(IoBindingArg::Provided(value));
+            continue;
+        }
+
+        match arg.as_str() {
+            "--input" | "--input-port" | "-i" => {
+                options.inputs.push(
+                    next_optional_io_binding(&mut iter)
+                        .map_or(IoBindingArg::Prompt, IoBindingArg::Provided),
+                );
+            }
+            "--output" | "--output-port" | "-o" => {
+                options.outputs.push(
+                    next_optional_io_binding(&mut iter)
+                        .map_or(IoBindingArg::Prompt, IoBindingArg::Provided),
+                );
+            }
+            "--config" => apply_send_config_args(
+                &mut options.send_options,
+                &next_value(&mut iter, "--config")?,
+            )?,
+            "--baud" | "-b" => {
+                let value = next_value(&mut iter, "--baud")?;
+                options.send_options.baud = Some(parse_u32_arg("--baud", &value)?);
+            }
+            "--rate" | "-r" => {
+                let value = next_value(&mut iter, "--rate")?;
+                options.send_options.rate_hz = Some(parse_u32_arg("--rate", &value)?);
+            }
+            "--format" | "-f" => {
+                options.send_options.format = Some(next_value(&mut iter, "--format")?)
+            }
+            "--display" => {
+                let value = next_value(&mut iter, "--display")?;
+                let assignment = parse_display_assignment(&value)?;
+                assignment.apply_to(&mut options.send_options.display);
+            }
+            "--log-dir" => {
+                options.send_options.log_dir =
+                    Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
+            }
+            "--no-log" => options.send_options.no_log = true,
+            "--s3b" => options.send_options.s3b = true,
+            other => return Err(format!("unknown option for io: {other}")),
+        }
+    }
+
+    if options.inputs.is_empty() && options.outputs.is_empty() {
+        return Err(String::from(
+            "io requires at least one -i/--input or -o/--output",
+        ));
+    }
+
+    Ok(options)
+}
+
+fn strip_io_value(arg: &str, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|name| arg.strip_prefix(&format!("{name}=")))
+        .map(str::to_owned)
+}
+
+fn next_optional_io_binding(
+    iter: &mut std::iter::Peekable<impl Iterator<Item = String>>,
+) -> Option<String> {
+    match iter.peek() {
+        Some(next) if !next.starts_with('-') => iter.next(),
+        _ => None,
+    }
+}
+
+fn resolve_io_options(io_options: IoCliOptions) -> Result<SendCliOptions, String> {
+    let mut send_options = io_options.send_options;
+
+    for input in io_options.inputs {
+        let value = match input {
+            IoBindingArg::Provided(value) => value,
+            IoBindingArg::Prompt => prompt_io_input_binding()?,
+        };
+        send_options
+            .monitor_ports
+            .push(parse_send_monitor_binding(&value)?);
+    }
+
+    for output in io_options.outputs {
+        let value = match output {
+            IoBindingArg::Provided(value) => value,
+            IoBindingArg::Prompt => prompt_io_output_binding()?,
+        };
+        send_options
+            .outputs
+            .push(parse_send_output_binding(&value)?);
+    }
+
+    Ok(send_options)
+}
+
+fn prompt_io_input_binding() -> Result<String, String> {
+    let port = prompt_serial_port("受信ポートを選択")?;
+    let baud = prompt_u32_choice(
+        "受信ボーレート",
+        default_baud_rate(),
+        &[115_200, 921_600, 460_800, 230_400, 57_600, 38_400, 9_600],
+    )?;
+    let format = prompt_input_format()?;
+    let display = prompt_display_mode("受信表示形式", true)?;
+
+    Ok(format_io_input_binding(
+        &port,
+        baud,
+        display.as_deref(),
+        format.as_deref(),
+    ))
+}
+
+fn prompt_io_output_binding() -> Result<String, String> {
+    let port = prompt_serial_port("送信ポートを選択")?;
+    let baud = prompt_u32_choice(
+        "送信ボーレート",
+        default_baud_rate(),
+        &[115_200, 921_600, 460_800, 230_400, 57_600, 38_400, 9_600],
+    )?;
+    let display = prompt_display_mode("送信表示形式", false)?;
+    let format = prompt_output_format()?;
+    let rate_hz = prompt_u32_choice(
+        "送信レート (Hz)",
+        DEFAULT_IO_SEND_RATE_HZ,
+        &[10, 50, 100, 20, 1],
+    )?;
+
+    Ok(format_io_output_binding(
+        &port,
+        baud,
+        display.as_deref(),
+        &format,
+        rate_hz,
+    ))
+}
+
+fn format_io_input_binding(
+    port: &str,
+    baud: u32,
+    display: Option<&str>,
+    format: Option<&str>,
+) -> String {
+    let mut value = format!("{port}@{baud}");
+    if let Some(display) = display {
+        value.push(',');
+        value.push_str(display);
+    }
+    if let Some(format) = format {
+        value.push(',');
+        value.push_str(format);
+    }
+    value
+}
+
+fn format_io_output_binding(
+    port: &str,
+    baud: u32,
+    display: Option<&str>,
+    format: &str,
+    rate_hz: u32,
+) -> String {
+    let mut value = format!("{port}@{baud}");
+    if let Some(display) = display {
+        value.push(',');
+        value.push_str(display);
+    }
+    value.push(',');
+    value.push_str(format);
+    value.push(',');
+    value.push_str(&rate_hz.to_string());
+    value
+}
+
+fn prompt_serial_port(prompt: &str) -> Result<String, String> {
+    let ports = serial::available_ports().map_err(|error| error.to_string())?;
+    if ports.is_empty() {
+        return prompt_text(&format!("{prompt}: "), None);
+    }
+
+    let mut labels = ports
+        .iter()
+        .map(format_serial_port_choice)
+        .collect::<Vec<_>>();
+    labels.push(String::from("手入力..."));
+    let selected = choose_from_menu(prompt, &labels, 0)?;
+    if selected == ports.len() {
+        prompt_text("ポート名: ", None)
+    } else {
+        Ok(ports[selected].port_name.clone())
+    }
+}
+
+fn format_serial_port_choice(port: &serialport::SerialPortInfo) -> String {
+    match &port.port_type {
+        serialport::SerialPortType::UsbPort(info) => format!(
+            "{}  usb vid=0x{:04x} pid=0x{:04x} product={}",
+            port.port_name,
+            info.vid,
+            info.pid,
+            info.product.as_deref().unwrap_or("unknown")
+        ),
+        serialport::SerialPortType::BluetoothPort => {
+            format!("{}  bluetooth", port.port_name)
+        }
+        serialport::SerialPortType::PciPort => format!("{}  pci", port.port_name),
+        serialport::SerialPortType::Unknown => port.port_name.clone(),
+    }
+}
+
+fn prompt_u32_choice(prompt: &str, default: u32, choices: &[u32]) -> Result<u32, String> {
+    let mut values = Vec::new();
+    values.push(default);
+    for choice in choices {
+        if !values.contains(choice) {
+            values.push(*choice);
+        }
+    }
+    let mut labels = values
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    labels.push(String::from("手入力..."));
+
+    let selected = choose_from_menu(prompt, &labels, 0)?;
+    if selected == values.len() {
+        let value = prompt_text(&format!("{prompt}: "), Some(&default.to_string()))?;
+        let parsed = parse_u32_arg(prompt, &value)?;
+        if parsed == 0 {
+            return Err(format!("{prompt} must be greater than 0"));
+        }
+        Ok(parsed)
+    } else {
+        Ok(values[selected])
+    }
+}
+
+fn prompt_output_format() -> Result<String, String> {
+    let formats = output_format_choices();
+    let labels = formats
+        .iter()
+        .map(|format| format.display_name().to_owned())
+        .collect::<Vec<_>>();
+    let selected = choose_from_menu("送信フォーマット", &labels, 0)?;
+    Ok(formats[selected].as_str().to_owned())
+}
+
+fn prompt_input_format() -> Result<Option<String>, String> {
+    let formats = output_format_choices();
+    let mut labels = vec![String::from("raw (フォーマット指定なし)")];
+    labels.extend(
+        formats
+            .iter()
+            .map(|format| format.display_name().to_owned()),
+    );
+    labels.push(String::from("複数/手入力..."));
+
+    let selected = choose_from_menu("受信フォーマット", &labels, 0)?;
+    if selected == 0 {
+        return Ok(None);
+    }
+    if selected == formats.len() + 1 {
+        let value = prompt_text("フォーマット (例: packetacv6+packetjfv1): ", None)?;
+        let formats = parse_output_format_list(&value)
+            .ok_or_else(|| format!("invalid input format list: {value}"))?;
+        return Ok(Some(formats.join("+")));
+    }
+    Ok(Some(formats[selected - 1].as_str().to_owned()))
+}
+
+fn prompt_display_mode(prompt: &str, input: bool) -> Result<Option<String>, String> {
+    let mut choices = vec![
+        String::from("default"),
+        String::from("hex"),
+        String::from("ascii"),
+        String::from("utf8"),
+        String::from("hex+ascii"),
+        String::from("hex+utf8"),
+    ];
+    if input {
+        choices.extend([
+            String::from("hex+packet"),
+            String::from("utf8+packet"),
+            String::from("hex+utf8+wrap"),
+        ]);
+    }
+    choices.push(String::from("手入力..."));
+
+    let selected = choose_from_menu(prompt, &choices, 0)?;
+    if selected == 0 {
+        return Ok(None);
+    }
+    if selected == choices.len() - 1 {
+        let value = prompt_text(&format!("{prompt}: "), Some("hex+utf8"))?;
+        parse_display_value(&value)?;
+        Ok(Some(value))
+    } else {
+        Ok(Some(choices[selected].clone()))
+    }
+}
+
+fn output_format_choices() -> Vec<OutputFormat> {
+    vec![
+        OutputFormat::PacketAcV6,
+        OutputFormat::PacketMv1,
+        OutputFormat::PacketIv1,
+        OutputFormat::PacketBv1,
+        OutputFormat::PacketJfV1,
+        OutputFormat::RoverUpGeneral,
+        OutputFormat::RoverDownGeneral,
+    ]
+}
+
+fn choose_from_menu(
+    prompt: &str,
+    labels: &[String],
+    default_index: usize,
+) -> Result<usize, String> {
+    if labels.is_empty() {
+        return Err(format!("{prompt}: no choices available"));
+    }
+
+    let default_index = default_index.min(labels.len() - 1);
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return choose_from_numbered_prompt(prompt, labels, default_index);
+    }
+
+    choose_from_menu_interactive(prompt, labels, default_index)
+}
+
+#[cfg(unix)]
+fn choose_from_menu_interactive(
+    prompt: &str,
+    labels: &[String],
+    default_index: usize,
+) -> Result<usize, String> {
+    let _raw_mode = RawTerminalMode::enable()?;
+    let mut selected = default_index;
+    let mut stdin = io::stdin();
+
+    loop {
+        render_menu(prompt, labels, selected)?;
+        let mut byte = [0u8; 1];
+        stdin
+            .read_exact(&mut byte)
+            .map_err(|error| format!("failed to read input: {error}"))?;
+        match byte[0] {
+            b'\r' | b'\n' => {
+                clear_screen()?;
+                return Ok(selected);
+            }
+            3 => return Err(String::from("interrupted")),
+            b'k' => selected = selected.saturating_sub(1),
+            b'j' => {
+                if selected + 1 < labels.len() {
+                    selected += 1;
+                }
+            }
+            0x1b => {
+                let mut seq = [0u8; 2];
+                if stdin.read_exact(&mut seq).is_ok() && seq[0] == b'[' {
+                    match seq[1] {
+                        b'A' => selected = selected.saturating_sub(1),
+                        b'B' => {
+                            if selected + 1 < labels.len() {
+                                selected += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn choose_from_menu_interactive(
+    prompt: &str,
+    labels: &[String],
+    default_index: usize,
+) -> Result<usize, String> {
+    choose_from_numbered_prompt(prompt, labels, default_index)
+}
+
+fn render_menu(prompt: &str, labels: &[String], selected: usize) -> Result<(), String> {
+    const SELECTED_BG: &str = "\x1b[48;5;218m\x1b[30m";
+    const RESET: &str = "\x1b[0m";
+
+    clear_screen()?;
+    println!("{prompt}");
+    println!("↑/↓ で選択、Enter で決定");
+    for (index, label) in labels.iter().enumerate() {
+        if index == selected {
+            println!("{SELECTED_BG}> {label}{RESET}");
+        } else {
+            println!("  {label}");
+        }
+    }
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to flush output: {error}"))
+}
+
+fn clear_screen() -> Result<(), String> {
+    print!("\x1b[2J\x1b[H");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to flush output: {error}"))
+}
+
+fn choose_from_numbered_prompt(
+    prompt: &str,
+    labels: &[String],
+    default_index: usize,
+) -> Result<usize, String> {
+    println!("{prompt}");
+    for (index, label) in labels.iter().enumerate() {
+        println!("  {}. {}", index + 1, label);
+    }
+    let default = (default_index + 1).to_string();
+    let value = prompt_text("番号: ", Some(&default))?;
+    let selected = value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid selection: {value}"))?;
+    if selected == 0 || selected > labels.len() {
+        return Err(format!("selection out of range: {value}"));
+    }
+    Ok(selected - 1)
+}
+
+fn prompt_text(prompt: &str, default: Option<&str>) -> Result<String, String> {
+    match default {
+        Some(default) => print!("{prompt}[{default}] "),
+        None => print!("{prompt}"),
+    }
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to flush output: {error}"))?;
+    let mut value = String::new();
+    io::stdin()
+        .read_line(&mut value)
+        .map_err(|error| format!("failed to read input: {error}"))?;
+    let value = value.trim();
+    if value.is_empty() {
+        default
+            .map(str::to_owned)
+            .ok_or_else(|| String::from("empty value"))
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
+#[cfg(unix)]
+struct RawTerminalMode {
+    fd: i32,
+    original: libc::termios,
+}
+
+#[cfg(unix)]
+impl RawTerminalMode {
+    fn enable() -> Result<Self, String> {
+        let fd = io::stdin().as_raw_fd();
+        let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
+        if unsafe { libc::tcgetattr(fd, &mut original) } != 0 {
+            return Err(format!(
+                "failed to read terminal settings: {}",
+                io::Error::last_os_error()
+            ));
+        }
+
+        let mut raw = original;
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+            return Err(format!(
+                "failed to update terminal settings: {}",
+                io::Error::last_os_error()
+            ));
+        }
+
+        Ok(Self { fd, original })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RawTerminalMode {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.original) };
+    }
+}
+
 fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String> {
     let settings = build_settings(cli_options)?;
     let output_specs = settings.outputs.clone();
@@ -861,8 +1528,8 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
 
     let started_at = Instant::now();
     let mut session = SessionRuntime::new(SessionSpec {
-        title: String::from("acs send"),
-        command_name: String::from("send"),
+        title: settings.title.clone(),
+        command_name: settings.command_name.clone(),
         log_dir: settings.log_dir.clone(),
         logging_enabled: settings.logging_enabled,
         xbee_s3b_recovery: settings.s3b,
@@ -1038,11 +1705,28 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
         .clone()
         .unwrap_or_else(|| String::from("packetacv6"));
     let default_format = OutputFormat::parse(&default_format_name)?;
-    let output_bindings =
-        resolve_output_bindings(&cli_options, default_baud, default_rate_hz, default_format)?;
+    let output_bindings = if cli_options.allow_receive_only && !using_cli_outputs && !using_cli_port
+    {
+        Vec::new()
+    } else {
+        resolve_output_bindings(&cli_options, default_baud, default_rate_hz, default_format)?
+    };
     let monitor_port_specs = resolve_monitor_bindings(&cli_options)?;
+    if output_bindings.is_empty() && monitor_port_specs.is_empty() {
+        return Err(String::from(
+            "at least one input or output port is required",
+        ));
+    }
     let display = cli_options.display;
     let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
+    let title = cli_options
+        .title
+        .clone()
+        .unwrap_or_else(|| String::from("acs send"));
+    let command_name = cli_options
+        .command_name
+        .clone()
+        .unwrap_or_else(|| String::from("send"));
 
     let mut outputs = Vec::new();
     let mut inputs = Vec::new();
@@ -1211,6 +1895,8 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
         logging_enabled: !cli_options.no_log,
         interactive: cli_options.interactive,
         s3b: cli_options.s3b,
+        title,
+        command_name,
     })
 }
 
@@ -1576,10 +2262,10 @@ fn parse_send_output_binding(value: &str) -> Result<SendOutputBinding, String> {
 mod tests {
     use super::{
         MixedFormatDecoder, ObservedInput, OutputSchedule, SendOutputSettings,
-        estimated_output_line_bps, matches_rover_down_packet, parse_output_format_list,
-        parse_send_args, parse_send_monitor_binding, parse_send_output_binding,
-        realign_output_schedule, resolve_display_mode, resolve_monitor_line_break_mode,
-        validate_output_port_loads,
+        estimated_output_line_bps, format_io_input_binding, format_io_output_binding,
+        matches_rover_down_packet, parse_io_args, parse_output_format_list, parse_send_args,
+        parse_send_monitor_binding, parse_send_output_binding, realign_output_schedule,
+        resolve_display_mode, resolve_monitor_line_break_mode, validate_output_port_loads,
     };
     use crate::output::OutputFormat;
     use crate::port_display::{LineBreakMode, PortDisplayMode};
@@ -1735,6 +2421,61 @@ mod tests {
     }
 
     #[test]
+    fn parse_io_args_accepts_input_output_values_and_defaults_rate() {
+        let options = parse_io_args(vec![
+            String::from("-i"),
+            String::from("/dev/ttyUSB1@115200,utf8,packetjfv1"),
+            String::from("-o"),
+            String::from("main=/dev/ttyUSB0@921600,hex,packetacv6,100"),
+            String::from("--no-log"),
+        ])
+        .expect("should parse");
+
+        assert_eq!(options.inputs.len(), 1);
+        assert_eq!(options.outputs.len(), 1);
+        assert_eq!(options.send_options.rate_hz, Some(10));
+        assert!(options.send_options.allow_receive_only);
+        assert!(options.send_options.no_log);
+    }
+
+    #[test]
+    fn parse_io_args_accepts_bare_input_output_for_prompting() {
+        let options =
+            parse_io_args(vec![String::from("-i"), String::from("-o")]).expect("should parse");
+
+        assert_eq!(options.inputs.len(), 1);
+        assert_eq!(options.outputs.len(), 1);
+    }
+
+    #[test]
+    fn io_binding_format_matches_send_parsers() {
+        let input = format_io_input_binding(
+            "/dev/ttyUSB1",
+            115_200,
+            Some("utf8+packet"),
+            Some("packetacv6+packetjfv1"),
+        );
+        let output =
+            format_io_output_binding("/dev/ttyUSB0", 921_600, Some("hex"), "packetacv6", 10);
+
+        let input = parse_send_monitor_binding(&input).expect("input binding should parse");
+        let output = parse_send_output_binding(&output).expect("output binding should parse");
+
+        assert_eq!(input.port, "/dev/ttyUSB1");
+        assert_eq!(input.baud, Some(115_200));
+        assert_eq!(
+            input.formats,
+            vec![String::from("packetacv6"), String::from("packetjfv1")]
+        );
+        assert_eq!(input.display_mode, Some(PortDisplayMode::Utf8));
+        assert_eq!(input.line_break_mode, Some(LineBreakMode::Packet));
+        assert_eq!(output.port, "/dev/ttyUSB0");
+        assert_eq!(output.baud, Some(921_600));
+        assert_eq!(output.format.as_deref(), Some("packetacv6"));
+        assert_eq!(output.rate_hz, Some(10));
+    }
+
+    #[test]
     fn mixed_decoder_recovers_packet_boundaries_across_chunks() {
         let ac = OutputFormat::PacketAcV6
             .encode_dummy_payload()
@@ -1866,6 +2607,28 @@ mod tests {
             .expect("roverdowngeneral dummy payload");
 
         assert!(matches_rover_down_packet(&payload));
+    }
+
+    #[test]
+    fn rover_down_validator_accepts_0x3xx_and_0x4xx_lines_with_arbitrary_data() {
+        assert!(matches_rover_down_packet(b"0x300,OK\r\n"));
+        assert!(matches_rover_down_packet(b"0x4A2,TEMP=21.10;MODE=A\r\n"));
+        assert!(!matches_rover_down_packet(b"400,21.10\r\n"));
+        assert!(!matches_rover_down_packet(b"0x500,21.10\r\n"));
+        assert!(!matches_rover_down_packet(b"0x400,\r\n"));
+    }
+
+    #[test]
+    fn mixed_decoder_accepts_variable_length_rover_down_lines() {
+        let mut decoder = MixedFormatDecoder::new(vec![OutputFormat::RoverDownGeneral]);
+
+        assert!(decoder.push(b"noise0x4A2,TEMP=21.10").is_empty());
+        let decoded = decoder.push(b"\r\n0x300,OK\r\n");
+
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].format, OutputFormat::RoverDownGeneral);
+        assert_eq!(decoded[0].bytes, b"0x4A2,TEMP=21.10\r\n");
+        assert_eq!(decoded[1].bytes, b"0x300,OK\r\n");
     }
 
     #[test]

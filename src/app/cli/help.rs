@@ -5,6 +5,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!();
     eprintln!("コマンド:");
     eprintln!("  control     DUALSHOCK 4 の入力を読み取り、シリアル出力へ送信");
+    eprintln!("  io          複数シリアルポートの送信と受信を同一画面で監視");
     eprintln!("  monitor     1 つ以上のシリアルポートを監視");
     eprintln!("  route       シリアル入力と出力の間でバイト列を中継");
     eprintln!("  send        ダミーペイロードをシリアルポートへ繰り返し送信");
@@ -21,7 +22,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     );
     eprintln!();
     eprintln!(
-        "詳細は `{bin_name} help control`、`{bin_name} help monitor`、`{bin_name} help route`、`{bin_name} help send`、`{bin_name} help xbee-mock`、`{bin_name} help xbee-rtt`、`{bin_name} help xbee-test` で確認できます。"
+        "詳細は `{bin_name} help control`、`{bin_name} help io`、`{bin_name} help monitor`、`{bin_name} help route`、`{bin_name} help send`、`{bin_name} help xbee-mock`、`{bin_name} help xbee-rtt`、`{bin_name} help xbee-test` で確認できます。"
     );
 }
 
@@ -30,6 +31,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!();
     println!("コマンド:");
     println!("  control     DUALSHOCK 4 の入力を読み取り、シリアル出力へ送信");
+    println!("  io          複数シリアルポートの送信と受信を同一画面で監視");
     println!("  monitor     1 つ以上のシリアルポートを監視");
     println!("  route       シリアル入力と出力の間でバイト列を中継");
     println!("  send        ダミーペイロードをシリアルポートへ繰り返し送信");
@@ -51,6 +53,9 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  {bin_name} send --port /dev/ttyUSB0,hex --config FORMAT=PacketACv6");
     println!(
         "  {bin_name} send -o main=/dev/ttyUSB0@921600,hex,packetacv6 -o sub=/dev/ttyUSB1@115200,utf8,packetjfv1"
+    );
+    println!(
+        "  {bin_name} io -i /dev/ttyUSB1@115200,utf8,packetjfv1 -o main=/dev/ttyUSB0@921600,hex,packetacv6,10"
     );
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketJFv1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=RoverUpGeneral");
@@ -77,6 +82,10 @@ pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode 
         }
         Some("control") => {
             print_control_help(bin_name);
+            ExitCode::SUCCESS
+        }
+        Some("io") => {
+            print_io_help(bin_name);
             ExitCode::SUCCESS
         }
         Some("monitor") => {
@@ -257,6 +266,52 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!("  {bin_name} send --interactive --port /dev/ttyUSB0");
     println!("  {bin_name} send -i --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
     println!("  {bin_name} send --display output:default=hex --display input:default=utf8+packet");
+}
+
+pub(crate) fn print_io_help(bin_name: &str) {
+    println!(
+        "使い方: {bin_name} io -i [PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]] -o [ID=PORT[@BAUD][,DISPLAY][,FORMAT][,RATE]]"
+    );
+    println!();
+    println!("複数の受信ポートと送信ポートを同一画面で監視します。");
+    println!(
+        "送信ポートは選択したフォーマットのダミーペイロードを繰り返し送信し、受信側は raw または指定フォーマットで表示します。"
+    );
+    println!(
+        "`-i` または `-o` を値なしで指定すると、矢印上下と Enter でポート、フォーマット、ボーレート、送信レートを選択できます。"
+    );
+    println!("既定値は baud=115200、送信レート=10 Hz です。");
+    println!();
+    println!("オプション:");
+    println!("  -i, --input <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]>");
+    println!(
+        "                              受信ポート（繰り返し指定可）。値を省略すると対話式に選択"
+    );
+    println!("  -o, --output <ID=PORT[@BAUD][,DISPLAY][,FORMAT][,RATE]>");
+    println!(
+        "                              送信ポート（繰り返し指定可）。値を省略すると対話式に選択"
+    );
+    println!("                              ID= は同一ポートへ複数形式を送る場合に指定します");
+    println!("                              DISPLAY: hex/ascii/utf8/hex+ascii/hex+utf8");
+    println!("                              受信では +line/+packet/+wrap も指定できます");
+    println!(
+        "                              FORMAT: packetacv6/packetmv1/packetiv1/packetbv1/packetjfv1/roverupgeneral/roverdowngeneral"
+    );
+    println!("      --display <TARGET=MODE> 既存コマンドと同じ表示上書き");
+    println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
+    println!("  -h, --help                 このヘルプを表示");
+    println!();
+    println!("例:");
+    println!("  {bin_name} io -i");
+    println!("  {bin_name} io -o");
+    println!("  {bin_name} io -i /dev/ttyUSB1@115200,utf8,packetjfv1");
+    println!(
+        "  {bin_name} io -o main=/dev/ttyUSB0@921600,hex,packetacv6,10 -o sub=/dev/ttyUSB1@115200,utf8,roverupgeneral,10"
+    );
+    println!(
+        "  {bin_name} io -i /dev/ttyUSB1,packetacv6+packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100"
+    );
 }
 
 pub(crate) fn print_xbee_test_help(bin_name: &str) {

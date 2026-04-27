@@ -5,6 +5,7 @@
 主なコマンドは次のとおりです。
 
 - `acs control`: DUALSHOCK 4 の入力を読み取り、整形したシリアル出力を送信する
+- `acs io`: 複数ポートへのダミーデータ送信と複数ポート受信を同一画面で監視する
 - `acs monitor`: 1 つ以上のシリアルポートを監視する
 - `acs route`: シリアル入力を built-in template に応じてシリアル出力へ振り分ける
 - `acs send`: 指定形式のダミーデータを継続してシリアルポートへ送信する
@@ -79,6 +80,7 @@ make update COMMIT=50d3137a75b821d46b5308f7c7693e513836e11d
 ```bash
 acs --help
 acs help control
+acs help io
 acs help monitor
 acs help route
 acs help send
@@ -100,6 +102,9 @@ acs send --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6 --no-log
 acs send --port /dev/ttyUSB0@921600 --config FORMAT=PacketMv1 --no-log
 acs send -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100 -o up=/dev/ttyUSB0@921600,utf8,roverupgeneral,10
 acs send --port /dev/ttyUSB0@921600 --monitor /dev/ttyUSB1@115200,packetacv6+packetjfv1 --config FORMAT=PacketACv6
+acs io -i /dev/ttyUSB1@115200,utf8,packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,10
+acs io -i
+acs io -o
 acs xbee-mock base -p /dev/ttyUSB0@921600 --config PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood
 acs xbee-mock base -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@921600 --config PAIR=2,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=ping-pong
 acs xbee-mock remote -p up=/dev/ttyUSB0@921600 -p down=/dev/ttyUSB1@921600 --config PAIR=2,TX_FORMAT=pollresponse@100,RX_FORMAT=pollgreeting,TRAFFIC_PATTERN=polling
@@ -130,9 +135,10 @@ acs --version
 - `acs xbee-test` は表示更新が遅い場合も受信レートとエラー率の集計を優先し、packet 表示は別キューで追いかけます。
 - `acs xbee-test` は `AU(PacketACv6) + RU(RoverUpGeneral)` と `AD(PacketJFv1) + RD(RoverDownGeneral)` をそれぞれ混在送信でき、各 format の送受信 Hz と照合結果を表示します。
 - `acs xbee-test --config MODE=polling,...` は `PollGreeting` / `PollResponse` を基本にしつつ、`base` 側と `remote` 側で独立した確率で実パケット対へ差し替えます。
+- `acs io` は `-i` を受信ポート、`-o` を送信ポートとして繰り返し指定できます。ポート名の後ろに `@BAUD,DISPLAY,FORMAT,RATE` を付けられ、値なしの `-i` / `-o` は矢印上下と Enter で対話式に設定します。既定値は baud `115200`、送信レート `10` Hz です。
 - `acs send` は同一ポートの mixed-format 受信でも packet を再同期し、format ごとの受信 Hz をヘッダに表示します。
 - `acs send --monitor` は `packetacv6+packetjfv1` のように複数 format を指定でき、それぞれの built-in 既定表示で表示します。
-- ログを保存する `acs control` / `acs monitor` / `acs route` / `acs send` / `acs xbee-test` / `acs xbee-mock` は、すべて `--no-log` でログファイル作成を止めて I/O 負荷を減らせます。
+- ログを保存する `acs control` / `acs io` / `acs monitor` / `acs route` / `acs send` / `acs xbee-test` / `acs xbee-mock` は、すべて `--no-log` でログファイル作成を止めて I/O 負荷を減らせます。
 
 ## XBee Pro 900-HP (S3B) で `R-Reset` などが見える場合
 
@@ -140,7 +146,7 @@ acs --version
 
 この状態になったら、まず `acs` を止めて XBee をリセットまたは電源入れ直ししてください。再発する場合は、USB アダプタや配線が DTR/SLEEP_RQ・RTS・break を bootloader 起動条件にしていないか、XCTU などでアプリ/ファームウェアが有効かを確認してください。Digi の資料では bootloader は DIN、DTR/SLEEP_RQ、RTS と serial break/reset の組み合わせで起動し、有効なアプリが無い場合は bootloader が常時動くと説明されています。
 
-`--s3b` を付けると、serial port を開いた直後、UI 表示前に bootloader menu を短時間だけ確認し、見つかった場合は bootloader の `B` bypass command を送ってから通常動作へ進みます。この処理は `control` / `monitor` / `route` / `send` / `xbee-mock` / `xbee-rtt` / `xbee-test` の各ポートに適用されます。実行中に menu が見えた場合も `XBee bootloader menu detected` を表示し、同じポートに writer がある場合は `B` を一度だけ送ります。bypass 待ちの短時間は通常送信を止め、それでも menu が出る場合は bootloader 条件を再度踏んでいる可能性が高いため、そのポートへの追加送信を止めます。
+`--s3b` を付けると、serial port を開いた直後、UI 表示前に bootloader menu を短時間だけ確認し、見つかった場合は bootloader の `B` bypass command を送ってから通常動作へ進みます。この処理は `control` / `io` / `monitor` / `route` / `send` / `xbee-mock` / `xbee-rtt` / `xbee-test` の各ポートに適用されます。実行中に menu が見えた場合も `XBee bootloader menu detected` を表示し、同じポートに writer がある場合は `B` を一度だけ送ります。bypass 待ちの短時間は通常送信を止め、それでも menu が出る場合は bootloader 条件を再度踏んでいる可能性が高いため、そのポートへの追加送信を止めます。
 
 `--s3b` は S3B 接続時だけ指定してください。普通の UART 機器に付けると、誤検出時に余計な `B` が流れる可能性があります。PC 側ソフトが制御できるのは port open 後なので、open した瞬間の DTR/RTS/reset 動作が bootloader 起動条件を作る USB アダプタでは、配線やアダプタ側の対策も必要です。
 

@@ -384,8 +384,8 @@ mod tests {
         let first = generator.next_payload().expect("should encode");
         let second = generator.next_payload().expect("should encode");
 
-        assert_eq!(first.len(), 11);
-        assert_eq!(String::from_utf8_lossy(&first), "400,21.10\r\n");
+        assert_eq!(first.len(), 13);
+        assert_eq!(String::from_utf8_lossy(&first), "0x300,10.10\r\n");
         assert_ne!(first, second);
     }
 
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(OutputFormat::PacketBv1.packet_len(), 15);
         assert_eq!(OutputFormat::PacketJfV1.packet_len(), 16);
         assert_eq!(OutputFormat::RoverUpGeneral.packet_len(), 12);
-        assert_eq!(OutputFormat::RoverDownGeneral.packet_len(), 11);
+        assert_eq!(OutputFormat::RoverDownGeneral.packet_len(), 13);
     }
 
     #[test]

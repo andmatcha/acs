@@ -31,6 +31,7 @@ pub fn run() -> ExitCode {
         Some("ports") => commands::list_ports(),
         Some("control") => control::run(args.collect(), &bin_name),
         Some("monitor") => monitor::run(args.collect(), &bin_name),
+        Some("io") => send::run_io(args.collect(), &bin_name),
         Some("route") => route::run(args.collect(), &bin_name),
         Some("send") => send::run(args.collect(), &bin_name),
         Some("xbee-mock") => xbee_mock::run(args.collect(), &bin_name),
