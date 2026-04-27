@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-const WAIT_INTERVAL: Duration = Duration::from_millis(50);
+const WAIT_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Default)]
 struct MonitorCliOptions {

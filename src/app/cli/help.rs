@@ -221,6 +221,9 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!(
         "  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]> 追加で監視するシリアルポート"
     );
+    println!(
+        "                              FORMAT 省略時は改行待ちせず raw 入力を画面幅で折り返し表示します"
+    );
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
     println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!(

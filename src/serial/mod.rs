@@ -10,7 +10,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const READ_BUFFER_SIZE: usize = 256;
-const READ_TIMEOUT_MILLIS: u64 = 50;
+// Keep receive latency low so wireless monitor output does not arrive in visible bursts.
+const READ_TIMEOUT_MILLIS: u64 = 5;
+const READ_EVENT_MAX_BYTES: usize = 1024;
+const READ_EVENT_DRAIN_BUDGET: Duration = Duration::from_millis(2);
 const WRITE_TIMEOUT_MILLIS: u64 = 1_000;
 const WRITE_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 const XBEE_S3B_BOOTLOADER_SCAN_MILLIS: u64 = 500;
@@ -550,13 +553,26 @@ fn drain_available_bytes(
     received: &mut Vec<u8>,
     buffer: &mut [u8; READ_BUFFER_SIZE],
 ) -> Result<(), SerialPortLibError> {
+    let drain_started_at = Instant::now();
+
     loop {
+        if received.len() >= READ_EVENT_MAX_BYTES
+            || drain_started_at.elapsed() >= READ_EVENT_DRAIN_BUDGET
+        {
+            return Ok(());
+        }
+
         let available = reader.bytes_to_read()? as usize;
         if available == 0 {
             return Ok(());
         }
 
-        let chunk_len = available.min(buffer.len());
+        let remaining_event_capacity = READ_EVENT_MAX_BYTES.saturating_sub(received.len());
+        let chunk_len = available.min(buffer.len()).min(remaining_event_capacity);
+        if chunk_len == 0 {
+            return Ok(());
+        }
+
         match reader.read(&mut buffer[..chunk_len]) {
             Ok(0) => return Ok(()),
             Ok(count) => received.extend_from_slice(&buffer[..count]),

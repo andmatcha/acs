@@ -160,12 +160,22 @@ impl SessionDashboard {
             .copied()
             .unwrap_or_default();
 
-        if line_break == LineBreakMode::Packet {
-            self.dashboard.add_input(port, bytes);
-            self.logger
-                .log_input(port, bytes)
-                .map_err(|error| format!("failed to write log: {error}"))?;
-            return Ok(true);
+        match line_break {
+            LineBreakMode::Packet => {
+                self.dashboard.add_input(port, bytes);
+                self.logger
+                    .log_input(port, bytes)
+                    .map_err(|error| format!("failed to write log: {error}"))?;
+                return Ok(true);
+            }
+            LineBreakMode::Wrap => {
+                self.dashboard.add_input_stream_wrapped(port, bytes, None);
+                self.logger
+                    .log_input(port, bytes)
+                    .map_err(|error| format!("failed to write log: {error}"))?;
+                return Ok(true);
+            }
+            LineBreakMode::Line => {}
         }
 
         let mut changed = false;
@@ -269,7 +279,7 @@ impl SessionDashboard {
                 .get(&line.port)
                 .copied()
                 .unwrap_or_default();
-            if line_break == LineBreakMode::Packet {
+            if matches!(line_break, LineBreakMode::Packet | LineBreakMode::Wrap) {
                 continue;
             }
             self.dashboard.add_input(&line.port, &line.bytes);

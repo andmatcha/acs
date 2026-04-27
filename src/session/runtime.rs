@@ -16,7 +16,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const RENDER_INTERVAL: Duration = Duration::from_millis(100);
+const RENDER_INTERVAL: Duration = Duration::from_millis(33);
 const RENDER_RATE_WINDOW: Duration = Duration::from_secs(1);
 const XBEE_BOOTLOADER_DETECTION_WINDOW: usize = 256;
 const XBEE_BOOTLOADER_STATUS: &str =

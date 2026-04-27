@@ -7,7 +7,9 @@ use super::signal;
 use crate::ingress::IngressFrame;
 use crate::output::OutputFormat;
 use crate::output::formats::{DummyPayloadGenerator, crc16_ccitt_false};
-use crate::port_display::{PortDisplayConfig, PortDisplayMode, parse_display_assignment};
+use crate::port_display::{
+    LineBreakMode, PortDisplayConfig, PortDisplayMode, parse_display_assignment,
+};
 use crate::serial;
 use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntime, SessionSpec};
 use std::cell::RefCell;
@@ -1123,6 +1125,8 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
     for port_spec in monitor_port_specs {
         let monitor_port =
             serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?;
+        let monitor_formats = port_spec.formats;
+        let monitor_has_formats = !monitor_formats.is_empty();
         if !inputs
             .iter()
             .any(|input: &SessionInputSpec| input.port == monitor_port)
@@ -1134,18 +1138,19 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
                 display_mode: resolve_display_mode(
                     port_spec.display_mode,
                     display.resolve_input_override(&monitor_port),
-                    port_spec
-                        .formats
+                    monitor_formats
                         .first()
                         .copied()
                         .map(OutputFormat::default_display_mode),
                 ),
-                line_break_mode: port_spec
-                    .line_break_mode
-                    .unwrap_or(display.resolve_line_break_input(&monitor_port)),
+                line_break_mode: resolve_monitor_line_break_mode(
+                    port_spec.line_break_mode,
+                    monitor_has_formats,
+                    display.resolve_line_break_input(&monitor_port),
+                ),
             });
         }
-        if !port_spec.formats.is_empty() {
+        if !monitor_formats.is_empty() {
             let input_display_override = port_spec
                 .display_mode
                 .or(display.resolve_input_override(&monitor_port));
@@ -1156,7 +1161,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
             let formats = input_packet_format_candidates
                 .entry(monitor_port)
                 .or_default();
-            for format in port_spec.formats {
+            for format in monitor_formats {
                 if !formats.contains(&format) {
                     formats.push(format);
                 }
@@ -1218,6 +1223,18 @@ fn resolve_display_mode(
         .or(configured_mode)
         .or(built_in_mode)
         .unwrap_or_default()
+}
+
+fn resolve_monitor_line_break_mode(
+    explicit_mode: Option<LineBreakMode>,
+    has_formats: bool,
+    configured_mode: LineBreakMode,
+) -> LineBreakMode {
+    explicit_mode.unwrap_or(if has_formats {
+        configured_mode
+    } else {
+        LineBreakMode::Wrap
+    })
 }
 
 fn validate_output_port_loads(outputs: &[SendOutputSettings]) -> Result<(), String> {
@@ -1561,7 +1578,8 @@ mod tests {
         MixedFormatDecoder, ObservedInput, OutputSchedule, SendOutputSettings,
         estimated_output_line_bps, matches_rover_down_packet, parse_output_format_list,
         parse_send_args, parse_send_monitor_binding, parse_send_output_binding,
-        realign_output_schedule, resolve_display_mode, validate_output_port_loads,
+        realign_output_schedule, resolve_display_mode, resolve_monitor_line_break_mode,
+        validate_output_port_loads,
     };
     use crate::output::OutputFormat;
     use crate::port_display::{LineBreakMode, PortDisplayMode};
@@ -1622,6 +1640,30 @@ mod tests {
                 String::from("packetmv1"),
                 String::from("packetjfv1"),
             ]
+        );
+    }
+
+    #[test]
+    fn monitor_without_format_defaults_to_wrap_mode() {
+        assert_eq!(
+            resolve_monitor_line_break_mode(None, false, LineBreakMode::Line),
+            LineBreakMode::Wrap
+        );
+    }
+
+    #[test]
+    fn monitor_with_format_uses_configured_line_break_mode() {
+        assert_eq!(
+            resolve_monitor_line_break_mode(None, true, LineBreakMode::Packet),
+            LineBreakMode::Packet
+        );
+        assert_eq!(
+            resolve_monitor_line_break_mode(
+                Some(LineBreakMode::Line),
+                false,
+                LineBreakMode::Packet
+            ),
+            LineBreakMode::Line
         );
     }
 

@@ -25,12 +25,14 @@ impl PortDisplayMode {
     }
 }
 
-/// 入力データの表示単位。line=改行まで1行、packet=読み取りチャンク単位。
+/// 入力データの表示単位。
+/// line=改行まで1行、packet=読み取りチャンク単位、wrap=端末幅で折り返す raw stream。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineBreakMode {
     #[default]
     Line,
     Packet,
+    Wrap,
 }
 
 impl LineBreakMode {
@@ -38,8 +40,9 @@ impl LineBreakMode {
         match value {
             "line" => Ok(Self::Line),
             "packet" | "raw" => Ok(Self::Packet),
+            "wrap" | "stream" => Ok(Self::Wrap),
             other => Err(format!(
-                "invalid line break mode: {other} (expected line/packet)"
+                "invalid line break mode: {other} (expected line/packet/wrap)"
             )),
         }
     }
@@ -187,12 +190,12 @@ impl PortDisplayAssignment {
 }
 
 /// `[stream:]target=mode` 形式をパースする。
-/// mode に `line` / `packet` を含む場合は LineBreakMode として解釈する。
-/// `hex+packet` のように組み合わせ指定も可能。
+/// mode に `line` / `packet` / `wrap` を含む場合は LineBreakMode として解釈する。
+/// `hex+packet` や `hex+wrap` のように組み合わせ指定も可能。
 pub fn parse_display_assignment(value: &str) -> Result<PortDisplayAssignment, String> {
     let (target, mode_str) = value.split_once('=').ok_or_else(|| {
         String::from(
-            "display must be in the form <PORT>=<hex|ascii|utf8|hex+ascii|hex+utf8|line|packet>",
+                "display must be in the form <PORT>=<hex|ascii|utf8|hex+ascii|hex+utf8|line|packet|wrap>",
         )
     })?;
 
@@ -218,7 +221,7 @@ pub fn parse_display_assignment(value: &str) -> Result<PortDisplayAssignment, St
 
     if encoding.is_none() && line_break.is_none() {
         return Err(format!(
-            "invalid display mode: {mode_str} (expected hex/ascii/utf8/hex+ascii/hex+utf8/line/packet)"
+            "invalid display mode: {mode_str} (expected hex/ascii/utf8/hex+ascii/hex+utf8/line/packet/wrap)"
         ));
     }
 
@@ -250,7 +253,7 @@ pub fn parse_display_value(
         let enc_str = encoding_parts.join("+");
         Some(PortDisplayMode::parse(&enc_str).map_err(|_| {
             format!(
-                "invalid display mode: {value} (expected hex/ascii/utf8/hex+ascii/hex+utf8/line/packet)"
+                "invalid display mode: {value} (expected hex/ascii/utf8/hex+ascii/hex+utf8/line/packet/wrap)"
             )
         })?)
     };
@@ -303,6 +306,10 @@ mod tests {
         let d = parse_display_assignment("input:default=utf8+line").unwrap();
         assert_eq!(d.encoding, Some(PortDisplayMode::Utf8));
         assert_eq!(d.line_break, Some(LineBreakMode::Line));
+
+        let e = parse_display_assignment("input:/dev/ttyUSB1=hex+wrap").unwrap();
+        assert_eq!(e.encoding, Some(PortDisplayMode::Hex));
+        assert_eq!(e.line_break, Some(LineBreakMode::Wrap));
     }
 
     #[test]
@@ -318,6 +325,10 @@ mod tests {
         assert_eq!(
             parse_display_value("line").unwrap(),
             (None, Some(LineBreakMode::Line))
+        );
+        assert_eq!(
+            parse_display_value("wrap").unwrap(),
+            (None, Some(LineBreakMode::Wrap))
         );
     }
 
