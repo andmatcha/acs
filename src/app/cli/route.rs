@@ -29,6 +29,7 @@ struct RouteCliOptions {
     display: PortDisplayConfig,
     log_dir: Option<PathBuf>,
     no_log: bool,
+    s3b: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +162,7 @@ fn build_settings(cli_options: RouteCliOptions) -> Result<RouteSettings, String>
         &outputs,
     )?;
     let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
+    let s3b = cli_options.s3b;
 
     Ok(RouteSettings {
         session: SessionSpec {
@@ -168,6 +170,7 @@ fn build_settings(cli_options: RouteCliOptions) -> Result<RouteSettings, String>
             command_name: String::from("route"),
             log_dir,
             logging_enabled: !cli_options.no_log,
+            xbee_s3b_recovery: s3b,
             inputs,
             outputs,
         },
@@ -488,6 +491,7 @@ fn parse_route_args(args: Vec<String>) -> Result<RouteCliOptions, String> {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
             "--no-log" => options.no_log = true,
+            "--s3b" => options.s3b = true,
             other if other.starts_with('-') => {
                 return Err(format!("unknown option for route: {other}"));
             }

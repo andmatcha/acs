@@ -20,12 +20,14 @@ struct MonitorCliOptions {
     display: PortDisplayConfig,
     log_dir: Option<PathBuf>,
     no_log: bool,
+    s3b: bool,
 }
 
 struct MonitorSettings {
     inputs: Vec<SessionInputSpec>,
     log_dir: PathBuf,
     logging_enabled: bool,
+    s3b: bool,
 }
 
 struct MonitorRunResult {
@@ -69,6 +71,7 @@ fn run_with_options(cli_options: MonitorCliOptions) -> Result<MonitorRunResult, 
         command_name: String::from("monitor"),
         log_dir: settings.log_dir.clone(),
         logging_enabled: settings.logging_enabled,
+        xbee_s3b_recovery: settings.s3b,
         inputs: settings.inputs.clone(),
         outputs: Vec::new(),
     })?;
@@ -141,6 +144,7 @@ fn build_settings(cli_options: MonitorCliOptions) -> Result<MonitorSettings, Str
         inputs,
         log_dir,
         logging_enabled: !cli_options.no_log,
+        s3b: cli_options.s3b,
     })
 }
 
@@ -170,6 +174,7 @@ fn parse_monitor_args(args: Vec<String>) -> Result<MonitorCliOptions, String> {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
             "--no-log" => options.no_log = true,
+            "--s3b" => options.s3b = true,
             other => return Err(format!("unknown option for monitor: {other}")),
         }
     }

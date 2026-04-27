@@ -37,6 +37,7 @@ struct SendCliOptions {
     log_dir: Option<PathBuf>,
     no_log: bool,
     interactive: bool,
+    s3b: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +82,7 @@ struct SendSettings {
     log_dir: PathBuf,
     logging_enabled: bool,
     interactive: bool,
+    s3b: bool,
 }
 
 struct SendOutputRunResult {
@@ -861,6 +863,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
         command_name: String::from("send"),
         log_dir: settings.log_dir.clone(),
         logging_enabled: settings.logging_enabled,
+        xbee_s3b_recovery: settings.s3b,
         inputs: settings.inputs.clone(),
         outputs: output_specs
             .iter()
@@ -1202,6 +1205,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
         log_dir,
         logging_enabled: !cli_options.no_log,
         interactive: cli_options.interactive,
+        s3b: cli_options.s3b,
     })
 }
 
@@ -1435,6 +1439,7 @@ fn parse_send_args(args: Vec<String>) -> Result<SendCliOptions, String> {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
             "--no-log" => options.no_log = true,
+            "--s3b" => options.s3b = true,
             other => return Err(format!("unknown option for send: {other}")),
         }
     }

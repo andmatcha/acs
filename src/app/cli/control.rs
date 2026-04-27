@@ -31,6 +31,7 @@ struct ControlCliOptions {
     monitor_ports: Vec<PortSpec>,
     log_dir: Option<PathBuf>,
     no_log: bool,
+    s3b: bool,
 }
 
 struct ControlSettings {
@@ -40,6 +41,7 @@ struct ControlSettings {
     format: OutputFormat,
     log_dir: PathBuf,
     logging_enabled: bool,
+    s3b: bool,
 }
 
 struct ControlRunResult {
@@ -100,6 +102,7 @@ fn run_with_options(cli_options: ControlCliOptions) -> Result<ControlRunResult, 
         command_name: String::from("control"),
         log_dir: settings.log_dir.clone(),
         logging_enabled: settings.logging_enabled,
+        xbee_s3b_recovery: settings.s3b,
         inputs: settings.inputs.clone(),
         outputs: vec![settings.output.clone()],
     })?;
@@ -284,6 +287,7 @@ fn build_settings(cli_options: ControlCliOptions) -> Result<ControlSettings, Str
         format,
         log_dir,
         logging_enabled: !cli_options.no_log,
+        s3b: cli_options.s3b,
     })
 }
 
@@ -323,6 +327,7 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
             "--no-log" => options.no_log = true,
+            "--s3b" => options.s3b = true,
             other => return Err(format!("unknown option for control: {other}")),
         }
     }

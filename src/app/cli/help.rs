@@ -166,6 +166,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "                                    monitor の入力では任意で +line/+packet を追加できます"
     );
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!(
         "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
     );
@@ -221,6 +222,7 @@ pub(crate) fn print_send_help(bin_name: &str) {
         "  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]> 追加で監視するシリアルポート"
     );
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!(
         "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
     );
@@ -286,6 +288,7 @@ pub(crate) fn print_xbee_test_help(bin_name: &str) {
     );
     println!("                              `AD_RATE` / `RD_RATE` は `ping-pong` では無視されます");
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!(
         "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
     );
@@ -343,6 +346,7 @@ pub(crate) fn print_xbee_rtt_help(bin_name: &str) {
         "      --show-protocol        デコード済みの HELLO / PROBE / RESULT 形式ログを継続表示"
     );
     println!("                            同じ青/赤の色分けと [0>] / [1<] 接頭辞を使います");
+    println!("      --s3b                 XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!("  -h, --help                 このヘルプを表示");
     println!();
     println!("例:");
@@ -394,6 +398,7 @@ pub(crate) fn print_xbee_mock_help(bin_name: &str) {
     );
     println!("                              旧エイリアス: `--option`");
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!(
         "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
     );
@@ -434,6 +439,7 @@ pub(crate) fn print_monitor_help(bin_name: &str) {
         "                                    monitor の入力では任意で +line/+packet を追加できます"
     );
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
+    println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!(
         "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
     );
@@ -472,6 +478,7 @@ pub(crate) fn print_route_help(bin_name: &str) {
         "                                    monitor の入力では任意で +line/+packet を追加できます"
     );
     println!("      --no-log                ログファイル作成を無効化して最大スループットを優先");
+    println!("      --s3b                   XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!(
         "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
     );

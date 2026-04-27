@@ -13,6 +13,17 @@ const READ_BUFFER_SIZE: usize = 256;
 const READ_TIMEOUT_MILLIS: u64 = 50;
 const WRITE_TIMEOUT_MILLIS: u64 = 1_000;
 const WRITE_RETRY_INTERVAL: Duration = Duration::from_millis(5);
+const XBEE_S3B_BOOTLOADER_SCAN_MILLIS: u64 = 500;
+const XBEE_S3B_BOOTLOADER_READ_TIMEOUT_MILLIS: u64 = 20;
+const XBEE_S3B_BOOTLOADER_RECOVERY_SETTLE_MILLIS: u64 = 500;
+const XBEE_S3B_BOOTLOADER_RECOVERY_COMMAND: &[u8] = b"B";
+const XBEE_S3B_BOOTLOADER_MENU_MARKERS: [&[u8]; 5] = [
+    b"R-Reset",
+    b"A-App Ver.",
+    b"V-BL Ver.",
+    b"T-Timeout",
+    b"F-Update App",
+];
 
 pub type SerialCallback = Arc<dyn Fn(SerialEvent) + Send + Sync>;
 
@@ -20,6 +31,7 @@ pub type SerialCallback = Arc<dyn Fn(SerialEvent) + Send + Sync>;
 pub struct SerialConfig {
     pub port: String,
     pub baud_rate: u32,
+    pub xbee_s3b_recovery: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -380,13 +392,116 @@ fn port_name_looks_like_usb_serial(port_name: &str) -> bool {
 }
 
 fn open_port(config: &SerialConfig) -> Result<Box<dyn SerialPort>, SerialError> {
-    new(&config.port, config.baud_rate)
+    let mut port = new(&config.port, config.baud_rate)
         .timeout(Duration::from_millis(WRITE_TIMEOUT_MILLIS))
         .open()
         .map_err(|source| SerialError::Open {
             port: config.port.clone(),
             source,
-        })
+        })?;
+    clear_break_after_open(&mut *port);
+    if config.xbee_s3b_recovery {
+        recover_xbee_s3b_bootloader(&mut *port, &config.port)?;
+    }
+    Ok(port)
+}
+
+fn clear_break_after_open(port: &dyn SerialPort) {
+    // XBee bootloaders can use a serial break during their entry sequence.  Clearing it here is
+    // best-effort because some adapters do not expose break control, and normal UART traffic does
+    // not require a fatal error if the line cannot be changed.
+    let _ = port.clear_break();
+}
+
+fn recover_xbee_s3b_bootloader(
+    port: &mut dyn SerialPort,
+    port_name: &str,
+) -> Result<(), SerialError> {
+    let original_timeout = port.timeout();
+    port.set_timeout(Duration::from_millis(
+        XBEE_S3B_BOOTLOADER_READ_TIMEOUT_MILLIS,
+    ))
+    .map_err(|source| SerialError::Configure {
+        port: port_name.to_owned(),
+        source,
+    })?;
+
+    let result = scan_and_recover_xbee_s3b_bootloader(port, port_name);
+    let restore_result =
+        port.set_timeout(original_timeout)
+            .map_err(|source| SerialError::Configure {
+                port: port_name.to_owned(),
+                source,
+            });
+
+    result.and(restore_result)
+}
+
+fn scan_and_recover_xbee_s3b_bootloader(
+    port: &mut dyn SerialPort,
+    port_name: &str,
+) -> Result<(), SerialError> {
+    let deadline = Instant::now() + Duration::from_millis(XBEE_S3B_BOOTLOADER_SCAN_MILLIS);
+    let mut received = Vec::new();
+    let mut buffer = [0u8; READ_BUFFER_SIZE];
+
+    while Instant::now() < deadline {
+        match port.read(&mut buffer) {
+            Ok(0) => {}
+            Ok(count) => {
+                received.extend_from_slice(&buffer[..count]);
+                if looks_like_xbee_s3b_bootloader_menu(&received) {
+                    port.write_all(XBEE_S3B_BOOTLOADER_RECOVERY_COMMAND)
+                        .map_err(|source| SerialError::Write {
+                            port: port_name.to_owned(),
+                            source,
+                        })?;
+                    thread::sleep(Duration::from_millis(
+                        XBEE_S3B_BOOTLOADER_RECOVERY_SETTLE_MILLIS,
+                    ));
+                    return Ok(());
+                }
+            }
+            Err(error) if is_transient_read_error(&error) => {}
+            Err(source) => {
+                return Err(SerialError::Write {
+                    port: port_name.to_owned(),
+                    source,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn looks_like_xbee_s3b_bootloader_menu(bytes: &[u8]) -> bool {
+    let marker_count = XBEE_S3B_BOOTLOADER_MENU_MARKERS
+        .iter()
+        .filter(|marker| contains_ascii_case_insensitive(bytes, marker))
+        .count();
+
+    marker_count >= 2
+        || contains_ascii_case_insensitive(bytes, b"A-App Ver.")
+        || contains_ascii_case_insensitive(bytes, b"V-BL Ver.")
+        || contains_ascii_case_insensitive(bytes, b"F-Update App")
+}
+
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| ascii_case_insensitive_eq(window, needle))
+}
+
+fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
 fn spawn_reader_thread(

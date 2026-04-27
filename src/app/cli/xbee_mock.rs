@@ -34,6 +34,7 @@ struct XbeeMockCliOptions {
     traffic_pattern: Option<String>,
     log_dir: Option<PathBuf>,
     no_log: bool,
+    s3b: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ struct XbeeMockSettings {
     traffic_pattern: XbeeTestMode,
     log_dir: PathBuf,
     logging_enabled: bool,
+    s3b: bool,
 }
 
 impl XbeeMockSettings {
@@ -815,6 +817,7 @@ fn run_with_options(cli_options: XbeeMockCliOptions) -> Result<XbeeMockRunResult
         command_name: String::from("xbee-mock"),
         log_dir: settings.log_dir.clone(),
         logging_enabled: settings.logging_enabled,
+        xbee_s3b_recovery: settings.s3b,
         inputs,
         outputs,
     })?;
@@ -905,6 +908,7 @@ fn build_mock_settings(cli_options: XbeeMockCliOptions) -> Result<XbeeMockSettin
         traffic_pattern,
         log_dir: cli_options.log_dir.unwrap_or_else(default_log_dir),
         logging_enabled: !cli_options.no_log,
+        s3b: cli_options.s3b,
     })
 }
 
@@ -925,6 +929,7 @@ fn parse_xbee_mock_args(args: Vec<String>) -> Result<XbeeMockCliOptions, String>
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
             "--no-log" => options.no_log = true,
+            "--s3b" => options.s3b = true,
             other if !other.starts_with('-') => {
                 if options.role.is_some() {
                     return Err(format!("unexpected extra argument for xbee-mock: {other}"));

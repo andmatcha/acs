@@ -2,7 +2,8 @@ use crate::ingress::IngressFrame;
 use crate::output::OutputFormat;
 use crate::port_display::{LineBreakMode, PortDisplayMode};
 use crate::serial::{
-    SerialCallback, SerialConfig, SerialEvent, SerialMonitor, SerialWriter, open_monitor_and_writer,
+    SerialCallback, SerialConfig, SerialEvent, SerialMonitor, SerialWriter,
+    looks_like_xbee_s3b_bootloader_menu, open_monitor_and_writer,
 };
 use crate::session::dashboard::SessionDashboard;
 use crate::session::event::SessionEvent;
@@ -17,6 +18,11 @@ use std::time::{Duration, Instant};
 
 const RENDER_INTERVAL: Duration = Duration::from_millis(100);
 const RENDER_RATE_WINDOW: Duration = Duration::from_secs(1);
+const XBEE_BOOTLOADER_DETECTION_WINDOW: usize = 256;
+const XBEE_BOOTLOADER_STATUS: &str =
+    "XBee bootloader menu detected; reset/power-cycle after checking DTR/RTS/break lines";
+const XBEE_BOOTLOADER_RECOVERY_COMMAND: &[u8] = b"B";
+const XBEE_BOOTLOADER_RECOVERY_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionInputSpec {
@@ -42,6 +48,7 @@ pub(crate) struct SessionSpec {
     pub command_name: String,
     pub log_dir: PathBuf,
     pub logging_enabled: bool,
+    pub xbee_s3b_recovery: bool,
     pub inputs: Vec<SessionInputSpec>,
     pub outputs: Vec<SessionOutputSpec>,
 }
@@ -70,9 +77,14 @@ pub(crate) struct SessionRuntime {
     _input_monitors: Vec<SerialMonitor>,
     outputs: BTreeMap<String, SessionOutputHandle>,
     connections: BTreeMap<SessionConnectionKey, SessionConnectionHandle>,
+    xbee_s3b_recovery: bool,
     manual_input_recording: BTreeSet<String>,
     manual_output_recording: BTreeSet<String>,
     render_samples: VecDeque<Instant>,
+    xbee_bootloader_buffers: BTreeMap<String, Vec<u8>>,
+    xbee_bootloader_blocked_ports: BTreeSet<String>,
+    xbee_bootloader_recovery_attempts: BTreeMap<String, usize>,
+    xbee_bootloader_recovery_deadlines: BTreeMap<String, Instant>,
     dirty: bool,
     inputs_disconnected: bool,
     last_render: Instant,
@@ -158,6 +170,7 @@ impl SessionRuntime {
                         &SerialConfig {
                             port: output.port.clone(),
                             baud_rate: output.baud_rate,
+                            xbee_s3b_recovery: spec.xbee_s3b_recovery,
                         },
                         make_session_callback(event_tx.clone(), &input.id),
                     )
@@ -169,6 +182,7 @@ impl SessionRuntime {
                     SerialWriter::open(&SerialConfig {
                         port: output.port.clone(),
                         baud_rate: output.baud_rate,
+                        xbee_s3b_recovery: spec.xbee_s3b_recovery,
                     })
                     .map_err(|error| error.to_string())?
                 };
@@ -200,6 +214,7 @@ impl SessionRuntime {
                 &SerialConfig {
                     port: input.port.clone(),
                     baud_rate: input.baud_rate,
+                    xbee_s3b_recovery: spec.xbee_s3b_recovery,
                 },
                 make_session_callback(event_tx.clone(), &input.id),
             )
@@ -213,9 +228,14 @@ impl SessionRuntime {
             _input_monitors: input_monitors,
             outputs,
             connections,
+            xbee_s3b_recovery: spec.xbee_s3b_recovery,
             manual_input_recording: BTreeSet::new(),
             manual_output_recording: BTreeSet::new(),
             render_samples: VecDeque::new(),
+            xbee_bootloader_buffers: BTreeMap::new(),
+            xbee_bootloader_blocked_ports: BTreeSet::new(),
+            xbee_bootloader_recovery_attempts: BTreeMap::new(),
+            xbee_bootloader_recovery_deadlines: BTreeMap::new(),
             dirty: false,
             inputs_disconnected: false,
             last_render: Instant::now(),
@@ -359,6 +379,20 @@ impl SessionRuntime {
                 )
             })
             .ok_or_else(|| format!("unknown output id: {output_id}"))?;
+        let now = Instant::now();
+        self.finish_xbee_bootloader_recovery_if_ready(&port, now);
+        if let Some(deadline) = self.xbee_bootloader_recovery_deadlines.get(&port).copied() {
+            let remaining = deadline.saturating_duration_since(now);
+            return Err(format!(
+                "waiting {:.1}s after XBee bootloader recovery on {port}",
+                remaining.as_secs_f64()
+            ));
+        }
+        if self.xbee_bootloader_blocked_ports.contains(&port) {
+            return Err(format!(
+                "refusing to write to {port}: XBee bootloader menu was detected; reset/power-cycle the module before sending"
+            ));
+        }
         self.connections
             .get_mut(&connection_key)
             .ok_or_else(|| format!("missing output connection for `{output_id}`"))?
@@ -520,6 +554,21 @@ impl SessionRuntime {
                 if should_record_input && self.dashboard.record_input(&port, &bytes)? {
                     self.dirty = true;
                 }
+                let now = Instant::now();
+                self.finish_xbee_bootloader_recovery_if_ready(&port, now);
+                if self.xbee_s3b_recovery
+                    && !self.xbee_bootloader_blocked_ports.contains(&port)
+                    && !self.xbee_bootloader_recovery_deadlines.contains_key(&port)
+                    && record_xbee_bootloader_bytes(
+                        &mut self.xbee_bootloader_buffers,
+                        &port,
+                        &bytes,
+                    )
+                {
+                    let status = self.handle_xbee_bootloader_detected(&port, now);
+                    self.dashboard.set_status(status);
+                    self.dirty = true;
+                }
 
                 let frame = IngressFrame { input_id, bytes };
                 on_frame(&frame, self)?;
@@ -565,6 +614,67 @@ impl SessionRuntime {
             self.render_samples.pop_front();
         }
     }
+
+    fn finish_xbee_bootloader_recovery_if_ready(&mut self, port: &str, now: Instant) {
+        let Some(deadline) = self.xbee_bootloader_recovery_deadlines.get(port).copied() else {
+            return;
+        };
+        if now >= deadline {
+            self.xbee_bootloader_recovery_deadlines.remove(port);
+            self.xbee_bootloader_buffers.remove(port);
+        }
+    }
+
+    fn handle_xbee_bootloader_detected(&mut self, port: &str, now: Instant) -> String {
+        self.xbee_bootloader_buffers.remove(port);
+
+        let attempts = self
+            .xbee_bootloader_recovery_attempts
+            .get(port)
+            .copied()
+            .unwrap_or_default();
+        if attempts > 0 {
+            self.xbee_bootloader_blocked_ports.insert(port.to_owned());
+            return format!("{XBEE_BOOTLOADER_STATUS}; auto recovery already tried ({port})");
+        }
+
+        let connection_key = self
+            .connections
+            .keys()
+            .find(|key| key.port == port)
+            .cloned();
+        let Some(connection_key) = connection_key else {
+            self.xbee_bootloader_blocked_ports.insert(port.to_owned());
+            return format!("{XBEE_BOOTLOADER_STATUS}; no writer for auto recovery ({port})");
+        };
+
+        let result = self
+            .connections
+            .get_mut(&connection_key)
+            .expect("connection key must exist")
+            .connection
+            .write_bytes(XBEE_BOOTLOADER_RECOVERY_COMMAND);
+
+        match result {
+            Ok(()) => {
+                self.xbee_bootloader_recovery_attempts
+                    .insert(port.to_owned(), attempts + 1);
+                self.xbee_bootloader_recovery_deadlines
+                    .insert(port.to_owned(), now + XBEE_BOOTLOADER_RECOVERY_GRACE);
+                let _ = self.dashboard.record_output_with_options(
+                    port,
+                    XBEE_BOOTLOADER_RECOVERY_COMMAND,
+                    None,
+                    false,
+                );
+                format!("{XBEE_BOOTLOADER_STATUS}; sent B bypass command ({port})")
+            }
+            Err(error) => {
+                self.xbee_bootloader_blocked_ports.insert(port.to_owned());
+                format!("{XBEE_BOOTLOADER_STATUS}; B bypass command failed on {port}: {error}")
+            }
+        }
+    }
 }
 
 fn pretty_format_name(format_name: &str) -> String {
@@ -591,4 +701,60 @@ fn make_session_callback(event_tx: mpsc::Sender<SessionEvent>, input_id: &str) -
             });
         }
     })
+}
+
+fn record_xbee_bootloader_bytes(
+    buffers: &mut BTreeMap<String, Vec<u8>>,
+    port: &str,
+    bytes: &[u8],
+) -> bool {
+    let buffer = buffers.entry(port.to_owned()).or_default();
+    buffer.extend_from_slice(bytes);
+    if buffer.len() > XBEE_BOOTLOADER_DETECTION_WINDOW {
+        let excess = buffer.len() - XBEE_BOOTLOADER_DETECTION_WINDOW;
+        buffer.drain(..excess);
+    }
+
+    if looks_like_xbee_s3b_bootloader_menu(buffer) {
+        return true;
+    }
+
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::record_xbee_bootloader_bytes;
+    use crate::serial::looks_like_xbee_s3b_bootloader_menu;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn detects_xbee_bootloader_menu_in_one_chunk() {
+        let bytes = b"R-Reset\r\nA-App Ver.\r\nV-BL Ver.\r\nT-Timeout\r\nF-Update App\r\n";
+
+        assert!(looks_like_xbee_s3b_bootloader_menu(bytes));
+    }
+
+    #[test]
+    fn detects_xbee_bootloader_menu_across_chunks_once() {
+        let mut buffers = BTreeMap::new();
+
+        assert!(!record_xbee_bootloader_bytes(
+            &mut buffers,
+            "/dev/cu.usbserial-AQ04Q404",
+            b"R-Reset\r\nA-App"
+        ));
+        assert!(record_xbee_bootloader_bytes(
+            &mut buffers,
+            "/dev/cu.usbserial-AQ04Q404",
+            b" Ver.\r\n"
+        ));
+    }
+
+    #[test]
+    fn ignores_unrelated_serial_text() {
+        assert!(!looks_like_xbee_s3b_bootloader_menu(
+            b"PacketACv6 OK\r\nCAN TX 0x1FF\r\n"
+        ));
+    }
 }

@@ -46,6 +46,7 @@ struct XbeeRttCliOptions {
     probe_timeout_ms: Option<u32>,
     show_wire: bool,
     show_protocol: bool,
+    s3b: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +73,7 @@ struct XbeeRttSettings {
     probe_timeout: Duration,
     probe_timeout_ms: u32,
     trace_tap: Option<Arc<LiveTraceTap>>,
+    s3b: bool,
 }
 
 impl XbeeRttSettings {
@@ -759,6 +761,7 @@ impl LocalPeer {
             &SerialConfig {
                 port: local_port.port.clone(),
                 baud_rate: local_port.baud_rate,
+                xbee_s3b_recovery: settings.s3b,
             },
             callback,
         )
@@ -1588,6 +1591,7 @@ fn build_settings(cli_options: XbeeRttCliOptions) -> Result<XbeeRttSettings, Str
         probe_timeout_ms,
         show_wire,
         show_protocol,
+        s3b,
     } = cli_options;
 
     if ports.len() > 2 {
@@ -1664,6 +1668,7 @@ fn build_settings(cli_options: XbeeRttCliOptions) -> Result<XbeeRttSettings, Str
         probe_timeout: Duration::from_millis(u64::from(probe_timeout_ms)),
         probe_timeout_ms,
         trace_tap,
+        s3b,
     })
 }
 
@@ -1701,6 +1706,7 @@ fn parse_xbee_rtt_args(args: Vec<String>) -> Result<XbeeRttCliOptions, String> {
             }
             "--show-wire" => options.show_wire = true,
             "--show-protocol" => options.show_protocol = true,
+            "--s3b" => options.s3b = true,
             other => return Err(format!("unknown option for xbee-rtt: {other}")),
         }
     }

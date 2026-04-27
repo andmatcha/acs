@@ -58,6 +58,7 @@ struct XbeeTestCliOptions {
     rd_rate_hz: Option<u32>,
     log_dir: Option<PathBuf>,
     no_log: bool,
+    s3b: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +88,7 @@ struct XbeeTestSettings {
     rd_rate_hz: u32,
     log_dir: PathBuf,
     logging_enabled: bool,
+    s3b: bool,
 }
 
 struct XbeeTestRunResult {
@@ -2019,6 +2021,7 @@ fn run_with_options(cli_options: XbeeTestCliOptions) -> Result<XbeeTestRunResult
         command_name: String::from("xbee-test"),
         log_dir: settings.log_dir.clone(),
         logging_enabled: settings.logging_enabled,
+        xbee_s3b_recovery: settings.s3b,
         inputs: vec![
             SessionInputSpec {
                 id: BASE_PORT_ID.to_owned(),
@@ -2176,6 +2179,7 @@ fn build_settings(cli_options: XbeeTestCliOptions) -> Result<XbeeTestSettings, S
         rd_rate_hz,
         log_dir,
         logging_enabled: !cli_options.no_log,
+        s3b: cli_options.s3b,
     })
 }
 
@@ -2224,6 +2228,7 @@ fn parse_xbee_test_args(args: Vec<String>) -> Result<XbeeTestCliOptions, String>
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
             "--no-log" => options.no_log = true,
+            "--s3b" => options.s3b = true,
             other => return Err(format!("unknown option for xbee-test: {other}")),
         }
     }
