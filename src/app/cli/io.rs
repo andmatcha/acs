@@ -1,8 +1,8 @@
 use super::common::{
-    PortSpec, default_baud_rate, default_log_dir, next_value, parse_key_value_args,
-    parse_port_spec, parse_u32_arg,
+    default_baud_rate, default_log_dir, next_value, parse_key_value_args, parse_port_spec,
+    parse_u32_arg,
 };
-use super::help::{is_help_flag, print_io_help, print_send_help};
+use super::help::{is_help_flag, print_io_help};
 use super::signal;
 use crate::ingress::IngressFrame;
 use crate::output::OutputFormat;
@@ -24,7 +24,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-const DEFAULT_SEND_RATE_HZ: u32 = 50;
 const DEFAULT_IO_SEND_RATE_HZ: u32 = 10;
 const SEND_LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
@@ -37,37 +36,30 @@ const ROVER_DOWN_GENERAL_PREFIX_LEN: usize = 6;
 const ROVER_DOWN_GENERAL_MAX_PACKET_LEN: usize = 256;
 
 #[derive(Debug, Default)]
-struct SendCliOptions {
-    port: Option<PortSpec>,
-    outputs: Vec<SendOutputBinding>,
+struct IoRuntimeOptions {
+    outputs: Vec<IoOutputBinding>,
     baud: Option<u32>,
     rate_hz: Option<u32>,
     format: Option<String>,
     display: PortDisplayConfig,
-    monitor_ports: Vec<SendMonitorBinding>,
+    inputs: Vec<IoInputBinding>,
     log_dir: Option<PathBuf>,
     no_log: bool,
-    interactive: bool,
     s3b: bool,
-    allow_receive_only: bool,
-    skip_output_input_monitoring: bool,
-    title: Option<String>,
-    command_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-struct SendOutputBinding {
+struct IoOutputBinding {
     id: String,
     port: String,
     baud: Option<u32>,
     rate_hz: Option<u32>,
     format: Option<String>,
     display_mode: Option<crate::port_display::PortDisplayMode>,
-    line_break_mode: Option<crate::port_display::LineBreakMode>,
 }
 
 #[derive(Debug, Clone)]
-struct SendMonitorBinding {
+struct IoInputBinding {
     port: String,
     baud: Option<u32>,
     formats: Vec<String>,
@@ -76,34 +68,31 @@ struct SendMonitorBinding {
 }
 
 #[derive(Debug, Clone)]
-struct SendOutputSettings {
+struct IoOutputSettings {
     session: SessionOutputSpec,
     format: OutputFormat,
     rate_hz: u32,
 }
 
 #[derive(Debug, Clone)]
-struct SendObservedInputSpec {
+struct IoObservedInputSpec {
     input_id: String,
     port: String,
     formats: Vec<OutputFormat>,
     per_format_display_modes: Option<BTreeMap<OutputFormat, PortDisplayMode>>,
 }
 
-struct SendSettings {
+struct IoRuntimeSettings {
     inputs: Vec<SessionInputSpec>,
-    outputs: Vec<SendOutputSettings>,
-    observed_inputs: Vec<SendObservedInputSpec>,
+    outputs: Vec<IoOutputSettings>,
+    observed_inputs: Vec<IoObservedInputSpec>,
     log_dir: PathBuf,
     logging_enabled: bool,
-    interactive: bool,
     s3b: bool,
-    title: String,
-    command_name: String,
     executed_command: Option<String>,
 }
 
-struct SendOutputRunResult {
+struct IoOutputRunResult {
     id: String,
     port: String,
     baud_rate: u32,
@@ -113,10 +102,8 @@ struct SendOutputRunResult {
     payload_len: usize,
 }
 
-struct SendRunResult {
-    interactive: bool,
-    message_count: u64,
-    outputs: Vec<SendOutputRunResult>,
+struct IoRunResult {
+    outputs: Vec<IoOutputRunResult>,
     logging_enabled: bool,
     log_path: PathBuf,
     executed_command: Option<String>,
@@ -145,48 +132,47 @@ struct OutputSchedule {
 }
 
 #[derive(Debug, Clone)]
-struct SendHeaderOutput {
+struct IoHeaderOutput {
     id: String,
     port: String,
     baud_rate: u32,
     format: OutputFormat,
-    rate_hz: Option<u32>,
+    rate_hz: u32,
     payload_len: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
-struct SendHeaderObservedFormat {
+struct IoHeaderObservedFormat {
     port: String,
     format: OutputFormat,
 }
 
-struct SendRuntimeState {
-    interactive: bool,
+struct IoRuntimeState {
     logging_enabled: bool,
     log_path_display: String,
-    header_outputs: Vec<SendHeaderOutput>,
+    header_outputs: Vec<IoHeaderOutput>,
     observed_inputs: BTreeMap<String, ObservedInput>,
-    observed_format_lines: Vec<SendHeaderObservedFormat>,
+    observed_format_lines: Vec<IoHeaderObservedFormat>,
     last_status_update: Instant,
     header_lines: Vec<String>,
 }
 
-impl SendRuntimeState {
+impl IoRuntimeState {
     fn new(
-        settings: &SendSettings,
-        output_specs: &[SendOutputSettings],
+        settings: &IoRuntimeSettings,
+        output_specs: &[IoOutputSettings],
         payload_lengths: &BTreeMap<String, usize>,
         log_path_display: String,
         started_at: Instant,
     ) -> Self {
         let header_outputs = output_specs
             .iter()
-            .map(|output| SendHeaderOutput {
+            .map(|output| IoHeaderOutput {
                 id: output.session.id.clone(),
                 port: output.session.port.clone(),
                 baud_rate: output.session.baud_rate,
                 format: output.format,
-                rate_hz: (!settings.interactive).then_some(output.rate_hz),
+                rate_hz: output.rate_hz,
                 payload_len: payload_lengths.get(&output.session.id).copied(),
             })
             .collect::<Vec<_>>();
@@ -216,7 +202,7 @@ impl SendRuntimeState {
             .flat_map(|spec| {
                 spec.formats.iter().filter_map(|format| {
                     let key = (spec.port.clone(), *format);
-                    (!output_observed_pairs.contains(&key)).then_some(SendHeaderObservedFormat {
+                    (!output_observed_pairs.contains(&key)).then_some(IoHeaderObservedFormat {
                         port: spec.port.clone(),
                         format: *format,
                     })
@@ -225,7 +211,6 @@ impl SendRuntimeState {
             .collect::<Vec<_>>();
 
         Self {
-            interactive: settings.interactive,
             logging_enabled: settings.logging_enabled,
             log_path_display,
             header_outputs,
@@ -326,25 +311,15 @@ impl SendRuntimeState {
             let rx_rate_hz = self
                 .rx_rate_hz(&output.port, output.format, now)
                 .unwrap_or_default();
-            if self.interactive {
-                lines.push(format!(
-                    "output[{}]: {} @ {} baud, format={}, rx={rx_rate_hz:.1} Hz",
-                    output.id,
-                    output.port,
-                    output.baud_rate,
-                    output.format.as_str()
-                ));
-            } else {
-                lines.push(format!(
-                    "output[{}]: {} @ {} baud, format={}, tx_target={} Hz, rx={rx_rate_hz:.1} Hz, payload={} bytes",
-                    output.id,
-                    output.port,
-                    output.baud_rate,
-                    output.format.as_str(),
-                    output.rate_hz.unwrap_or_default(),
-                    output.payload_len.unwrap_or_default()
-                ));
-            }
+            lines.push(format!(
+                "output[{}]: {} @ {} baud, format={}, tx_target={} Hz, rx={rx_rate_hz:.1} Hz, payload={} bytes",
+                output.id,
+                output.port,
+                output.baud_rate,
+                output.format.as_str(),
+                output.rate_hz,
+                output.payload_len.unwrap_or_default()
+            ));
         }
 
         for observed in self.observed_format_lines.clone() {
@@ -363,14 +338,7 @@ impl SendRuntimeState {
         } else {
             lines.push(String::from("log: disabled (--no-log)"));
         }
-        if self.interactive {
-            lines.push(String::from(
-                "Enter で全出力ポートへ送信 (\\r\\n を末尾に付加)",
-            ));
-            lines.push(String::from("Ctrl-C で終了"));
-        } else {
-            lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
-        }
+        lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
         lines
     }
 
@@ -855,94 +823,6 @@ fn find_crlf(bytes: &[u8]) -> Option<usize> {
 
 pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     if args.iter().any(|arg| is_help_flag(arg)) {
-        print_send_help(bin_name);
-        return ExitCode::SUCCESS;
-    }
-
-    let cli_options = match parse_send_args(args) {
-        Ok(options) => options,
-        Err(error) => {
-            eprintln!("{error}");
-            print_send_help(bin_name);
-            return ExitCode::from(2);
-        }
-    };
-
-    match run_with_options(cli_options) {
-        Ok(result) => {
-            if result.interactive {
-                if result.outputs.len() == 1 {
-                    let output = &result.outputs[0];
-                    println!(
-                        "sent {} messages to {} @ {} baud",
-                        result.message_count, output.port, output.baud_rate
-                    );
-                } else {
-                    println!(
-                        "sent {} messages to {} outputs",
-                        result.message_count,
-                        result.outputs.len()
-                    );
-                    for output in &result.outputs {
-                        println!(
-                            "  {}: {} writes to {} @ {} baud",
-                            output.id, output.sent_count, output.port, output.baud_rate
-                        );
-                    }
-                }
-            } else if result.outputs.len() == 1 {
-                let output = &result.outputs[0];
-                println!(
-                    "sent {} packets ({} bytes each) to {} @ {} baud, format={}, target={} Hz",
-                    output.sent_count,
-                    output.payload_len,
-                    output.port,
-                    output.baud_rate,
-                    output.format.as_str(),
-                    output.rate_hz
-                );
-            } else {
-                println!("sent dummy packets to {} outputs", result.outputs.len());
-                for output in &result.outputs {
-                    println!(
-                        "  {}: {} packets ({} bytes each) to {} @ {} baud, format={}, target={} Hz",
-                        output.id,
-                        output.sent_count,
-                        output.payload_len,
-                        output.port,
-                        output.baud_rate,
-                        output.format.as_str(),
-                        output.rate_hz
-                    );
-                }
-            }
-            if result.logging_enabled {
-                println!("log saved to {}", result.log_path.display());
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("{error}");
-            ExitCode::from(1)
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct IoCliOptions {
-    inputs: Vec<IoBindingArg>,
-    outputs: Vec<IoBindingArg>,
-    send_options: SendCliOptions,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum IoBindingArg {
-    Provided(String),
-    Prompt,
-}
-
-pub(crate) fn run_io(args: Vec<String>, bin_name: &str) -> ExitCode {
-    if args.iter().any(|arg| is_help_flag(arg)) {
         print_io_help(bin_name);
         return ExitCode::SUCCESS;
     }
@@ -956,7 +836,7 @@ pub(crate) fn run_io(args: Vec<String>, bin_name: &str) -> ExitCode {
         }
     };
 
-    let send_options = match resolve_io_options(io_options) {
+    let runtime_options = match resolve_io_options(io_options) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("{error}");
@@ -964,7 +844,7 @@ pub(crate) fn run_io(args: Vec<String>, bin_name: &str) -> ExitCode {
         }
     };
 
-    match run_with_options(send_options) {
+    match run_with_options(runtime_options) {
         Ok(result) => {
             print_io_result(&result);
             ExitCode::SUCCESS
@@ -976,7 +856,20 @@ pub(crate) fn run_io(args: Vec<String>, bin_name: &str) -> ExitCode {
     }
 }
 
-fn print_io_result(result: &SendRunResult) {
+#[derive(Debug, Default)]
+struct IoCliOptions {
+    inputs: Vec<IoBindingArg>,
+    outputs: Vec<IoBindingArg>,
+    runtime_options: IoRuntimeOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IoBindingArg {
+    Provided(String),
+    Prompt,
+}
+
+fn print_io_result(result: &IoRunResult) {
     if result.outputs.is_empty() {
         println!("io session finished (receive only)");
     } else if result.outputs.len() == 1 {
@@ -1017,13 +910,9 @@ fn parse_io_args(args: Vec<String>) -> Result<IoCliOptions, String> {
     let mut options = IoCliOptions {
         inputs: Vec::new(),
         outputs: Vec::new(),
-        send_options: SendCliOptions {
+        runtime_options: IoRuntimeOptions {
             rate_hz: Some(DEFAULT_IO_SEND_RATE_HZ),
-            allow_receive_only: true,
-            skip_output_input_monitoring: true,
-            title: Some(String::from("acs io")),
-            command_name: Some(String::from("io")),
-            ..SendCliOptions::default()
+            ..IoRuntimeOptions::default()
         },
     };
     let mut iter = args.into_iter().peekable();
@@ -1051,32 +940,32 @@ fn parse_io_args(args: Vec<String>) -> Result<IoCliOptions, String> {
                         .map_or(IoBindingArg::Prompt, IoBindingArg::Provided),
                 );
             }
-            "--config" => apply_send_config_args(
-                &mut options.send_options,
+            "--config" => apply_io_config_args(
+                &mut options.runtime_options,
                 &next_value(&mut iter, "--config")?,
             )?,
             "--baud" | "-b" => {
                 let value = next_value(&mut iter, "--baud")?;
-                options.send_options.baud = Some(parse_u32_arg("--baud", &value)?);
+                options.runtime_options.baud = Some(parse_u32_arg("--baud", &value)?);
             }
             "--rate" | "-r" => {
                 let value = next_value(&mut iter, "--rate")?;
-                options.send_options.rate_hz = Some(parse_u32_arg("--rate", &value)?);
+                options.runtime_options.rate_hz = Some(parse_u32_arg("--rate", &value)?);
             }
             "--format" | "-f" => {
-                options.send_options.format = Some(next_value(&mut iter, "--format")?)
+                options.runtime_options.format = Some(next_value(&mut iter, "--format")?)
             }
             "--display" => {
                 let value = next_value(&mut iter, "--display")?;
                 let assignment = parse_display_assignment(&value)?;
-                assignment.apply_to(&mut options.send_options.display);
+                assignment.apply_to(&mut options.runtime_options.display);
             }
             "--log-dir" => {
-                options.send_options.log_dir =
+                options.runtime_options.log_dir =
                     Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
-            "--no-log" => options.send_options.no_log = true,
-            "--s3b" => options.send_options.s3b = true,
+            "--no-log" => options.runtime_options.no_log = true,
+            "--s3b" => options.runtime_options.s3b = true,
             other => return Err(format!("unknown option for io: {other}")),
         }
     }
@@ -1106,17 +995,15 @@ fn next_optional_io_binding(
     }
 }
 
-fn resolve_io_options(io_options: IoCliOptions) -> Result<SendCliOptions, String> {
-    let mut send_options = io_options.send_options;
+fn resolve_io_options(io_options: IoCliOptions) -> Result<IoRuntimeOptions, String> {
+    let mut runtime_options = io_options.runtime_options;
 
     for input in io_options.inputs {
         let value = match input {
             IoBindingArg::Provided(value) => value,
             IoBindingArg::Prompt => prompt_io_input_binding()?,
         };
-        send_options
-            .monitor_ports
-            .push(parse_send_monitor_binding(&value)?);
+        runtime_options.inputs.push(parse_io_input_binding(&value)?);
     }
 
     for output in io_options.outputs {
@@ -1124,12 +1011,12 @@ fn resolve_io_options(io_options: IoCliOptions) -> Result<SendCliOptions, String
             IoBindingArg::Provided(value) => value,
             IoBindingArg::Prompt => prompt_io_output_binding()?,
         };
-        send_options
+        runtime_options
             .outputs
-            .push(parse_send_output_binding(&value)?);
+            .push(parse_io_output_binding(&value)?);
     }
 
-    Ok(send_options)
+    Ok(runtime_options)
 }
 
 fn prompt_io_input_binding() -> Result<String, String> {
@@ -1643,29 +1530,27 @@ impl Drop for RawTerminalMode {
     }
 }
 
-fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String> {
+fn run_with_options(cli_options: IoRuntimeOptions) -> Result<IoRunResult, String> {
     let settings = build_settings(cli_options)?;
     let output_specs = settings.outputs.clone();
 
     let mut payload_lengths = BTreeMap::new();
     let mut generators = BTreeMap::<String, Box<dyn DummyPayloadGenerator>>::new();
-    if !settings.interactive {
-        for output in &output_specs {
-            payload_lengths.insert(
-                output.session.id.clone(),
-                output.format.encode_dummy_payload()?.len(),
-            );
-            generators.insert(
-                output.session.id.clone(),
-                output.format.create_dummy_generator()?,
-            );
-        }
+    for output in &output_specs {
+        payload_lengths.insert(
+            output.session.id.clone(),
+            output.format.encode_dummy_payload()?.len(),
+        );
+        generators.insert(
+            output.session.id.clone(),
+            output.format.create_dummy_generator()?,
+        );
     }
 
     let started_at = Instant::now();
     let mut session = SessionRuntime::new(SessionSpec {
-        title: settings.title.clone(),
-        command_name: settings.command_name.clone(),
+        title: String::from("acs io"),
+        command_name: String::from("io"),
         log_dir: settings.log_dir.clone(),
         logging_enabled: settings.logging_enabled,
         xbee_s3b_recovery: settings.s3b,
@@ -1680,7 +1565,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     }
     let log_path = session.log_path().to_path_buf();
     let log_path_display = log_path.display().to_string();
-    let runtime_state = RefCell::new(SendRuntimeState::new(
+    let runtime_state = RefCell::new(IoRuntimeState::new(
         &settings,
         &output_specs,
         &payload_lengths,
@@ -1701,111 +1586,68 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
         .map(|output| (output.session.id.clone(), false))
         .collect::<BTreeMap<_, _>>();
     let mut last_errors = BTreeMap::<String, String>::new();
-    let mut message_count = 0u64;
-
-    if settings.interactive {
-        session.set_interactive_input(true);
-        session.run_loop_with_tick(
-            SEND_LOOP_INTERVAL,
-            signal::is_stop_requested,
-            |frame, session| runtime_state.borrow_mut().handle_input(frame, session),
-            |session| {
-                if let Some(input) = session.take_user_input() {
-                    message_count = message_count.saturating_add(1);
-                    let mut bytes = input.into_bytes();
-                    bytes.extend_from_slice(b"\r\n");
-
-                    for output in &output_specs {
-                        let output_id = &output.session.id;
-                        match session.write_output(output_id, &bytes) {
-                            Ok(()) => {
-                                if output_has_error.get(output_id).copied().unwrap_or(false) {
-                                    session.clear_output_error(output_id)?;
-                                    output_has_error.insert(output_id.clone(), false);
-                                }
-                                *sent_counts.entry(output_id.clone()).or_insert(0) += 1;
-                                last_errors.remove(output_id);
-                            }
-                            Err(error) => {
-                                session.set_output_error(output_id, &error)?;
-                                output_has_error.insert(output_id.clone(), true);
-                                last_errors.insert(output_id.clone(), error);
-                            }
-                        }
-                    }
-                }
-                runtime_state.borrow_mut().on_tick(session)?;
-                Ok(())
-            },
-        )?;
-    } else {
-        let mut schedules = output_specs
-            .iter()
-            .map(|output| {
-                (
-                    output.session.id.clone(),
-                    OutputSchedule {
-                        next_send_at: started_at,
-                        period: Duration::from_secs_f64(1.0 / output.rate_hz as f64),
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        session.run_loop_with_tick(
-            SEND_LOOP_INTERVAL,
-            signal::is_stop_requested,
-            |frame, session| runtime_state.borrow_mut().handle_input(frame, session),
-            |session| {
-                let now = Instant::now();
-                for output in &output_specs {
-                    let output_id = &output.session.id;
-                    let schedule = schedules
+    let mut schedules = output_specs
+        .iter()
+        .map(|output| {
+            (
+                output.session.id.clone(),
+                OutputSchedule {
+                    next_send_at: started_at,
+                    period: Duration::from_secs_f64(1.0 / output.rate_hz as f64),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    session.run_loop_with_tick(
+        SEND_LOOP_INTERVAL,
+        signal::is_stop_requested,
+        |frame, session| runtime_state.borrow_mut().handle_input(frame, session),
+        |session| {
+            let now = Instant::now();
+            for output in &output_specs {
+                let output_id = &output.session.id;
+                let schedule = schedules
+                    .get_mut(output_id)
+                    .ok_or_else(|| format!("missing io schedule for output `{output_id}`"))?;
+                if now >= schedule.next_send_at {
+                    realign_output_schedule(schedule, now);
+                    let payload = generators
                         .get_mut(output_id)
-                        .ok_or_else(|| format!("missing send schedule for output `{output_id}`"))?;
-                    if now >= schedule.next_send_at {
-                        realign_output_schedule(schedule, now);
-                        let payload = generators
-                            .get_mut(output_id)
-                            .ok_or_else(|| {
-                                format!("missing dummy generator for output `{output_id}`")
-                            })?
-                            .next_payload()?;
-                        match session.write_output(output_id, &payload) {
-                            Ok(()) => {
-                                if output_has_error.get(output_id).copied().unwrap_or(false) {
-                                    session.clear_output_error(output_id)?;
-                                    output_has_error.insert(output_id.clone(), false);
-                                }
-                                *sent_counts.entry(output_id.clone()).or_insert(0) += 1;
-                                last_errors.remove(output_id);
+                        .ok_or_else(|| format!("missing dummy generator for output `{output_id}`"))?
+                        .next_payload()?;
+                    match session.write_output(output_id, &payload) {
+                        Ok(()) => {
+                            if output_has_error.get(output_id).copied().unwrap_or(false) {
+                                session.clear_output_error(output_id)?;
+                                output_has_error.insert(output_id.clone(), false);
                             }
-                            Err(error) => {
-                                session.set_output_error(output_id, &error)?;
-                                output_has_error.insert(output_id.clone(), true);
-                                last_errors.insert(output_id.clone(), error);
-                            }
+                            *sent_counts.entry(output_id.clone()).or_insert(0) += 1;
+                            last_errors.remove(output_id);
                         }
-                        schedule.next_send_at += schedule.period;
+                        Err(error) => {
+                            session.set_output_error(output_id, &error)?;
+                            output_has_error.insert(output_id.clone(), true);
+                            last_errors.insert(output_id.clone(), error);
+                        }
                     }
+                    schedule.next_send_at += schedule.period;
                 }
-                runtime_state.borrow_mut().on_tick(session)?;
-                Ok(())
-            },
-        )?;
+            }
+            runtime_state.borrow_mut().on_tick(session)?;
+            Ok(())
+        },
+    )?;
 
-        if sent_counts.values().all(|count| *count == 0)
-            && let Some(error) = last_errors.into_values().next()
-        {
-            return Err(error);
-        }
+    if sent_counts.values().all(|count| *count == 0)
+        && let Some(error) = last_errors.into_values().next()
+    {
+        return Err(error);
     }
 
-    Ok(SendRunResult {
-        interactive: settings.interactive,
-        message_count,
+    Ok(IoRunResult {
         outputs: output_specs
             .into_iter()
-            .map(|output| SendOutputRunResult {
+            .map(|output| IoOutputRunResult {
                 id: output.session.id.clone(),
                 port: output.session.port,
                 baud_rate: output.session.baud_rate,
@@ -1823,17 +1665,9 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
     })
 }
 
-fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
-    let using_cli_outputs = !cli_options.outputs.is_empty();
-    let using_cli_port = cli_options.port.is_some();
-    if using_cli_outputs && using_cli_port {
-        return Err(String::from(
-            "cannot combine --port with --output-port; use one style or the other",
-        ));
-    }
-
+fn build_settings(cli_options: IoRuntimeOptions) -> Result<IoRuntimeSettings, String> {
     let default_baud = cli_options.baud.unwrap_or_else(default_baud_rate);
-    let default_rate_hz = cli_options.rate_hz.unwrap_or(DEFAULT_SEND_RATE_HZ);
+    let default_rate_hz = cli_options.rate_hz.unwrap_or(DEFAULT_IO_SEND_RATE_HZ);
     if default_rate_hz == 0 {
         return Err(String::from("--rate must be greater than 0"));
     }
@@ -1842,14 +1676,10 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
         .clone()
         .unwrap_or_else(|| String::from("packetacv6"));
     let default_format = OutputFormat::parse(&default_format_name)?;
-    let output_bindings = if cli_options.allow_receive_only && !using_cli_outputs && !using_cli_port
-    {
-        Vec::new()
-    } else {
-        resolve_output_bindings(&cli_options, default_baud, default_rate_hz, default_format)?
-    };
-    let monitor_port_specs = resolve_monitor_bindings(&cli_options)?;
-    if output_bindings.is_empty() && monitor_port_specs.is_empty() {
+    let output_bindings =
+        resolve_output_bindings(&cli_options, default_baud, default_rate_hz, default_format)?;
+    let input_port_specs = resolve_input_bindings(&cli_options)?;
+    if output_bindings.is_empty() && input_port_specs.is_empty() {
         return Err(String::from(
             "at least one input or output port is required",
         ));
@@ -1857,16 +1687,6 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
     let display = cli_options.display;
     let explicit_log_dir = cli_options.log_dir.clone();
     let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
-    let title = cli_options
-        .title
-        .clone()
-        .unwrap_or_else(|| String::from("acs send"));
-    let command_name = cli_options
-        .command_name
-        .clone()
-        .unwrap_or_else(|| String::from("send"));
-    let capture_io_command = command_name == "io";
-    let monitor_output_ports = !cli_options.skip_output_input_monitoring;
 
     let mut outputs = Vec::new();
     let mut inputs = Vec::new();
@@ -1879,7 +1699,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
 
     for binding in output_bindings {
         if !seen_output_ids.insert(binding.id.clone()) {
-            return Err(format!("duplicate send output id: {}", binding.id));
+            return Err(format!("duplicate io output id: {}", binding.id));
         }
 
         let port = serial::resolve_port(Some(&binding.port)).map_err(|error| error.to_string())?;
@@ -1887,7 +1707,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
         if let Some(existing_baud_rate) = output_port_bauds.get(&port) {
             if *existing_baud_rate != baud_rate {
                 return Err(format!(
-                    "send output port `{port}` cannot use multiple baud rates ({existing_baud_rate} and {baud_rate})"
+                    "io output port `{port}` cannot use multiple baud rates ({existing_baud_rate} and {baud_rate})"
                 ));
             }
         } else {
@@ -1899,7 +1719,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
             display.resolve_output_override(&port),
             Some(format.default_display_mode()),
         );
-        outputs.push(SendOutputSettings {
+        outputs.push(IoOutputSettings {
             session: SessionOutputSpec {
                 id: binding.id.clone(),
                 port: port.clone(),
@@ -1910,109 +1730,68 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
             format,
             rate_hz: binding.rate_hz,
         });
-        if capture_io_command {
-            io_command_outputs.push(IoCommandOutput {
-                id: binding.id.clone(),
-                port: port.clone(),
-                baud_rate,
-                display_mode: output_display_mode,
-                format,
-                rate_hz: binding.rate_hz,
-            });
-        }
-        if monitor_output_ports && !cli_options.interactive {
-            let formats = input_packet_format_candidates
-                .entry(port.clone())
-                .or_default();
-            if !formats.contains(&format) {
-                formats.push(format);
-            }
-        }
-        if monitor_output_ports {
-            let input_display_override = binding
-                .display_mode
-                .or(display.resolve_input_override(&port));
-            let input_display_mode =
-                input_display_override.unwrap_or(format.default_display_mode());
-            let line_break_mode = binding
-                .line_break_mode
-                .unwrap_or(display.resolve_line_break_input(&port));
-            input_display_is_explicit
-                .entry(port.clone())
-                .and_modify(|explicit| *explicit |= input_display_override.is_some())
-                .or_insert(input_display_override.is_some());
-
-            if !inputs
-                .iter()
-                .any(|input: &SessionInputSpec| input.port == port && input.baud_rate == baud_rate)
-            {
-                inputs.push(SessionInputSpec {
-                    id: port.clone(),
-                    port: port.clone(),
-                    baud_rate,
-                    display_mode: input_display_mode,
-                    line_break_mode,
-                });
-            }
-        }
+        io_command_outputs.push(IoCommandOutput {
+            id: binding.id.clone(),
+            port: port.clone(),
+            baud_rate,
+            display_mode: output_display_mode,
+            format,
+            rate_hz: binding.rate_hz,
+        });
     }
 
-    if !cli_options.interactive {
-        validate_output_port_loads(&outputs)?;
-    }
+    validate_output_port_loads(&outputs)?;
 
-    for port_spec in monitor_port_specs {
-        let monitor_port =
+    for port_spec in input_port_specs {
+        let input_port =
             serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?;
-        let monitor_formats = port_spec.formats;
-        let monitor_has_formats = !monitor_formats.is_empty();
+        let input_formats = port_spec.formats;
+        let input_has_formats = !input_formats.is_empty();
         let baud_rate = port_spec.baud.unwrap_or(default_baud);
         let display_mode = resolve_display_mode(
             port_spec.display_mode,
-            display.resolve_input_override(&monitor_port),
-            monitor_formats
+            display.resolve_input_override(&input_port),
+            input_formats
                 .first()
                 .copied()
                 .map(OutputFormat::default_display_mode),
         );
-        let line_break_mode = resolve_monitor_line_break_mode(
+        let line_break_mode = resolve_input_line_break_mode(
             port_spec.line_break_mode,
-            monitor_has_formats,
-            display.resolve_line_break_input(&monitor_port),
+            input_has_formats,
+            display.resolve_line_break_input(&input_port),
         );
-        if capture_io_command {
-            io_command_inputs.push(IoCommandInput {
-                port: monitor_port.clone(),
-                baud_rate,
-                display_mode,
-                line_break_mode,
-                formats: monitor_formats.clone(),
-            });
-        }
+        io_command_inputs.push(IoCommandInput {
+            port: input_port.clone(),
+            baud_rate,
+            display_mode,
+            line_break_mode,
+            formats: input_formats.clone(),
+        });
         if !inputs
             .iter()
-            .any(|input: &SessionInputSpec| input.port == monitor_port)
+            .any(|input: &SessionInputSpec| input.port == input_port)
         {
             inputs.push(SessionInputSpec {
-                id: monitor_port.clone(),
-                port: monitor_port.clone(),
+                id: input_port.clone(),
+                port: input_port.clone(),
                 baud_rate,
                 display_mode,
                 line_break_mode,
             });
         }
-        if !monitor_formats.is_empty() {
+        if !input_formats.is_empty() {
             let input_display_override = port_spec
                 .display_mode
-                .or(display.resolve_input_override(&monitor_port));
+                .or(display.resolve_input_override(&input_port));
             input_display_is_explicit
-                .entry(monitor_port.clone())
+                .entry(input_port.clone())
                 .and_modify(|explicit| *explicit |= input_display_override.is_some())
                 .or_insert(input_display_override.is_some());
             let formats = input_packet_format_candidates
-                .entry(monitor_port)
+                .entry(input_port)
                 .or_default();
-            for format in monitor_formats {
+            for format in input_formats {
                 if !formats.contains(&format) {
                     formats.push(format);
                 }
@@ -2045,7 +1824,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
                 .iter()
                 .find(|input| input.port == port)
                 .map(|input| input.id.clone())?;
-            Some(SendObservedInputSpec {
+            Some(IoObservedInputSpec {
                 input_id,
                 port,
                 formats,
@@ -2053,26 +1832,21 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
             })
         })
         .collect();
-    let executed_command = capture_io_command.then(|| {
-        build_io_executed_command(
-            &io_command_inputs,
-            &io_command_outputs,
-            explicit_log_dir.as_ref(),
-            cli_options.no_log,
-            cli_options.s3b,
-        )
-    });
+    let executed_command = Some(build_io_executed_command(
+        &io_command_inputs,
+        &io_command_outputs,
+        explicit_log_dir.as_ref(),
+        cli_options.no_log,
+        cli_options.s3b,
+    ));
 
-    Ok(SendSettings {
+    Ok(IoRuntimeSettings {
         inputs,
         outputs,
         observed_inputs,
         log_dir,
         logging_enabled: !cli_options.no_log,
-        interactive: cli_options.interactive,
         s3b: cli_options.s3b,
-        title,
-        command_name,
         executed_command,
     })
 }
@@ -2088,7 +1862,7 @@ fn resolve_display_mode(
         .unwrap_or_default()
 }
 
-fn resolve_monitor_line_break_mode(
+fn resolve_input_line_break_mode(
     explicit_mode: Option<LineBreakMode>,
     has_formats: bool,
     configured_mode: LineBreakMode,
@@ -2100,7 +1874,7 @@ fn resolve_monitor_line_break_mode(
     })
 }
 
-fn validate_output_port_loads(outputs: &[SendOutputSettings]) -> Result<(), String> {
+fn validate_output_port_loads(outputs: &[IoOutputSettings]) -> Result<(), String> {
     let mut loads = BTreeMap::<(String, u32), Vec<(String, u32, u64)>>::new();
 
     for output in outputs {
@@ -2124,7 +1898,7 @@ fn validate_output_port_loads(outputs: &[SendOutputSettings]) -> Result<(), Stri
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
-                "send output load on `{port}` @ {baud_rate} baud exceeds serial capacity: estimated {total_bps} bps assuming 10 bits/byte ({detail}) > {baud_rate} baud. Reduce rates or increase baud."
+                "io output load on `{port}` @ {baud_rate} baud exceeds serial capacity: estimated {total_bps} bps assuming 10 bits/byte ({detail}) > {baud_rate} baud. Reduce rates or increase baud."
             ));
         }
     }
@@ -2157,74 +1931,43 @@ fn realign_output_schedule(schedule: &mut OutputSchedule, now: Instant) {
 }
 
 fn resolve_output_bindings(
-    cli_options: &SendCliOptions,
+    cli_options: &IoRuntimeOptions,
     default_baud: u32,
     default_rate_hz: u32,
     default_format: OutputFormat,
-) -> Result<Vec<ResolvedSendOutputBinding>, String> {
-    if !cli_options.outputs.is_empty() {
-        return cli_options
-            .outputs
-            .iter()
-            .cloned()
-            .map(|binding| {
-                resolve_send_output_binding(binding, default_baud, default_rate_hz, default_format)
-            })
-            .collect();
-    }
-
-    let selected_port = cli_options.port.clone().and_then(PortSpec::normalized);
-    let port = match &selected_port {
-        Some(port_spec) => {
-            serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?
-        }
-        None => serial::resolve_port(None).map_err(|error| error.to_string())?,
-    };
-
-    resolve_send_output_binding(
-        SendOutputBinding {
-            id: String::from("main"),
-            port,
-            baud: selected_port.as_ref().and_then(|port_spec| port_spec.baud),
-            rate_hz: None,
-            format: None,
-            display_mode: selected_port
-                .as_ref()
-                .and_then(|port_spec| port_spec.display_mode),
-            line_break_mode: selected_port
-                .as_ref()
-                .and_then(|port_spec| port_spec.line_break_mode),
-        },
-        default_baud,
-        default_rate_hz,
-        default_format,
-    )
-    .map(|binding| vec![binding])
+) -> Result<Vec<ResolvedIoOutputBinding>, String> {
+    cli_options
+        .outputs
+        .iter()
+        .cloned()
+        .map(|binding| {
+            resolve_io_output_binding(binding, default_baud, default_rate_hz, default_format)
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedSendOutputBinding {
+struct ResolvedIoOutputBinding {
     id: String,
     port: String,
     baud: Option<u32>,
     rate_hz: u32,
     format: Option<OutputFormat>,
     display_mode: Option<crate::port_display::PortDisplayMode>,
-    line_break_mode: Option<crate::port_display::LineBreakMode>,
 }
 
-fn resolve_send_output_binding(
-    binding: SendOutputBinding,
+fn resolve_io_output_binding(
+    binding: IoOutputBinding,
     _default_baud: u32,
     default_rate_hz: u32,
     default_format: OutputFormat,
-) -> Result<ResolvedSendOutputBinding, String> {
+) -> Result<ResolvedIoOutputBinding, String> {
     let rate_hz = binding.rate_hz.unwrap_or(default_rate_hz);
     if rate_hz == 0 {
-        return Err(String::from("send output rate must be greater than 0"));
+        return Err(String::from("io output rate must be greater than 0"));
     }
 
-    Ok(ResolvedSendOutputBinding {
+    Ok(ResolvedIoOutputBinding {
         id: binding.id,
         port: binding.port,
         baud: binding.baud,
@@ -2234,12 +1977,11 @@ fn resolve_send_output_binding(
             None => default_format,
         }),
         display_mode: binding.display_mode,
-        line_break_mode: binding.line_break_mode,
     })
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedSendMonitorBinding {
+struct ResolvedIoInputBinding {
     port: String,
     baud: Option<u32>,
     formats: Vec<OutputFormat>,
@@ -2247,21 +1989,19 @@ struct ResolvedSendMonitorBinding {
     line_break_mode: Option<crate::port_display::LineBreakMode>,
 }
 
-fn resolve_monitor_bindings(
-    cli_options: &SendCliOptions,
-) -> Result<Vec<ResolvedSendMonitorBinding>, String> {
+fn resolve_input_bindings(
+    cli_options: &IoRuntimeOptions,
+) -> Result<Vec<ResolvedIoInputBinding>, String> {
     cli_options
-        .monitor_ports
+        .inputs
         .iter()
         .cloned()
-        .map(resolve_send_monitor_binding)
+        .map(resolve_io_input_binding)
         .collect()
 }
 
-fn resolve_send_monitor_binding(
-    binding: SendMonitorBinding,
-) -> Result<ResolvedSendMonitorBinding, String> {
-    Ok(ResolvedSendMonitorBinding {
+fn resolve_io_input_binding(binding: IoInputBinding) -> Result<ResolvedIoInputBinding, String> {
+    Ok(ResolvedIoInputBinding {
         port: binding.port,
         baud: binding.baud,
         formats: binding
@@ -2274,60 +2014,7 @@ fn resolve_send_monitor_binding(
     })
 }
 
-fn parse_send_args(args: Vec<String>) -> Result<SendCliOptions, String> {
-    let mut options = SendCliOptions::default();
-    let mut iter = args.into_iter();
-
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--port" | "-p" => {
-                options.port = Some(parse_port_spec(
-                    "--port",
-                    &next_value(&mut iter, "--port")?,
-                )?)
-            }
-            "--output-port" | "-o" => options.outputs.push(parse_send_output_binding(
-                &next_value(&mut iter, "--output-port")?,
-            )?),
-            "--config" => {
-                apply_send_config_args(&mut options, &next_value(&mut iter, "--config")?)?
-            }
-            "--baud" | "-b" => {
-                let value = next_value(&mut iter, "--baud")?;
-                options.baud = Some(parse_u32_arg("--baud", &value)?);
-            }
-            "--rate" | "-r" => {
-                let value = next_value(&mut iter, "--rate")?;
-                options.rate_hz = Some(parse_u32_arg("--rate", &value)?);
-            }
-            "--format" | "-f" => options.format = Some(next_value(&mut iter, "--format")?),
-            "--display" => {
-                let value = next_value(&mut iter, "--display")?;
-                let assignment = parse_display_assignment(&value)?;
-                assignment.apply_to(&mut options.display);
-            }
-            "--monitor" | "-m" => {
-                options
-                    .monitor_ports
-                    .push(parse_send_monitor_binding(&next_value(
-                        &mut iter,
-                        "--monitor",
-                    )?)?)
-            }
-            "--interactive" | "-i" => options.interactive = true,
-            "--log-dir" => {
-                options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
-            }
-            "--no-log" => options.no_log = true,
-            "--s3b" => options.s3b = true,
-            other => return Err(format!("unknown option for send: {other}")),
-        }
-    }
-
-    Ok(options)
-}
-
-fn apply_send_config_args(options: &mut SendCliOptions, value: &str) -> Result<(), String> {
+fn apply_io_config_args(options: &mut IoRuntimeOptions, value: &str) -> Result<(), String> {
     for assignment in parse_key_value_args("--config", value)? {
         let key = assignment.key.to_ascii_uppercase();
         match key.as_str() {
@@ -2338,16 +2025,16 @@ fn apply_send_config_args(options: &mut SendCliOptions, value: &str) -> Result<(
                 display.apply_to(&mut options.display);
             }
             "LOG_DIR" => options.log_dir = Some(PathBuf::from(assignment.value)),
-            other => return Err(format!("unknown send config key: {other}")),
+            other => return Err(format!("unknown io config key: {other}")),
         }
     }
 
     Ok(())
 }
 
-fn parse_send_monitor_binding(value: &str) -> Result<SendMonitorBinding, String> {
+fn parse_io_input_binding(value: &str) -> Result<IoInputBinding, String> {
     if value.is_empty() {
-        return Err(String::from("send monitor binding must not be empty"));
+        return Err(String::from("io input binding must not be empty"));
     }
 
     let (port_text, formats) = if let Some((port_text, format_names)) = value.rsplit_once(',') {
@@ -2360,8 +2047,8 @@ fn parse_send_monitor_binding(value: &str) -> Result<SendMonitorBinding, String>
         (value, Vec::new())
     };
 
-    let port_spec = parse_port_spec("--monitor", port_text)?;
-    Ok(SendMonitorBinding {
+    let port_spec = parse_port_spec("io input binding", port_text)?;
+    Ok(IoInputBinding {
         port: port_spec.port,
         baud: port_spec.baud,
         formats,
@@ -2389,9 +2076,9 @@ fn parse_output_format_list(value: &str) -> Option<Vec<String>> {
     (!formats.is_empty()).then_some(formats)
 }
 
-fn parse_send_output_binding(value: &str) -> Result<SendOutputBinding, String> {
+fn parse_io_output_binding(value: &str) -> Result<IoOutputBinding, String> {
     if value.is_empty() {
-        return Err(String::from("send output binding must not be empty"));
+        return Err(String::from("io output binding must not be empty"));
     }
 
     let mut binding_text = value;
@@ -2400,7 +2087,7 @@ fn parse_send_output_binding(value: &str) -> Result<SendOutputBinding, String> {
         && !candidate_rate.is_empty()
         && candidate_rate.chars().all(|ch| ch.is_ascii_digit())
     {
-        rate_hz = Some(parse_u32_arg("send output rate", candidate_rate)?);
+        rate_hz = Some(parse_u32_arg("io output rate", candidate_rate)?);
         binding_text = candidate_binding;
     }
     let (binding_text, format) =
@@ -2416,34 +2103,33 @@ fn parse_send_output_binding(value: &str) -> Result<SendOutputBinding, String> {
 
     let (id, port_text) = if let Some((id, port_text)) = binding_text.split_once('=') {
         if id.is_empty() || port_text.is_empty() {
-            return Err(format!("invalid send output binding: {value}"));
+            return Err(format!("invalid io output binding: {value}"));
         }
         (Some(id.to_owned()), port_text)
     } else {
         (None, binding_text)
     };
 
-    let port_spec = parse_port_spec("send output binding", port_text)?;
-    Ok(SendOutputBinding {
+    let port_spec = parse_port_spec("io output binding", port_text)?;
+    Ok(IoOutputBinding {
         id: id.unwrap_or_else(|| port_spec.port.clone()),
         port: port_spec.port,
         baud: port_spec.baud,
         rate_hz,
         format,
         display_mode: port_spec.display_mode,
-        line_break_mode: port_spec.line_break_mode,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        IoCommandInput, IoCommandOutput, MixedFormatDecoder, ObservedInput, OutputSchedule,
-        SendOutputSettings, build_io_executed_command, estimated_output_line_bps,
+        IoCommandInput, IoCommandOutput, IoOutputSettings, MixedFormatDecoder, ObservedInput,
+        OutputSchedule, build_io_executed_command, estimated_output_line_bps,
         format_io_input_binding, format_io_output_binding, matches_rover_down_packet,
-        parse_io_args, parse_output_format_list, parse_send_args, parse_send_monitor_binding,
-        parse_send_output_binding, realign_output_schedule, resolve_display_mode,
-        resolve_monitor_line_break_mode, validate_output_port_loads,
+        parse_io_args, parse_io_input_binding, parse_io_output_binding, parse_output_format_list,
+        realign_output_schedule, resolve_display_mode, resolve_input_line_break_mode,
+        validate_output_port_loads,
     };
     use crate::output::OutputFormat;
     use crate::port_display::{LineBreakMode, PortDisplayMode};
@@ -2452,39 +2138,8 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn parse_send_args_accepts_port_baud_and_format() {
-        let options = parse_send_args(vec![
-            String::from("--port"),
-            String::from("/dev/ttyUSB0"),
-            String::from("--baud"),
-            String::from("921600"),
-            String::from("--rate"),
-            String::from("100"),
-            String::from("--format"),
-            String::from("PacketACv6"),
-            String::from("--monitor"),
-            String::from("/dev/ttyUSB1"),
-        ])
-        .expect("should parse");
-
-        assert_eq!(
-            options.port.as_ref().map(|port| port.port.as_str()),
-            Some("/dev/ttyUSB0")
-        );
-        assert_eq!(options.baud, Some(921_600));
-        assert_eq!(options.rate_hz, Some(100));
-        assert_eq!(options.format.as_deref(), Some("PacketACv6"));
-        assert_eq!(options.monitor_ports.len(), 1);
-        assert_eq!(options.monitor_ports[0].port, "/dev/ttyUSB1");
-        assert_eq!(options.monitor_ports[0].baud, None);
-        assert!(options.monitor_ports[0].formats.is_empty());
-        assert!(!options.skip_output_input_monitoring);
-    }
-
-    #[test]
-    fn parse_send_monitor_binding_accepts_format_and_packet_mode() {
-        let binding =
-            parse_send_monitor_binding("/dev/ttyUSB1@115200,utf8+line,packetjfv1").unwrap();
+    fn parse_io_input_binding_accepts_format_and_packet_mode() {
+        let binding = parse_io_input_binding("/dev/ttyUSB1@115200,utf8+line,packetjfv1").unwrap();
 
         assert_eq!(binding.port, "/dev/ttyUSB1");
         assert_eq!(binding.baud, Some(115_200));
@@ -2494,9 +2149,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_send_monitor_binding_accepts_multiple_formats() {
+    fn parse_io_input_binding_accepts_multiple_formats() {
         let binding =
-            parse_send_monitor_binding("/dev/ttyUSB1,packetacv6+packetmv1+packetjfv1").unwrap();
+            parse_io_input_binding("/dev/ttyUSB1,packetacv6+packetmv1+packetjfv1").unwrap();
 
         assert_eq!(binding.port, "/dev/ttyUSB1");
         assert_eq!(
@@ -2510,34 +2165,29 @@ mod tests {
     }
 
     #[test]
-    fn monitor_without_format_defaults_to_wrap_mode() {
+    fn input_without_format_defaults_to_wrap_mode() {
         assert_eq!(
-            resolve_monitor_line_break_mode(None, false, LineBreakMode::Line),
+            resolve_input_line_break_mode(None, false, LineBreakMode::Line),
             LineBreakMode::Wrap
         );
     }
 
     #[test]
-    fn monitor_with_format_uses_configured_line_break_mode() {
+    fn input_with_format_uses_configured_line_break_mode() {
         assert_eq!(
-            resolve_monitor_line_break_mode(None, true, LineBreakMode::Packet),
+            resolve_input_line_break_mode(None, true, LineBreakMode::Packet),
             LineBreakMode::Packet
         );
         assert_eq!(
-            resolve_monitor_line_break_mode(
-                Some(LineBreakMode::Line),
-                false,
-                LineBreakMode::Packet
-            ),
+            resolve_input_line_break_mode(Some(LineBreakMode::Line), false, LineBreakMode::Packet),
             LineBreakMode::Line
         );
     }
 
     #[test]
-    fn parse_send_output_binding_accepts_id_format_and_packet_mode() {
+    fn parse_io_output_binding_accepts_id_format_and_packet_mode() {
         let binding =
-            parse_send_output_binding("main=/dev/ttyUSB0@921600,hex+packet,packetacv6,100")
-                .unwrap();
+            parse_io_output_binding("main=/dev/ttyUSB0@921600,hex+packet,packetacv6,100").unwrap();
 
         assert_eq!(binding.id, "main");
         assert_eq!(binding.port, "/dev/ttyUSB0");
@@ -2545,59 +2195,6 @@ mod tests {
         assert_eq!(binding.rate_hz, Some(100));
         assert_eq!(binding.format.as_deref(), Some("packetacv6"));
         assert_eq!(binding.display_mode, Some(PortDisplayMode::Hex));
-        assert_eq!(binding.line_break_mode, Some(LineBreakMode::Packet));
-    }
-
-    #[test]
-    fn parse_send_args_accepts_display_and_log_dir() {
-        let options = parse_send_args(vec![
-            String::from("--display"),
-            String::from("output:default=hex"),
-            String::from("--log-dir"),
-            String::from("tmp/send-logs"),
-            String::from("--no-log"),
-        ])
-        .expect("should parse");
-
-        assert_eq!(
-            options.display.resolve_output("/dev/ttyUSB0"),
-            PortDisplayMode::Hex
-        );
-        assert_eq!(
-            options.log_dir,
-            Some(std::path::PathBuf::from("tmp/send-logs"))
-        );
-        assert!(options.no_log);
-    }
-
-    #[test]
-    fn parse_send_args_accepts_config_aliases() {
-        let options = parse_send_args(vec![
-            String::from("--port"),
-            String::from("/dev/ttyUSB0@921600"),
-            String::from("--config"),
-            String::from(
-                "FORMAT=PacketACv6,RATE=100,DISPLAY=output:default=hex,LOG_DIR=tmp/send-logs",
-            ),
-            String::from("--interactive"),
-        ])
-        .expect("should parse");
-
-        assert_eq!(
-            options.port.as_ref().map(|port| port.port.as_str()),
-            Some("/dev/ttyUSB0")
-        );
-        assert_eq!(
-            options.port.as_ref().and_then(|port| port.baud),
-            Some(921_600)
-        );
-        assert_eq!(options.rate_hz, Some(100));
-        assert_eq!(options.format.as_deref(), Some("PacketACv6"));
-        assert_eq!(
-            options.log_dir,
-            Some(std::path::PathBuf::from("tmp/send-logs"))
-        );
-        assert!(options.interactive);
     }
 
     #[test]
@@ -2613,10 +2210,8 @@ mod tests {
 
         assert_eq!(options.inputs.len(), 1);
         assert_eq!(options.outputs.len(), 1);
-        assert_eq!(options.send_options.rate_hz, Some(10));
-        assert!(options.send_options.allow_receive_only);
-        assert!(options.send_options.skip_output_input_monitoring);
-        assert!(options.send_options.no_log);
+        assert_eq!(options.runtime_options.rate_hz, Some(10));
+        assert!(options.runtime_options.no_log);
     }
 
     #[test]
@@ -2629,7 +2224,7 @@ mod tests {
     }
 
     #[test]
-    fn io_binding_format_matches_send_parsers() {
+    fn io_binding_format_matches_io_parsers() {
         let input = format_io_input_binding(
             "/dev/ttyUSB1",
             115_200,
@@ -2639,8 +2234,8 @@ mod tests {
         let output =
             format_io_output_binding("/dev/ttyUSB0", 921_600, Some("hex"), "packetacv6", 10);
 
-        let input = parse_send_monitor_binding(&input).expect("input binding should parse");
-        let output = parse_send_output_binding(&output).expect("output binding should parse");
+        let input = parse_io_input_binding(&input).expect("input binding should parse");
+        let output = parse_io_output_binding(&output).expect("output binding should parse");
 
         assert_eq!(input.port, "/dev/ttyUSB1");
         assert_eq!(input.baud, Some(115_200));
@@ -2726,7 +2321,7 @@ mod tests {
             .encode_dummy_payload()
             .expect("roverupgeneral dummy payload");
         let mut observed = ObservedInput::new(
-            String::from("monitor-up"),
+            String::from("input-up"),
             String::from("/dev/ttyUSB1"),
             vec![OutputFormat::RoverUpGeneral],
             None,
@@ -2762,7 +2357,7 @@ mod tests {
     #[test]
     fn validate_output_port_loads_rejects_oversubscribed_shared_port() {
         let outputs = vec![
-            SendOutputSettings {
+            IoOutputSettings {
                 session: SessionOutputSpec {
                     id: String::from("arm"),
                     port: String::from("/dev/ttyUSB0"),
@@ -2773,7 +2368,7 @@ mod tests {
                 format: OutputFormat::PacketAcV6,
                 rate_hz: 1_000,
             },
-            SendOutputSettings {
+            IoOutputSettings {
                 session: SessionOutputSpec {
                     id: String::from("rover"),
                     port: String::from("/dev/ttyUSB0"),
