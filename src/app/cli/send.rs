@@ -99,6 +99,7 @@ struct SendSettings {
     s3b: bool,
     title: String,
     command_name: String,
+    executed_command: Option<String>,
 }
 
 struct SendOutputRunResult {
@@ -117,6 +118,24 @@ struct SendRunResult {
     outputs: Vec<SendOutputRunResult>,
     logging_enabled: bool,
     log_path: PathBuf,
+    executed_command: Option<String>,
+}
+
+struct IoCommandInput {
+    port: String,
+    baud_rate: u32,
+    display_mode: PortDisplayMode,
+    line_break_mode: LineBreakMode,
+    formats: Vec<OutputFormat>,
+}
+
+struct IoCommandOutput {
+    id: String,
+    port: String,
+    baud_rate: u32,
+    display_mode: PortDisplayMode,
+    format: OutputFormat,
+    rate_hz: u32,
 }
 
 struct OutputSchedule {
@@ -988,6 +1007,9 @@ fn print_io_result(result: &SendRunResult) {
     if result.logging_enabled {
         println!("log saved to {}", result.log_path.display());
     }
+    if let Some(command) = &result.executed_command {
+        println!("実行コマンド: {command}");
+    }
 }
 
 fn parse_io_args(args: Vec<String>) -> Result<IoCliOptions, String> {
@@ -1185,6 +1207,119 @@ fn format_io_output_binding(
     value.push(',');
     value.push_str(&rate_hz.to_string());
     value
+}
+
+fn build_io_executed_command(
+    inputs: &[IoCommandInput],
+    outputs: &[IoCommandOutput],
+    log_dir: Option<&PathBuf>,
+    no_log: bool,
+    s3b: bool,
+) -> String {
+    let mut args = vec![String::from("acs"), String::from("io")];
+
+    for input in inputs {
+        args.push(String::from("-i"));
+        args.push(format_io_input_binding(
+            &input.port,
+            input.baud_rate,
+            Some(&format_input_display_value(
+                input.display_mode,
+                input.line_break_mode,
+            )),
+            format_output_format_list(&input.formats).as_deref(),
+        ));
+    }
+
+    for output in outputs {
+        args.push(String::from("-o"));
+        args.push(format_io_output_command_binding(output));
+    }
+
+    if let Some(log_dir) = log_dir {
+        args.push(String::from("--log-dir"));
+        args.push(log_dir.display().to_string());
+    }
+    if no_log {
+        args.push(String::from("--no-log"));
+    }
+    if s3b {
+        args.push(String::from("--s3b"));
+    }
+
+    args.iter()
+        .map(|arg| shell_quote_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_io_output_command_binding(output: &IoCommandOutput) -> String {
+    let binding = format_io_output_binding(
+        &output.port,
+        output.baud_rate,
+        Some(display_mode_value(output.display_mode)),
+        output.format.as_str(),
+        output.rate_hz,
+    );
+    if output.id == output.port {
+        binding
+    } else {
+        format!("{}={binding}", output.id)
+    }
+}
+
+fn format_output_format_list(formats: &[OutputFormat]) -> Option<String> {
+    (!formats.is_empty()).then(|| {
+        formats
+            .iter()
+            .map(|format| format.as_str())
+            .collect::<Vec<_>>()
+            .join("+")
+    })
+}
+
+fn format_input_display_value(
+    display_mode: PortDisplayMode,
+    line_break_mode: LineBreakMode,
+) -> String {
+    format!(
+        "{}+{}",
+        display_mode_value(display_mode),
+        line_break_mode_value(line_break_mode)
+    )
+}
+
+fn display_mode_value(mode: PortDisplayMode) -> &'static str {
+    match mode {
+        PortDisplayMode::Hex => "hex",
+        PortDisplayMode::Ascii => "ascii",
+        PortDisplayMode::Utf8 => "utf8",
+        PortDisplayMode::HexAscii => "hex+ascii",
+        PortDisplayMode::HexUtf8 => "hex+utf8",
+    }
+}
+
+fn line_break_mode_value(mode: LineBreakMode) -> &'static str {
+    match mode {
+        LineBreakMode::Line => "line",
+        LineBreakMode::Packet => "packet",
+        LineBreakMode::Wrap => "wrap",
+    }
+}
+
+fn shell_quote_arg(value: &str) -> String {
+    if value.is_empty() {
+        return String::from("''");
+    }
+
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"-_./:@=,+".contains(&byte))
+    {
+        return value.to_owned();
+    }
+
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn prompt_serial_port(prompt: &str) -> Result<String, String> {
@@ -1683,6 +1818,7 @@ fn run_with_options(cli_options: SendCliOptions) -> Result<SendRunResult, String
             .collect(),
         logging_enabled: settings.logging_enabled,
         log_path,
+        executed_command: settings.executed_command,
     })
 }
 
@@ -1718,6 +1854,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
         ));
     }
     let display = cli_options.display;
+    let explicit_log_dir = cli_options.log_dir.clone();
     let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
     let title = cli_options
         .title
@@ -1727,9 +1864,12 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
         .command_name
         .clone()
         .unwrap_or_else(|| String::from("send"));
+    let capture_io_command = command_name == "io";
 
     let mut outputs = Vec::new();
     let mut inputs = Vec::new();
+    let mut io_command_inputs = Vec::new();
+    let mut io_command_outputs = Vec::new();
     let mut seen_output_ids = BTreeSet::new();
     let mut output_port_bauds = BTreeMap::<String, u32>::new();
     let mut input_packet_format_candidates = BTreeMap::<String, Vec<OutputFormat>>::new();
@@ -1780,6 +1920,16 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
             format,
             rate_hz: binding.rate_hz,
         });
+        if capture_io_command {
+            io_command_outputs.push(IoCommandOutput {
+                id: binding.id.clone(),
+                port: port.clone(),
+                baud_rate,
+                display_mode: output_display_mode,
+                format,
+                rate_hz: binding.rate_hz,
+            });
+        }
         if !cli_options.interactive {
             let formats = input_packet_format_candidates
                 .entry(port.clone())
@@ -1811,6 +1961,29 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
             serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?;
         let monitor_formats = port_spec.formats;
         let monitor_has_formats = !monitor_formats.is_empty();
+        let baud_rate = port_spec.baud.unwrap_or(default_baud);
+        let display_mode = resolve_display_mode(
+            port_spec.display_mode,
+            display.resolve_input_override(&monitor_port),
+            monitor_formats
+                .first()
+                .copied()
+                .map(OutputFormat::default_display_mode),
+        );
+        let line_break_mode = resolve_monitor_line_break_mode(
+            port_spec.line_break_mode,
+            monitor_has_formats,
+            display.resolve_line_break_input(&monitor_port),
+        );
+        if capture_io_command {
+            io_command_inputs.push(IoCommandInput {
+                port: monitor_port.clone(),
+                baud_rate,
+                display_mode,
+                line_break_mode,
+                formats: monitor_formats.clone(),
+            });
+        }
         if !inputs
             .iter()
             .any(|input: &SessionInputSpec| input.port == monitor_port)
@@ -1818,20 +1991,9 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
             inputs.push(SessionInputSpec {
                 id: monitor_port.clone(),
                 port: monitor_port.clone(),
-                baud_rate: port_spec.baud.unwrap_or(default_baud),
-                display_mode: resolve_display_mode(
-                    port_spec.display_mode,
-                    display.resolve_input_override(&monitor_port),
-                    monitor_formats
-                        .first()
-                        .copied()
-                        .map(OutputFormat::default_display_mode),
-                ),
-                line_break_mode: resolve_monitor_line_break_mode(
-                    port_spec.line_break_mode,
-                    monitor_has_formats,
-                    display.resolve_line_break_input(&monitor_port),
-                ),
+                baud_rate,
+                display_mode,
+                line_break_mode,
             });
         }
         if !monitor_formats.is_empty() {
@@ -1886,6 +2048,15 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
             })
         })
         .collect();
+    let executed_command = capture_io_command.then(|| {
+        build_io_executed_command(
+            &io_command_inputs,
+            &io_command_outputs,
+            explicit_log_dir.as_ref(),
+            cli_options.no_log,
+            cli_options.s3b,
+        )
+    });
 
     Ok(SendSettings {
         inputs,
@@ -1897,6 +2068,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
         s3b: cli_options.s3b,
         title,
         command_name,
+        executed_command,
     })
 }
 
@@ -2261,15 +2433,17 @@ fn parse_send_output_binding(value: &str) -> Result<SendOutputBinding, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MixedFormatDecoder, ObservedInput, OutputSchedule, SendOutputSettings,
-        estimated_output_line_bps, format_io_input_binding, format_io_output_binding,
-        matches_rover_down_packet, parse_io_args, parse_output_format_list, parse_send_args,
-        parse_send_monitor_binding, parse_send_output_binding, realign_output_schedule,
-        resolve_display_mode, resolve_monitor_line_break_mode, validate_output_port_loads,
+        IoCommandInput, IoCommandOutput, MixedFormatDecoder, ObservedInput, OutputSchedule,
+        SendOutputSettings, build_io_executed_command, estimated_output_line_bps,
+        format_io_input_binding, format_io_output_binding, matches_rover_down_packet,
+        parse_io_args, parse_output_format_list, parse_send_args, parse_send_monitor_binding,
+        parse_send_output_binding, realign_output_schedule, resolve_display_mode,
+        resolve_monitor_line_break_mode, validate_output_port_loads,
     };
     use crate::output::OutputFormat;
     use crate::port_display::{LineBreakMode, PortDisplayMode};
     use crate::session::runtime::SessionOutputSpec;
+    use std::path::PathBuf;
     use std::time::Instant;
 
     #[test]
@@ -2473,6 +2647,35 @@ mod tests {
         assert_eq!(output.baud, Some(921_600));
         assert_eq!(output.format.as_deref(), Some("packetacv6"));
         assert_eq!(output.rate_hz, Some(10));
+    }
+
+    #[test]
+    fn io_executed_command_includes_resolved_ports_defaults_and_flags() {
+        let command = build_io_executed_command(
+            &[IoCommandInput {
+                port: String::from("/dev/ttyUSB1"),
+                baud_rate: 115_200,
+                display_mode: PortDisplayMode::Utf8,
+                line_break_mode: LineBreakMode::Packet,
+                formats: vec![OutputFormat::PacketAcV6, OutputFormat::PacketJfV1],
+            }],
+            &[IoCommandOutput {
+                id: String::from("ac"),
+                port: String::from("/dev/ttyUSB0"),
+                baud_rate: 921_600,
+                display_mode: PortDisplayMode::Hex,
+                format: OutputFormat::PacketAcV6,
+                rate_hz: 10,
+            }],
+            Some(&PathBuf::from("tmp/io logs")),
+            true,
+            true,
+        );
+
+        assert_eq!(
+            command,
+            "acs io -i /dev/ttyUSB1@115200,utf8+packet,packetacv6+packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,10 --log-dir 'tmp/io logs' --no-log --s3b"
+        );
     }
 
     #[test]
