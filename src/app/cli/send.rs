@@ -601,6 +601,9 @@ struct DecodedPacket {
 #[derive(Debug, Clone, Copy)]
 enum PacketMatcher {
     PacketAcV6,
+    PacketMv1,
+    PacketIv1,
+    PacketBv1,
     PacketJfV1,
     RoverUpGeneral,
     RoverDownGeneral,
@@ -610,6 +613,9 @@ impl PacketMatcher {
     fn new(format: OutputFormat) -> Self {
         match format {
             OutputFormat::PacketAcV6 => Self::PacketAcV6,
+            OutputFormat::PacketMv1 => Self::PacketMv1,
+            OutputFormat::PacketIv1 => Self::PacketIv1,
+            OutputFormat::PacketBv1 => Self::PacketBv1,
             OutputFormat::PacketJfV1 => Self::PacketJfV1,
             OutputFormat::RoverUpGeneral => Self::RoverUpGeneral,
             OutputFormat::RoverDownGeneral => Self::RoverDownGeneral,
@@ -619,6 +625,9 @@ impl PacketMatcher {
     fn format(self) -> OutputFormat {
         match self {
             Self::PacketAcV6 => OutputFormat::PacketAcV6,
+            Self::PacketMv1 => OutputFormat::PacketMv1,
+            Self::PacketIv1 => OutputFormat::PacketIv1,
+            Self::PacketBv1 => OutputFormat::PacketBv1,
             Self::PacketJfV1 => OutputFormat::PacketJfV1,
             Self::RoverUpGeneral => OutputFormat::RoverUpGeneral,
             Self::RoverDownGeneral => OutputFormat::RoverDownGeneral,
@@ -632,6 +641,9 @@ impl PacketMatcher {
     fn matches_packet(self, bytes: &[u8]) -> bool {
         match self {
             Self::PacketAcV6 => matches_crc_packet(bytes, b"AC", 37),
+            Self::PacketMv1 => matches_reduced_ac_packet(bytes, b'M', 19),
+            Self::PacketIv1 => matches_reduced_ac_packet(bytes, b'I', 19),
+            Self::PacketBv1 => matches_reduced_ac_packet(bytes, b'B', 15),
             Self::PacketJfV1 => matches_crc_packet(bytes, b"JF", 14),
             Self::RoverUpGeneral => matches_rover_up_packet(bytes),
             Self::RoverDownGeneral => matches_rover_down_packet(bytes),
@@ -645,6 +657,9 @@ impl PacketMatcher {
 
         match self {
             Self::PacketAcV6 => could_match_crc_packet_prefix(bytes, b"AC", 39),
+            Self::PacketMv1 => could_match_reduced_ac_packet_prefix(bytes, b'M', 19),
+            Self::PacketIv1 => could_match_reduced_ac_packet_prefix(bytes, b'I', 19),
+            Self::PacketBv1 => could_match_reduced_ac_packet_prefix(bytes, b'B', 15),
             Self::PacketJfV1 => could_match_crc_packet_prefix(bytes, b"JF", 16),
             Self::RoverUpGeneral => matches_rover_up_prefix(bytes),
             Self::RoverDownGeneral => matches_rover_down_prefix(bytes),
@@ -675,6 +690,18 @@ fn could_match_crc_packet_prefix(bytes: &[u8], header: &[u8; 2], packet_len: usi
     }
 
     bytes.starts_with(header)
+}
+
+fn matches_reduced_ac_packet(bytes: &[u8], header: u8, packet_len: usize) -> bool {
+    bytes.len() == packet_len && bytes.first().copied() == Some(header)
+}
+
+fn could_match_reduced_ac_packet_prefix(bytes: &[u8], header: u8, packet_len: usize) -> bool {
+    if bytes.len() >= packet_len {
+        return false;
+    }
+
+    bytes.first().copied() == Some(header)
 }
 
 fn matches_rover_up_prefix(bytes: &[u8]) -> bool {
@@ -1579,12 +1606,17 @@ mod tests {
 
     #[test]
     fn parse_send_monitor_binding_accepts_multiple_formats() {
-        let binding = parse_send_monitor_binding("/dev/ttyUSB1,packetacv6+packetjfv1").unwrap();
+        let binding =
+            parse_send_monitor_binding("/dev/ttyUSB1,packetacv6+packetmv1+packetjfv1").unwrap();
 
         assert_eq!(binding.port, "/dev/ttyUSB1");
         assert_eq!(
             binding.formats,
-            vec![String::from("packetacv6"), String::from("packetjfv1"),]
+            vec![
+                String::from("packetacv6"),
+                String::from("packetmv1"),
+                String::from("packetjfv1"),
+            ]
         );
     }
 
@@ -1660,18 +1692,29 @@ mod tests {
         let ac = OutputFormat::PacketAcV6
             .encode_dummy_payload()
             .expect("packetacv6 dummy payload");
+        let m = OutputFormat::PacketMv1
+            .encode_dummy_payload()
+            .expect("packetmv1 dummy payload");
         let up = OutputFormat::RoverUpGeneral
             .encode_dummy_payload()
             .expect("roverupgeneral dummy payload");
-        let mut decoder =
-            MixedFormatDecoder::new(vec![OutputFormat::PacketAcV6, OutputFormat::RoverUpGeneral]);
+        let mut decoder = MixedFormatDecoder::new(vec![
+            OutputFormat::PacketAcV6,
+            OutputFormat::PacketMv1,
+            OutputFormat::RoverUpGeneral,
+        ]);
 
         assert!(decoder.push(&ac[..7]).is_empty());
 
-        let mut decoded = decoder.push(&[&ac[7..], &up[..5]].concat());
+        let mut decoded = decoder.push(&[&ac[7..], &m[..4]].concat());
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].format, OutputFormat::PacketAcV6);
         assert_eq!(decoded[0].bytes, ac);
+
+        decoded = decoder.push(&[&m[4..], &up[..5]].concat());
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].format, OutputFormat::PacketMv1);
+        assert_eq!(decoded[0].bytes, m);
 
         decoded = decoder.push(&up[5..]);
         assert_eq!(decoded.len(), 1);

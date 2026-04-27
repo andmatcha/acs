@@ -97,6 +97,7 @@ acs monitor --port /dev/ttyUSB0@921600 --no-log
 acs route merge -i in_a=/dev/ttyUSB0@921600 -o out_main=/dev/ttyUSB1@921600 --no-log
 acs send --port /dev/ttyUSB0@921600 --config FORMAT=PacketJFv1,RATE=100
 acs send --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6 --no-log
+acs send --port /dev/ttyUSB0@921600 --config FORMAT=PacketMv1 --no-log
 acs send -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100 -o up=/dev/ttyUSB0@921600,utf8,roverupgeneral,10
 acs send --port /dev/ttyUSB0@921600 --monitor /dev/ttyUSB1@115200,packetacv6+packetjfv1 --config FORMAT=PacketACv6
 acs xbee-mock base -p /dev/ttyUSB0@921600 --config PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood

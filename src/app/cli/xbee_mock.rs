@@ -1197,6 +1197,9 @@ fn xbee_mock_tx_kind_allowed(role: XbeeMockRole, kind: XbeeTestFrameKind) -> boo
         XbeeMockRole::Base => matches!(
             kind,
             XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)
+                | XbeeTestFrameKind::Format(OutputFormat::PacketMv1)
+                | XbeeTestFrameKind::Format(OutputFormat::PacketIv1)
+                | XbeeTestFrameKind::Format(OutputFormat::PacketBv1)
                 | XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral)
                 | XbeeTestFrameKind::PollGreeting
         ),
@@ -1220,6 +1223,9 @@ fn xbee_mock_rx_kind_allowed(role: XbeeMockRole, kind: XbeeTestFrameKind) -> boo
         XbeeMockRole::Remote => matches!(
             kind,
             XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)
+                | XbeeTestFrameKind::Format(OutputFormat::PacketMv1)
+                | XbeeTestFrameKind::Format(OutputFormat::PacketIv1)
+                | XbeeTestFrameKind::Format(OutputFormat::PacketBv1)
                 | XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral)
                 | XbeeTestFrameKind::PollGreeting
         ),

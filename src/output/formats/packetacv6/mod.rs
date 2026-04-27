@@ -1,10 +1,12 @@
 mod definition;
 mod encoder;
+mod reduced;
 mod sound;
 
 use crate::input::compact::CompactReport;
 use crate::output::formats::{DummyPayloadGenerator, OutputDriver};
 use encoder::PacketAcV6PacketEncoder;
+use reduced::ReducedAcPacketKind;
 use sound::ModeSoundPlayer;
 
 pub(crate) fn create_driver() -> Box<dyn OutputDriver> {
@@ -17,6 +19,33 @@ pub(crate) const fn packet_len() -> usize {
 
 pub(crate) fn create_dummy_generator() -> Result<Box<dyn DummyPayloadGenerator>, String> {
     Ok(Box::new(PacketAcV6DummyGenerator::default()))
+}
+
+pub(crate) const fn packet_mv1_len() -> usize {
+    reduced::packet_len(ReducedAcPacketKind::PacketMv1)
+}
+
+pub(crate) const fn packet_iv1_len() -> usize {
+    reduced::packet_len(ReducedAcPacketKind::PacketIv1)
+}
+
+pub(crate) const fn packet_bv1_len() -> usize {
+    reduced::packet_len(ReducedAcPacketKind::PacketBv1)
+}
+
+pub(crate) fn create_packet_mv1_dummy_generator() -> Result<Box<dyn DummyPayloadGenerator>, String>
+{
+    reduced::create_dummy_generator(ReducedAcPacketKind::PacketMv1)
+}
+
+pub(crate) fn create_packet_iv1_dummy_generator() -> Result<Box<dyn DummyPayloadGenerator>, String>
+{
+    reduced::create_dummy_generator(ReducedAcPacketKind::PacketIv1)
+}
+
+pub(crate) fn create_packet_bv1_dummy_generator() -> Result<Box<dyn DummyPayloadGenerator>, String>
+{
+    reduced::create_dummy_generator(ReducedAcPacketKind::PacketBv1)
 }
 
 struct PacketAcV6OutputDriver {

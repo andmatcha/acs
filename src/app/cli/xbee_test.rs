@@ -183,7 +183,11 @@ impl PacketDefinition {
                 payload_len: 14,
                 header: *b"JF",
             },
-            OutputFormat::RoverUpGeneral | OutputFormat::RoverDownGeneral => {
+            OutputFormat::PacketMv1
+            | OutputFormat::PacketIv1
+            | OutputFormat::PacketBv1
+            | OutputFormat::RoverUpGeneral
+            | OutputFormat::RoverDownGeneral => {
                 panic!(
                     "xbee-test does not support output format `{}`",
                     format.as_str()
@@ -196,6 +200,9 @@ impl PacketDefinition {
 pub(crate) fn xbee_test_format_label(kind: XbeeTestFrameKind) -> &'static str {
     match kind {
         XbeeTestFrameKind::Format(OutputFormat::PacketAcV6) => "AU(PacketACv6)",
+        XbeeTestFrameKind::Format(OutputFormat::PacketMv1) => "M(PacketMv1)",
+        XbeeTestFrameKind::Format(OutputFormat::PacketIv1) => "I(PacketIv1)",
+        XbeeTestFrameKind::Format(OutputFormat::PacketBv1) => "B(PacketBv1)",
         XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => "RU(RoverUpGeneral)",
         XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => "AD(PacketJFv1)",
         XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => "RD(RoverDownGeneral)",
@@ -302,6 +309,9 @@ fn packet_start_len(kind: XbeeTestFrameKind) -> usize {
         | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1)
         | XbeeTestFrameKind::PollGreeting
         | XbeeTestFrameKind::PollResponse => 2,
+        XbeeTestFrameKind::Format(OutputFormat::PacketMv1)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketIv1)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketBv1) => 1,
         XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => 6,
         XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => 4,
     }
@@ -310,6 +320,9 @@ fn packet_start_len(kind: XbeeTestFrameKind) -> usize {
 fn find_packet_start(buffer: &[u8], kind: XbeeTestFrameKind) -> Option<usize> {
     match kind {
         XbeeTestFrameKind::Format(OutputFormat::PacketAcV6) => find_header(buffer, b"AC"),
+        XbeeTestFrameKind::Format(OutputFormat::PacketMv1) => find_byte(buffer, b'M'),
+        XbeeTestFrameKind::Format(OutputFormat::PacketIv1) => find_byte(buffer, b'I'),
+        XbeeTestFrameKind::Format(OutputFormat::PacketBv1) => find_byte(buffer, b'B'),
         XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => find_header(buffer, b"JF"),
         XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => find_rover_up_start(buffer),
         XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => find_rover_down_start(buffer),
@@ -326,6 +339,15 @@ fn packet_matches(kind: XbeeTestFrameKind, packet: &[u8]) -> bool {
                 unreachable!()
             };
             packet_is_valid(packet, PacketDefinition::for_format(format))
+        }
+        XbeeTestFrameKind::Format(OutputFormat::PacketMv1) => {
+            matches_reduced_ac_packet(packet, b'M', OutputFormat::PacketMv1.packet_len())
+        }
+        XbeeTestFrameKind::Format(OutputFormat::PacketIv1) => {
+            matches_reduced_ac_packet(packet, b'I', OutputFormat::PacketIv1.packet_len())
+        }
+        XbeeTestFrameKind::Format(OutputFormat::PacketBv1) => {
+            matches_reduced_ac_packet(packet, b'B', OutputFormat::PacketBv1.packet_len())
         }
         XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => matches_rover_up_packet(packet),
         XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => {
@@ -2278,6 +2300,10 @@ fn find_header(buffer: &[u8], header: &[u8; 2]) -> Option<usize> {
         .position(|window| window == header)
 }
 
+fn find_byte(buffer: &[u8], header: u8) -> Option<usize> {
+    buffer.iter().position(|byte| *byte == header)
+}
+
 fn packet_is_valid(packet: &[u8], definition: PacketDefinition) -> bool {
     if packet.len() != definition.packet_len || packet[..2] != definition.header {
         return false;
@@ -2289,6 +2315,10 @@ fn packet_is_valid(packet: &[u8], definition: PacketDefinition) -> bool {
         packet[definition.payload_len + 1],
     ]);
     expected_crc == actual_crc
+}
+
+fn matches_reduced_ac_packet(packet: &[u8], header: u8, packet_len: usize) -> bool {
+    packet.len() == packet_len && packet.first().copied() == Some(header)
 }
 
 fn matches_rover_up_packet(bytes: &[u8]) -> bool {

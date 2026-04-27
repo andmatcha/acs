@@ -228,6 +228,9 @@ pub(crate) fn print_send_help(bin_name: &str) {
     println!();
     println!("例:");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketMv1");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketIv1");
+    println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketBv1");
     println!("  {bin_name} send --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6,RATE=100");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketJFv1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=RoverUpGeneral");
@@ -236,7 +239,7 @@ pub(crate) fn print_send_help(bin_name: &str) {
         "  {bin_name} send --port /dev/ttyUSB0,hex --monitor /dev/ttyUSB1,utf8,packetjfv1 --config DISPLAY=output:default=hex"
     );
     println!(
-        "  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1,packetacv6+packetjfv1 --config FORMAT=PacketACv6"
+        "  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1,packetmv1+packetiv1+packetbv1 --config FORMAT=PacketMv1"
     );
     println!("  {bin_name} send --port /dev/ttyUSB0 --monitor /dev/ttyUSB1");
     println!("  {bin_name} send --port /dev/ttyUSB0 --config FORMAT=PacketACv6 --no-log");
