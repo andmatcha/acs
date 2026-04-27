@@ -50,6 +50,7 @@ struct SendCliOptions {
     interactive: bool,
     s3b: bool,
     allow_receive_only: bool,
+    skip_output_input_monitoring: bool,
     title: Option<String>,
     command_name: Option<String>,
 }
@@ -1019,6 +1020,7 @@ fn parse_io_args(args: Vec<String>) -> Result<IoCliOptions, String> {
         send_options: SendCliOptions {
             rate_hz: Some(DEFAULT_IO_SEND_RATE_HZ),
             allow_receive_only: true,
+            skip_output_input_monitoring: true,
             title: Some(String::from("acs io")),
             command_name: Some(String::from("io")),
             ..SendCliOptions::default()
@@ -1330,9 +1332,10 @@ fn prompt_serial_port(prompt: &str) -> Result<String, String> {
 
     let mut labels = ports
         .iter()
-        .map(format_serial_port_choice)
+        .enumerate()
+        .map(|(index, port)| format_serial_port_choice(index, port))
         .collect::<Vec<_>>();
-    labels.push(String::from("手入力..."));
+    labels.push(format!("[{}] 手入力...", ports.len()));
     let selected = choose_from_menu(prompt, &labels, 0)?;
     if selected == ports.len() {
         prompt_text("ポート名: ", None)
@@ -1341,20 +1344,20 @@ fn prompt_serial_port(prompt: &str) -> Result<String, String> {
     }
 }
 
-fn format_serial_port_choice(port: &serialport::SerialPortInfo) -> String {
+fn format_serial_port_choice(index: usize, port: &serialport::SerialPortInfo) -> String {
     match &port.port_type {
         serialport::SerialPortType::UsbPort(info) => format!(
-            "{}  usb vid=0x{:04x} pid=0x{:04x} product={}",
+            "[{index}] {}  usb vid=0x{:04x} pid=0x{:04x} product={}",
             port.port_name,
             info.vid,
             info.pid,
             info.product.as_deref().unwrap_or("unknown")
         ),
         serialport::SerialPortType::BluetoothPort => {
-            format!("{}  bluetooth", port.port_name)
+            format!("[{index}] {}  bluetooth", port.port_name)
         }
-        serialport::SerialPortType::PciPort => format!("{}  pci", port.port_name),
-        serialport::SerialPortType::Unknown => port.port_name.clone(),
+        serialport::SerialPortType::PciPort => format!("[{index}] {}  pci", port.port_name),
+        serialport::SerialPortType::Unknown => format!("[{index}] {}", port.port_name),
     }
 }
 
@@ -1420,7 +1423,6 @@ fn prompt_input_format() -> Result<Option<String>, String> {
 
 fn prompt_display_mode(prompt: &str, input: bool) -> Result<Option<String>, String> {
     let mut choices = vec![
-        String::from("default"),
         String::from("hex"),
         String::from("ascii"),
         String::from("utf8"),
@@ -1437,11 +1439,8 @@ fn prompt_display_mode(prompt: &str, input: bool) -> Result<Option<String>, Stri
     choices.push(String::from("手入力..."));
 
     let selected = choose_from_menu(prompt, &choices, 0)?;
-    if selected == 0 {
-        return Ok(None);
-    }
     if selected == choices.len() - 1 {
-        let value = prompt_text(&format!("{prompt}: "), Some("hex+utf8"))?;
+        let value = prompt_text(&format!("{prompt}: "), Some("hex"))?;
         parse_display_value(&value)?;
         Ok(Some(value))
     } else {
@@ -1535,15 +1534,17 @@ fn choose_from_menu_interactive(
 }
 
 fn render_menu(prompt: &str, labels: &[String], selected: usize) -> Result<(), String> {
+    const HEADER_BG: &str = "\x1b[47m\x1b[30m";
     const SELECTED_BG: &str = "\x1b[48;5;218m\x1b[30m";
+    const CLEAR_LINE_END: &str = "\x1b[K";
     const RESET: &str = "\x1b[0m";
 
     clear_screen()?;
-    println!("{prompt}");
+    println!("{HEADER_BG} {prompt}{CLEAR_LINE_END}{RESET}");
     println!("↑/↓ で選択、Enter で決定");
     for (index, label) in labels.iter().enumerate() {
         if index == selected {
-            println!("{SELECTED_BG}> {label}{RESET}");
+            println!("{SELECTED_BG}  {label}{CLEAR_LINE_END}{RESET}");
         } else {
             println!("  {label}");
         }
@@ -1865,6 +1866,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
         .clone()
         .unwrap_or_else(|| String::from("send"));
     let capture_io_command = command_name == "io";
+    let monitor_output_ports = !cli_options.skip_output_input_monitoring;
 
     let mut outputs = Vec::new();
     let mut inputs = Vec::new();
@@ -1897,18 +1899,6 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
             display.resolve_output_override(&port),
             Some(format.default_display_mode()),
         );
-        let input_display_override = binding
-            .display_mode
-            .or(display.resolve_input_override(&port));
-        let input_display_mode = input_display_override.unwrap_or(format.default_display_mode());
-        let line_break_mode = binding
-            .line_break_mode
-            .unwrap_or(display.resolve_line_break_input(&port));
-        input_display_is_explicit
-            .entry(port.clone())
-            .and_modify(|explicit| *explicit |= input_display_override.is_some())
-            .or_insert(input_display_override.is_some());
-
         outputs.push(SendOutputSettings {
             session: SessionOutputSpec {
                 id: binding.id.clone(),
@@ -1930,7 +1920,7 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
                 rate_hz: binding.rate_hz,
             });
         }
-        if !cli_options.interactive {
+        if monitor_output_ports && !cli_options.interactive {
             let formats = input_packet_format_candidates
                 .entry(port.clone())
                 .or_default();
@@ -1938,17 +1928,32 @@ fn build_settings(cli_options: SendCliOptions) -> Result<SendSettings, String> {
                 formats.push(format);
             }
         }
-        if !inputs
-            .iter()
-            .any(|input: &SessionInputSpec| input.port == port && input.baud_rate == baud_rate)
-        {
-            inputs.push(SessionInputSpec {
-                id: port.clone(),
-                port: port.clone(),
-                baud_rate,
-                display_mode: input_display_mode,
-                line_break_mode,
-            });
+        if monitor_output_ports {
+            let input_display_override = binding
+                .display_mode
+                .or(display.resolve_input_override(&port));
+            let input_display_mode =
+                input_display_override.unwrap_or(format.default_display_mode());
+            let line_break_mode = binding
+                .line_break_mode
+                .unwrap_or(display.resolve_line_break_input(&port));
+            input_display_is_explicit
+                .entry(port.clone())
+                .and_modify(|explicit| *explicit |= input_display_override.is_some())
+                .or_insert(input_display_override.is_some());
+
+            if !inputs
+                .iter()
+                .any(|input: &SessionInputSpec| input.port == port && input.baud_rate == baud_rate)
+            {
+                inputs.push(SessionInputSpec {
+                    id: port.clone(),
+                    port: port.clone(),
+                    baud_rate,
+                    display_mode: input_display_mode,
+                    line_break_mode,
+                });
+            }
         }
     }
 
@@ -2473,6 +2478,7 @@ mod tests {
         assert_eq!(options.monitor_ports[0].port, "/dev/ttyUSB1");
         assert_eq!(options.monitor_ports[0].baud, None);
         assert!(options.monitor_ports[0].formats.is_empty());
+        assert!(!options.skip_output_input_monitoring);
     }
 
     #[test]
@@ -2609,6 +2615,7 @@ mod tests {
         assert_eq!(options.outputs.len(), 1);
         assert_eq!(options.send_options.rate_hz, Some(10));
         assert!(options.send_options.allow_receive_only);
+        assert!(options.send_options.skip_output_input_monitoring);
         assert!(options.send_options.no_log);
     }
 
