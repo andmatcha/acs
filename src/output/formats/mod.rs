@@ -1,5 +1,6 @@
 mod crc;
 mod packetacv6;
+mod packetgcv1;
 mod packetjfv1;
 mod roverdowngeneral;
 mod roverupgeneral;
@@ -14,6 +15,7 @@ pub enum OutputFormat {
     PacketMv1,
     PacketIv1,
     PacketBv1,
+    PacketGcV1,
     PacketJfV1,
     RoverUpGeneral,
     RoverDownGeneral,
@@ -55,6 +57,13 @@ const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[
         packet_len: packetacv6::packet_bv1_len(),
         create_driver: None,
         create_dummy_generator: packetacv6::create_packet_bv1_dummy_generator,
+    },
+    OutputFormatDefinition {
+        format: OutputFormat::PacketGcV1,
+        names: &["packetgcv1"],
+        packet_len: packetgcv1::packet_len(),
+        create_driver: Some(packetgcv1::create_driver),
+        create_dummy_generator: packetgcv1::create_dummy_generator,
     },
     OutputFormatDefinition {
         format: OutputFormat::PacketJfV1,
@@ -103,6 +112,7 @@ impl OutputFormat {
             Self::PacketMv1 => "PacketMv1",
             Self::PacketIv1 => "PacketIv1",
             Self::PacketBv1 => "PacketBv1",
+            Self::PacketGcV1 => "PacketGCv1",
             Self::PacketJfV1 => "PacketJFv1",
             Self::RoverUpGeneral => "RoverUpGeneral",
             Self::RoverDownGeneral => "RoverDownGeneral",
@@ -140,6 +150,7 @@ impl OutputFormat {
             | Self::PacketMv1
             | Self::PacketIv1
             | Self::PacketBv1
+            | Self::PacketGcV1
             | Self::PacketJfV1 => PortDisplayMode::Hex,
             Self::RoverUpGeneral | Self::RoverDownGeneral => PortDisplayMode::Ascii,
         }
@@ -309,6 +320,38 @@ mod tests {
     }
 
     #[test]
+    fn parse_supports_packetgcv1() {
+        assert_eq!(
+            OutputFormat::parse("packetgcv1").expect("should parse"),
+            OutputFormat::PacketGcV1
+        );
+        assert_eq!(
+            OutputFormat::parse("PacketGCv1").expect("should parse"),
+            OutputFormat::PacketGcV1
+        );
+    }
+
+    #[test]
+    fn packetgcv1_compact_driver_encodes_manual_rate() {
+        let mut driver = OutputFormat::PacketGcV1
+            .create_driver()
+            .expect("PacketGCv1 should create a compact encoding driver");
+
+        let packet = driver
+            .encode(&[0, 0, 0, 128, 0, 128, 255, 0])
+            .expect("should encode");
+
+        assert_eq!(packet.len(), OutputFormat::PacketGcV1.packet_len());
+        assert_eq!(&packet[..2], b"GC");
+        assert_eq!(packet[4], 0x03);
+        assert_eq!(i16::from_le_bytes([packet[5], packet[6]]), 1000);
+        assert_eq!(
+            u16::from_le_bytes([packet[7], packet[8]]),
+            crc16_ccitt_false(&packet[..7])
+        );
+    }
+
+    #[test]
     fn parse_rejects_jf() {
         assert_eq!(
             OutputFormat::parse("jf").expect_err("should reject"),
@@ -424,6 +467,7 @@ mod tests {
         assert_eq!(OutputFormat::PacketMv1.packet_len(), 19);
         assert_eq!(OutputFormat::PacketIv1.packet_len(), 19);
         assert_eq!(OutputFormat::PacketBv1.packet_len(), 15);
+        assert_eq!(OutputFormat::PacketGcV1.packet_len(), 9);
         assert_eq!(OutputFormat::PacketJfV1.packet_len(), 16);
         assert_eq!(OutputFormat::RoverUpGeneral.packet_len(), 12);
         assert_eq!(OutputFormat::RoverDownGeneral.packet_len(), 13);
@@ -449,6 +493,10 @@ mod tests {
         );
         assert_eq!(
             OutputFormat::PacketBv1.default_display_mode(),
+            crate::port_display::PortDisplayMode::Hex
+        );
+        assert_eq!(
+            OutputFormat::PacketGcV1.default_display_mode(),
             crate::port_display::PortDisplayMode::Hex
         );
         assert_eq!(

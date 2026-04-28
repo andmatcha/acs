@@ -1175,7 +1175,11 @@ fn prompt_control_output_format_with_preview(
     command: &ControlPromptCommand,
     output_binding: Option<&str>,
 ) -> Result<String, String> {
-    let formats = vec![OutputFormat::PacketAcV6, OutputFormat::PacketMv1];
+    let formats = vec![
+        OutputFormat::PacketAcV6,
+        OutputFormat::PacketMv1,
+        OutputFormat::PacketGcV1,
+    ];
     let labels = formats
         .iter()
         .map(|format| format.display_name().to_owned())
@@ -1398,5 +1402,12 @@ mod tests {
         let spec = build_control_pipeline_spec("ds4_main", OutputFormat::PacketMv1);
 
         PipelineEngine::new(&spec).expect("PacketMv1 should build a control pipeline");
+    }
+
+    #[test]
+    fn control_pipeline_accepts_packetgcv1_format() {
+        let spec = build_control_pipeline_spec("ds4_main", OutputFormat::PacketGcV1);
+
+        PipelineEngine::new(&spec).expect("PacketGCv1 should build a control pipeline");
     }
 }
