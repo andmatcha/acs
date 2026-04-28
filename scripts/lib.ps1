@@ -409,7 +409,10 @@ function Copy-SourceTree {
 }
 
 function Get-WindowsRustupHostTriple {
-    $architecture = $env:PROCESSOR_ARCHITECTURE
+    $architecture = $env:PROCESSOR_ARCHITEW6432
+    if ([string]::IsNullOrWhiteSpace($architecture)) {
+        $architecture = $env:PROCESSOR_ARCHITECTURE
+    }
     if ($architecture -eq "ARM64") {
         return "aarch64-pc-windows-msvc"
     }
