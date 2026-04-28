@@ -10,9 +10,23 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const READ_BUFFER_SIZE: usize = 256;
-const READ_TIMEOUT_MILLIS: u64 = 50;
+// Keep receive latency low so wireless monitor output does not arrive in visible bursts.
+const READ_TIMEOUT_MILLIS: u64 = 5;
+const READ_EVENT_MAX_BYTES: usize = 1024;
+const READ_EVENT_DRAIN_BUDGET: Duration = Duration::from_millis(2);
 const WRITE_TIMEOUT_MILLIS: u64 = 1_000;
 const WRITE_RETRY_INTERVAL: Duration = Duration::from_millis(5);
+const XBEE_S3B_BOOTLOADER_SCAN_MILLIS: u64 = 500;
+const XBEE_S3B_BOOTLOADER_READ_TIMEOUT_MILLIS: u64 = 20;
+const XBEE_S3B_BOOTLOADER_RECOVERY_SETTLE_MILLIS: u64 = 500;
+const XBEE_S3B_BOOTLOADER_RECOVERY_COMMAND: &[u8] = b"B";
+const XBEE_S3B_BOOTLOADER_MENU_MARKERS: [&[u8]; 5] = [
+    b"R-Reset",
+    b"A-App Ver.",
+    b"V-BL Ver.",
+    b"T-Timeout",
+    b"F-Update App",
+];
 
 pub type SerialCallback = Arc<dyn Fn(SerialEvent) + Send + Sync>;
 
@@ -20,6 +34,7 @@ pub type SerialCallback = Arc<dyn Fn(SerialEvent) + Send + Sync>;
 pub struct SerialConfig {
     pub port: String,
     pub baud_rate: u32,
+    pub xbee_s3b_recovery: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +100,10 @@ pub enum SerialError {
     },
     NoSerialPortFound,
     MultiplePortsFound(usize),
+    PortIndexOutOfRange {
+        index: usize,
+        count: usize,
+    },
     PortNotFound(String),
 }
 
@@ -106,6 +125,10 @@ impl fmt::Display for SerialError {
             Self::MultiplePortsFound(count) => write!(
                 f,
                 "{count} serial ports found; specify one explicitly with --port"
+            ),
+            Self::PortIndexOutOfRange { index, count } => write!(
+                f,
+                "serial port index `{index}` is out of range for {count} available ports; use `acs ports` to inspect candidates"
             ),
             Self::PortNotFound(port) => write!(
                 f,
@@ -241,14 +264,37 @@ pub fn available_ports() -> Result<Vec<SerialPortInfo>, SerialError> {
 
 pub fn resolve_port(port_name: Option<&str>) -> Result<String, SerialError> {
     let ports = available_ports()?;
+    resolve_port_from_ports(port_name, &ports)
+}
+
+fn resolve_port_from_ports(
+    port_name: Option<&str>,
+    ports: &[SerialPortInfo],
+) -> Result<String, SerialError> {
     match port_name {
-        Some(port_name) => ports
-            .iter()
-            .find(|port| port.port_name == port_name)
-            .map(|port| port.port_name.clone())
-            .ok_or_else(|| SerialError::PortNotFound(port_name.to_owned())),
+        Some(port_name) => resolve_requested_port(port_name, ports),
         None => auto_select_port(&ports),
     }
+}
+
+fn resolve_requested_port(
+    port_name: &str,
+    ports: &[SerialPortInfo],
+) -> Result<String, SerialError> {
+    if let Some(port) = ports.iter().find(|port| port.port_name == port_name) {
+        return Ok(port.port_name.clone());
+    }
+
+    if let Ok(index) = port_name.parse::<usize>() {
+        return ports.get(index).map(|port| port.port_name.clone()).ok_or(
+            SerialError::PortIndexOutOfRange {
+                index,
+                count: ports.len(),
+            },
+        );
+    }
+
+    Err(SerialError::PortNotFound(port_name.to_owned()))
 }
 
 fn auto_select_port(ports: &[SerialPortInfo]) -> Result<String, SerialError> {
@@ -349,13 +395,116 @@ fn port_name_looks_like_usb_serial(port_name: &str) -> bool {
 }
 
 fn open_port(config: &SerialConfig) -> Result<Box<dyn SerialPort>, SerialError> {
-    new(&config.port, config.baud_rate)
+    let mut port = new(&config.port, config.baud_rate)
         .timeout(Duration::from_millis(WRITE_TIMEOUT_MILLIS))
         .open()
         .map_err(|source| SerialError::Open {
             port: config.port.clone(),
             source,
-        })
+        })?;
+    clear_break_after_open(&mut *port);
+    if config.xbee_s3b_recovery {
+        recover_xbee_s3b_bootloader(&mut *port, &config.port)?;
+    }
+    Ok(port)
+}
+
+fn clear_break_after_open(port: &dyn SerialPort) {
+    // XBee bootloaders can use a serial break during their entry sequence.  Clearing it here is
+    // best-effort because some adapters do not expose break control, and normal UART traffic does
+    // not require a fatal error if the line cannot be changed.
+    let _ = port.clear_break();
+}
+
+fn recover_xbee_s3b_bootloader(
+    port: &mut dyn SerialPort,
+    port_name: &str,
+) -> Result<(), SerialError> {
+    let original_timeout = port.timeout();
+    port.set_timeout(Duration::from_millis(
+        XBEE_S3B_BOOTLOADER_READ_TIMEOUT_MILLIS,
+    ))
+    .map_err(|source| SerialError::Configure {
+        port: port_name.to_owned(),
+        source,
+    })?;
+
+    let result = scan_and_recover_xbee_s3b_bootloader(port, port_name);
+    let restore_result =
+        port.set_timeout(original_timeout)
+            .map_err(|source| SerialError::Configure {
+                port: port_name.to_owned(),
+                source,
+            });
+
+    result.and(restore_result)
+}
+
+fn scan_and_recover_xbee_s3b_bootloader(
+    port: &mut dyn SerialPort,
+    port_name: &str,
+) -> Result<(), SerialError> {
+    let deadline = Instant::now() + Duration::from_millis(XBEE_S3B_BOOTLOADER_SCAN_MILLIS);
+    let mut received = Vec::new();
+    let mut buffer = [0u8; READ_BUFFER_SIZE];
+
+    while Instant::now() < deadline {
+        match port.read(&mut buffer) {
+            Ok(0) => {}
+            Ok(count) => {
+                received.extend_from_slice(&buffer[..count]);
+                if looks_like_xbee_s3b_bootloader_menu(&received) {
+                    port.write_all(XBEE_S3B_BOOTLOADER_RECOVERY_COMMAND)
+                        .map_err(|source| SerialError::Write {
+                            port: port_name.to_owned(),
+                            source,
+                        })?;
+                    thread::sleep(Duration::from_millis(
+                        XBEE_S3B_BOOTLOADER_RECOVERY_SETTLE_MILLIS,
+                    ));
+                    return Ok(());
+                }
+            }
+            Err(error) if is_transient_read_error(&error) => {}
+            Err(source) => {
+                return Err(SerialError::Write {
+                    port: port_name.to_owned(),
+                    source,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn looks_like_xbee_s3b_bootloader_menu(bytes: &[u8]) -> bool {
+    let marker_count = XBEE_S3B_BOOTLOADER_MENU_MARKERS
+        .iter()
+        .filter(|marker| contains_ascii_case_insensitive(bytes, marker))
+        .count();
+
+    marker_count >= 2
+        || contains_ascii_case_insensitive(bytes, b"A-App Ver.")
+        || contains_ascii_case_insensitive(bytes, b"V-BL Ver.")
+        || contains_ascii_case_insensitive(bytes, b"F-Update App")
+}
+
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| ascii_case_insensitive_eq(window, needle))
+}
+
+fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
 fn spawn_reader_thread(
@@ -404,13 +553,26 @@ fn drain_available_bytes(
     received: &mut Vec<u8>,
     buffer: &mut [u8; READ_BUFFER_SIZE],
 ) -> Result<(), SerialPortLibError> {
+    let drain_started_at = Instant::now();
+
     loop {
+        if received.len() >= READ_EVENT_MAX_BYTES
+            || drain_started_at.elapsed() >= READ_EVENT_DRAIN_BUDGET
+        {
+            return Ok(());
+        }
+
         let available = reader.bytes_to_read()? as usize;
         if available == 0 {
             return Ok(());
         }
 
-        let chunk_len = available.min(buffer.len());
+        let remaining_event_capacity = READ_EVENT_MAX_BYTES.saturating_sub(received.len());
+        let chunk_len = available.min(buffer.len()).min(remaining_event_capacity);
+        if chunk_len == 0 {
+            return Ok(());
+        }
+
         match reader.read(&mut buffer[..chunk_len]) {
             Ok(0) => return Ok(()),
             Ok(count) => received.extend_from_slice(&buffer[..count]),
@@ -446,7 +608,7 @@ fn take_complete_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SerialLineBuffer, auto_select_port};
+    use super::{SerialError, SerialLineBuffer, auto_select_port, resolve_port_from_ports};
     use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
 
     #[test]
@@ -514,6 +676,42 @@ mod tests {
         ];
 
         assert_eq!(auto_select_port(&ports).unwrap(), "/dev/ttyUSB0");
+    }
+
+    #[test]
+    fn resolve_port_from_ports_accepts_acs_ports_index() {
+        let ports = vec![
+            port("/dev/ttyUSB0", usb_port_type("USB Serial 0")),
+            port("/dev/ttyUSB1", usb_port_type("USB Serial 1")),
+        ];
+
+        assert_eq!(
+            resolve_port_from_ports(Some("1"), &ports).unwrap(),
+            "/dev/ttyUSB1"
+        );
+    }
+
+    #[test]
+    fn resolve_port_from_ports_prefers_exact_name_before_index_lookup() {
+        let ports = vec![
+            port("1", SerialPortType::Unknown),
+            port("/dev/ttyUSB1", usb_port_type("USB Serial 1")),
+        ];
+
+        assert_eq!(resolve_port_from_ports(Some("1"), &ports).unwrap(), "1");
+    }
+
+    #[test]
+    fn resolve_port_from_ports_reports_out_of_range_index() {
+        let ports = vec![port("/dev/ttyUSB0", usb_port_type("USB Serial 0"))];
+
+        match resolve_port_from_ports(Some("2"), &ports).unwrap_err() {
+            SerialError::PortIndexOutOfRange { index, count } => {
+                assert_eq!(index, 2);
+                assert_eq!(count, 1);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     fn port(port_name: &str, port_type: SerialPortType) -> SerialPortInfo {

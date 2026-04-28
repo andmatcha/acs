@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 const HISTORY_LIMIT: usize = 10;
 const RATE_WINDOW: Duration = Duration::from_secs(1);
+const DEFAULT_STREAM_WIDTH: usize = 120;
 const RESET: &str = "\x1b[0m";
 const REVERSE: &str = "\x1b[7m";
 const FG_CYAN: &str = "\x1b[36m";
@@ -46,6 +47,7 @@ struct Section {
 
 struct Entry {
     timestamp: String,
+    bytes: Vec<u8>,
     hex: String,
     ascii: String,
     utf8: String,
@@ -223,6 +225,17 @@ impl TextDashboard {
         );
     }
 
+    pub fn add_input_stream_wrapped(
+        &mut self,
+        port: &str,
+        bytes: &[u8],
+        display_mode: Option<PortDisplayMode>,
+    ) {
+        let terminal_width = terminal_width().or(Some(DEFAULT_STREAM_WIDTH));
+        self.section_mut(SectionKind::Input, port)
+            .push_stream_wrapped(bytes, display_mode, terminal_width);
+    }
+
     pub fn render(&mut self, status: Option<&str>) -> io::Result<()> {
         let mut lines = Vec::new();
         let now = Instant::now();
@@ -271,31 +284,7 @@ impl TextDashboard {
                         continue;
                     }
 
-                    let mut line = String::new();
-                    line.push_str(&entry.timestamp);
-                    line.push_str(" | ");
-                    match display_mode {
-                        PortDisplayMode::Hex => {
-                            line.push_str(&entry.hex);
-                        }
-                        PortDisplayMode::Ascii => {
-                            line.push_str(&paint_text(&entry.ascii, FG_CYAN));
-                        }
-                        PortDisplayMode::Utf8 => {
-                            line.push_str(&paint_text(&entry.utf8, FG_GREEN));
-                        }
-                        PortDisplayMode::HexAscii => {
-                            line.push_str(&entry.hex);
-                            line.push_str(" | ");
-                            line.push_str(&paint_text(&entry.ascii, FG_CYAN));
-                        }
-                        PortDisplayMode::HexUtf8 => {
-                            line.push_str(&entry.hex);
-                            line.push_str(" | ");
-                            line.push_str(&paint_text(&entry.utf8, FG_GREEN));
-                        }
-                    }
-                    lines.push(line);
+                    lines.push(format_entry_line(entry, display_mode));
                 }
             }
 
@@ -304,6 +293,13 @@ impl TextDashboard {
 
         if self.interactive_mode {
             lines.push(format!("> {}", self.input_buffer));
+        }
+
+        if terminal_width.is_some() {
+            lines = lines
+                .iter()
+                .map(|line| fit_line_to_terminal_width(line, terminal_width))
+                .collect();
         }
 
         let frame = format_screen_delta(&lines, &self.previous_lines);
@@ -501,6 +497,61 @@ fn disable_terminal_input_echo(termios: &mut libc::termios) {
     termios.c_cc[libc::VTIME] = 0;
 }
 
+impl Entry {
+    fn new(
+        bytes: &[u8],
+        display_mode_override: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) -> Self {
+        let mut entry = Self {
+            timestamp: now_display_timestamp(),
+            bytes: bytes.to_vec(),
+            hex: String::new(),
+            ascii: String::new(),
+            utf8: String::new(),
+            display_mode_override,
+            preserve_line_breaks,
+        };
+        entry.refresh_text();
+        entry
+    }
+
+    fn can_append_stream_byte(
+        &self,
+        byte: u8,
+        display_mode: PortDisplayMode,
+        display_mode_override: Option<PortDisplayMode>,
+        terminal_width: Option<usize>,
+    ) -> bool {
+        if self.preserve_line_breaks || self.display_mode_override != display_mode_override {
+            return false;
+        }
+
+        let Some(width) = terminal_width else {
+            return true;
+        };
+        if width == 0 {
+            return false;
+        }
+
+        let mut candidate = self.bytes.clone();
+        candidate.push(byte);
+        let line = format_entry_line_for_bytes(&self.timestamp, &candidate, display_mode);
+        visible_width(&line) <= width
+    }
+
+    fn append_byte(&mut self, byte: u8) {
+        self.bytes.push(byte);
+        self.refresh_text();
+    }
+
+    fn refresh_text(&mut self) {
+        self.hex = format_bytes_hex(&self.bytes);
+        self.ascii = format_bytes_ascii(&self.bytes);
+        self.utf8 = format_bytes_utf8(&self.bytes);
+    }
+}
+
 impl Section {
     fn push_entry(
         &mut self,
@@ -509,15 +560,38 @@ impl Section {
         preserve_line_breaks: bool,
     ) {
         // 新しいデータを先頭へ積み、各ポート直近 10 件だけを残す。
-        self.entries.push_front(Entry {
-            timestamp: now_display_timestamp(),
-            hex: format_bytes_hex(bytes),
-            ascii: format_bytes_ascii(bytes),
-            utf8: format_bytes_utf8(bytes),
+        self.entries.push_front(Entry::new(
+            bytes,
             display_mode_override,
             preserve_line_breaks,
-        });
+        ));
         self.entries.truncate(HISTORY_LIMIT);
+    }
+
+    fn push_stream_wrapped(
+        &mut self,
+        bytes: &[u8],
+        display_mode_override: Option<PortDisplayMode>,
+        terminal_width: Option<usize>,
+    ) {
+        for byte in bytes {
+            let display_mode = display_mode_override.unwrap_or(self.display_mode);
+            if let Some(entry) = self.entries.front_mut()
+                && entry.can_append_stream_byte(
+                    *byte,
+                    display_mode,
+                    display_mode_override,
+                    terminal_width,
+                )
+            {
+                entry.append_byte(*byte);
+                continue;
+            }
+
+            self.entries
+                .push_front(Entry::new(&[*byte], display_mode_override, false));
+            self.entries.truncate(HISTORY_LIMIT);
+        }
     }
 
     fn record_rate_sample(&mut self, byte_len: usize, packet_count: usize) {
@@ -707,6 +781,50 @@ fn paint_text(text: &str, color: &str) -> String {
     format!("{color}{text}{RESET}")
 }
 
+fn format_entry_line(entry: &Entry, display_mode: PortDisplayMode) -> String {
+    let mut line = String::new();
+    line.push_str(&entry.timestamp);
+    line.push_str(" | ");
+    line.push_str(&format_entry_body(
+        &entry.hex,
+        &entry.ascii,
+        &entry.utf8,
+        display_mode,
+    ));
+    line
+}
+
+fn format_entry_line_for_bytes(
+    timestamp: &str,
+    bytes: &[u8],
+    display_mode: PortDisplayMode,
+) -> String {
+    let mut line = String::new();
+    line.push_str(timestamp);
+    line.push_str(" | ");
+    line.push_str(&format_entry_body(
+        &format_bytes_hex(bytes),
+        &format_bytes_ascii(bytes),
+        &format_bytes_utf8(bytes),
+        display_mode,
+    ));
+    line
+}
+
+fn format_entry_body(hex: &str, ascii: &str, utf8: &str, display_mode: PortDisplayMode) -> String {
+    match display_mode {
+        PortDisplayMode::Hex => hex.to_owned(),
+        PortDisplayMode::Ascii => paint_text(ascii, FG_CYAN),
+        PortDisplayMode::Utf8 => paint_text(utf8, FG_GREEN),
+        PortDisplayMode::HexAscii => {
+            format!("{hex} | {}", paint_text(ascii, FG_CYAN))
+        }
+        PortDisplayMode::HexUtf8 => {
+            format!("{hex} | {}", paint_text(utf8, FG_GREEN))
+        }
+    }
+}
+
 fn append_multiline_entry(
     lines: &mut Vec<String>,
     timestamp: &str,
@@ -756,6 +874,77 @@ fn bytes_text_lines(text: &str, ascii_wrapped: bool) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(|line| line.to_owned())
         .collect()
+}
+
+fn visible_width(line: &str) -> usize {
+    let mut width = 0usize;
+    let mut chars = line.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if let Some(next) = chars.next()
+                && next == '['
+            {
+                for csi_ch in chars.by_ref() {
+                    if ('@'..='~').contains(&csi_ch) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        width += 1;
+    }
+
+    width
+}
+
+fn fit_line_to_terminal_width(line: &str, terminal_width: Option<usize>) -> String {
+    let Some(max_width) = terminal_width else {
+        return line.to_owned();
+    };
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    let mut visible_width = 0usize;
+    let mut chars = line.chars();
+    let mut saw_escape = false;
+    let mut truncated = false;
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            saw_escape = true;
+            output.push(ch);
+            if let Some(next) = chars.next() {
+                output.push(next);
+                if next == '[' {
+                    for csi_ch in chars.by_ref() {
+                        output.push(csi_ch);
+                        if ('@'..='~').contains(&csi_ch) {
+                            break;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if visible_width >= max_width {
+            truncated = true;
+            break;
+        }
+
+        output.push(ch);
+        visible_width += 1;
+    }
+
+    if truncated && saw_escape {
+        output.push_str(RESET);
+    }
+    output
 }
 
 fn format_screen_delta(lines: &[String], previous_lines: &[String]) -> String {
@@ -848,7 +1037,8 @@ mod tests {
     use super::{
         CLEAR_LINE_END, CLEAR_TO_SCREEN_END, Entry, FG_CYAN, FG_GREEN, HOME_CURSOR, RESET, REVERSE,
         RateSample, Section, SectionKind, append_multiline_entry, bytes_text_lines,
-        format_heading_line, format_screen_delta, format_status_line, paint_text,
+        fit_line_to_terminal_width, format_heading_line, format_screen_delta, format_status_line,
+        paint_text,
     };
     use crate::port_display::PortDisplayMode;
     use std::collections::{BTreeMap, VecDeque};
@@ -950,6 +1140,43 @@ mod tests {
     }
 
     #[test]
+    fn fit_line_to_terminal_width_truncates_plain_lines() {
+        assert_eq!(fit_line_to_terminal_width("0123456789", Some(4)), "0123");
+    }
+
+    #[test]
+    fn fit_line_to_terminal_width_preserves_ansi_reset() {
+        let line = format!("{FG_CYAN}0123456789{RESET}");
+
+        assert_eq!(
+            fit_line_to_terminal_width(&line, Some(4)),
+            format!("{FG_CYAN}0123{RESET}")
+        );
+    }
+
+    #[test]
+    fn stream_wrapped_input_fills_until_terminal_width() {
+        let mut section = Section {
+            kind: SectionKind::Input,
+            port: String::from("tty"),
+            status: String::new(),
+            baud_rate: Some(115_200),
+            display_mode: PortDisplayMode::Hex,
+            packet_rate_enabled: false,
+            known_formats: Vec::new(),
+            entries: VecDeque::new(),
+            rate_samples: VecDeque::new(),
+            format_rate_samples: BTreeMap::new(),
+        };
+
+        section.push_stream_wrapped(&[1, 2, 3, 4, 5], Some(PortDisplayMode::Hex), Some(30));
+
+        assert_eq!(section.entries.len(), 2);
+        assert_eq!(section.entries[0].bytes, vec![4, 5]);
+        assert_eq!(section.entries[1].bytes, vec![1, 2, 3]);
+    }
+
+    #[test]
     fn format_rate_label_lists_known_formats() {
         let mut format_samples = BTreeMap::new();
         format_samples.insert(
@@ -995,6 +1222,7 @@ mod tests {
 
         let entry = Entry {
             timestamp: String::from("2026-04-21 12:34:56"),
+            bytes: Vec::new(),
             hex: String::new(),
             ascii: String::from("\"0x300,000\\r\\n0x310,180\\r\\n\""),
             utf8: String::new(),

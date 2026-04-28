@@ -11,6 +11,9 @@ pub(crate) use crc::crc16_ccitt_false;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OutputFormat {
     PacketAcV6,
+    PacketMv1,
+    PacketIv1,
+    PacketBv1,
     PacketJfV1,
     RoverUpGeneral,
     RoverDownGeneral,
@@ -31,6 +34,27 @@ const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[
         packet_len: packetacv6::packet_len(),
         create_driver: Some(packetacv6::create_driver),
         create_dummy_generator: packetacv6::create_dummy_generator,
+    },
+    OutputFormatDefinition {
+        format: OutputFormat::PacketMv1,
+        names: &["packetmv1"],
+        packet_len: packetacv6::packet_mv1_len(),
+        create_driver: Some(packetacv6::create_packet_mv1_driver),
+        create_dummy_generator: packetacv6::create_packet_mv1_dummy_generator,
+    },
+    OutputFormatDefinition {
+        format: OutputFormat::PacketIv1,
+        names: &["packetiv1"],
+        packet_len: packetacv6::packet_iv1_len(),
+        create_driver: None,
+        create_dummy_generator: packetacv6::create_packet_iv1_dummy_generator,
+    },
+    OutputFormatDefinition {
+        format: OutputFormat::PacketBv1,
+        names: &["packetbv1"],
+        packet_len: packetacv6::packet_bv1_len(),
+        create_driver: None,
+        create_dummy_generator: packetacv6::create_packet_bv1_dummy_generator,
     },
     OutputFormatDefinition {
         format: OutputFormat::PacketJfV1,
@@ -76,6 +100,9 @@ impl OutputFormat {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::PacketAcV6 => "PacketACv6",
+            Self::PacketMv1 => "PacketMv1",
+            Self::PacketIv1 => "PacketIv1",
+            Self::PacketBv1 => "PacketBv1",
             Self::PacketJfV1 => "PacketJFv1",
             Self::RoverUpGeneral => "RoverUpGeneral",
             Self::RoverDownGeneral => "RoverDownGeneral",
@@ -109,7 +136,11 @@ impl OutputFormat {
 
     pub fn default_display_mode(self) -> PortDisplayMode {
         match self {
-            Self::PacketAcV6 | Self::PacketJfV1 => PortDisplayMode::Hex,
+            Self::PacketAcV6
+            | Self::PacketMv1
+            | Self::PacketIv1
+            | Self::PacketBv1
+            | Self::PacketJfV1 => PortDisplayMode::Hex,
             Self::RoverUpGeneral | Self::RoverDownGeneral => PortDisplayMode::Ascii,
         }
     }
@@ -132,7 +163,7 @@ fn find_definition(format: OutputFormat) -> &'static OutputFormatDefinition {
 
 #[cfg(test)]
 mod tests {
-    use super::OutputFormat;
+    use super::{OutputFormat, crc16_ccitt_false};
 
     #[test]
     fn parse_rejects_arm9() {
@@ -165,6 +196,104 @@ mod tests {
         assert_eq!(payload.len(), 39);
         assert_eq!(&payload[..2], b"AC");
         assert_ne!(payload, next_payload);
+    }
+
+    #[test]
+    fn parse_supports_reduced_ac_packets() {
+        assert_eq!(
+            OutputFormat::parse("PacketMv1").expect("should parse"),
+            OutputFormat::PacketMv1
+        );
+        assert_eq!(
+            OutputFormat::parse("packetiv1").expect("should parse"),
+            OutputFormat::PacketIv1
+        );
+        assert_eq!(
+            OutputFormat::parse("PacketBv1").expect("should parse"),
+            OutputFormat::PacketBv1
+        );
+    }
+
+    #[test]
+    fn reduced_ac_dummy_payloads_have_documented_headers_and_lengths() {
+        let mut m_generator = OutputFormat::PacketMv1
+            .create_dummy_generator()
+            .expect("should create generator");
+        let mut i_generator = OutputFormat::PacketIv1
+            .create_dummy_generator()
+            .expect("should create generator");
+        let mut b_generator = OutputFormat::PacketBv1
+            .create_dummy_generator()
+            .expect("should create generator");
+
+        let m_payload = m_generator.next_payload().expect("should encode");
+        let i_payload = i_generator.next_payload().expect("should encode");
+        let b_payload = b_generator.next_payload().expect("should encode");
+        let next_m_payload = m_generator.next_payload().expect("should encode");
+
+        assert_eq!(m_payload.len(), 19);
+        assert_eq!(i_payload.len(), 19);
+        assert_eq!(b_payload.len(), 15);
+        assert_eq!(m_payload[0], b'M');
+        assert_eq!(i_payload[0], b'I');
+        assert_eq!(b_payload[0], b'B');
+        assert_eq!(m_payload[1], 0x01);
+        assert_eq!(next_m_payload[1], 0x02);
+        assert_ne!(m_payload, next_m_payload);
+    }
+
+    #[test]
+    fn packetmv1_compact_driver_reduces_packetacv6_output() {
+        let mut driver = OutputFormat::PacketMv1
+            .create_driver()
+            .expect("PacketMv1 should create a compact encoding driver");
+
+        let first = driver
+            .encode(&[0, 1 << 3, 0, 128, 0, 128, 0, 255])
+            .expect("should encode");
+        let second = driver
+            .encode(&[1 << 0, 0, 0, 128, 0, 128, 0, 0])
+            .expect("should encode");
+
+        assert_eq!(first.len(), OutputFormat::PacketMv1.packet_len());
+        assert_eq!(first[0], b'M');
+        assert_eq!(first[1], 0x01);
+        assert_eq!(u16::from_le_bytes([first[2], first[3]]), 155);
+        assert_eq!(first[16], 0);
+        assert_eq!(
+            u16::from_le_bytes([first[17], first[18]]),
+            crc16_ccitt_false(&first[..17])
+        );
+
+        assert_eq!(second[0], b'M');
+        assert_eq!(second[1], 0x02);
+        assert_eq!(second[16], 1 << 3);
+        assert_eq!(
+            u16::from_le_bytes([second[17], second[18]]),
+            crc16_ccitt_false(&second[..17])
+        );
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn non_manual_reduced_ac_packets_reject_compact_encoding_driver() {
+        for format in [OutputFormat::PacketIv1, OutputFormat::PacketBv1] {
+            match format.create_driver() {
+                Ok(_) => panic!(
+                    "{} should not create a compact encoding driver",
+                    format.as_str()
+                ),
+                Err(error) => {
+                    assert_eq!(
+                        error,
+                        format!(
+                            "output format `{}` does not support compact encoding",
+                            format.as_str()
+                        )
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -284,17 +413,20 @@ mod tests {
         let first = generator.next_payload().expect("should encode");
         let second = generator.next_payload().expect("should encode");
 
-        assert_eq!(first.len(), 11);
-        assert_eq!(String::from_utf8_lossy(&first), "400,21.10\r\n");
+        assert_eq!(first.len(), 13);
+        assert_eq!(String::from_utf8_lossy(&first), "0x300,10.10\r\n");
         assert_ne!(first, second);
     }
 
     #[test]
     fn packet_lengths_match_documented_formats() {
         assert_eq!(OutputFormat::PacketAcV6.packet_len(), 39);
+        assert_eq!(OutputFormat::PacketMv1.packet_len(), 19);
+        assert_eq!(OutputFormat::PacketIv1.packet_len(), 19);
+        assert_eq!(OutputFormat::PacketBv1.packet_len(), 15);
         assert_eq!(OutputFormat::PacketJfV1.packet_len(), 16);
         assert_eq!(OutputFormat::RoverUpGeneral.packet_len(), 12);
-        assert_eq!(OutputFormat::RoverDownGeneral.packet_len(), 11);
+        assert_eq!(OutputFormat::RoverDownGeneral.packet_len(), 13);
     }
 
     #[test]
@@ -305,6 +437,18 @@ mod tests {
         );
         assert_eq!(
             OutputFormat::PacketJfV1.default_display_mode(),
+            crate::port_display::PortDisplayMode::Hex
+        );
+        assert_eq!(
+            OutputFormat::PacketMv1.default_display_mode(),
+            crate::port_display::PortDisplayMode::Hex
+        );
+        assert_eq!(
+            OutputFormat::PacketIv1.default_display_mode(),
+            crate::port_display::PortDisplayMode::Hex
+        );
+        assert_eq!(
+            OutputFormat::PacketBv1.default_display_mode(),
             crate::port_display::PortDisplayMode::Hex
         );
         assert_eq!(

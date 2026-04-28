@@ -1,25 +1,23 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/sh
 
-.PHONY: help init build build-release release fmt test install install-global update sync-code uninstall purge sync-config unsync-config paths
+.PHONY: help init build build-release release fmt test install install-global update sync-code uninstall purge paths
 
 help:
 	@printf '%s\n' \
-		'make init            Install Rust if needed and build a local release binary' \
-		'make build           Build the project in debug mode' \
-		'make build-release   Build the project in release mode' \
-		'make release         Bump version, test, build, commit, and tag a release' \
-		'make fmt             Format the Rust code' \
-		'make test            Run the Rust test suite' \
-		'make install         Install acs globally from committed local HEAD or a specified ref' \
-		'make update          Update the global acs binary from latest tag or a specified ref' \
-		'make sync-code       Reinstall the global acs binary from the current checkout' \
-		'make sync-config     Sync local config/ or acs.config.json into the global config overlay' \
-		'make unsync-config   Remove the synced local config overlay from the global config dir' \
-		'make uninstall       Uninstall the global acs binary and keep user config/logs' \
-		'make purge           Uninstall the binary and remove standard config/logs' \
-		'make paths           Print the standard config/log/bin directories' \
-		'ref vars             Use TAG=..., BRANCH=..., or COMMIT=... with make install/update'
+		'make init            必要なら Rust を導入し、ローカルの release バイナリをビルド' \
+		'make build           デバッグモードでプロジェクトをビルド' \
+		'make build-release   release モードでプロジェクトをビルド' \
+		'make release         バージョン更新、テスト、ビルド、コミット、タグ付けを実行' \
+		'make fmt             Rust コードを整形' \
+		'make test            Rust のテスト一式を実行' \
+		'make install         コミット済みのローカル HEAD または指定 ref から acs をグローバル導入' \
+		'make update          最新タグまたは指定 ref からグローバル acs を更新' \
+		'make sync-code       現在のチェックアウトからグローバル acs を再インストール' \
+		'make uninstall       グローバル acs をアンインストールし、ユーザーログは残す' \
+		'make purge           バイナリを削除し、標準ログも削除' \
+		'make paths           標準のログ/バイナリ配置先を表示' \
+		'ref vars             make install/update では TAG=..., BRANCH=..., COMMIT=... を使用可能'
 
 init:
 	@./scripts/init.sh
@@ -49,12 +47,6 @@ update:
 
 sync-code:
 	@./scripts/sync-code.sh
-
-sync-config:
-	@./scripts/sync-config.sh
-
-unsync-config:
-	@./scripts/unsync-config.sh
 
 uninstall:
 	@./scripts/uninstall.sh

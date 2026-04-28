@@ -1,7 +1,7 @@
 use super::common::{
-    default_baud_rate, default_log_dir, next_value, parse_port_spec, parse_u32_arg,
+    default_baud_rate, default_log_dir, next_value, parse_key_value_args, parse_port_spec,
+    parse_u32_arg,
 };
-use super::config;
 use super::help::{is_help_flag, print_route_help};
 use super::signal;
 use crate::common::extend_unique_strings;
@@ -27,8 +27,9 @@ struct RouteCliOptions {
     list_templates: bool,
     baud: Option<u32>,
     display: PortDisplayConfig,
-    config_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
+    no_log: bool,
+    s3b: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -46,11 +47,16 @@ struct RouteSettings {
     template_name: Option<String>,
 }
 
+struct RouteRunResult {
+    logging_enabled: bool,
+    log_path: PathBuf,
+}
+
 #[derive(Debug, Clone)]
-struct AvailableRouteTemplate {
+struct RouteTemplateConfig {
     id: String,
-    description: String,
-    source: &'static str,
+    description: Option<String>,
+    pipelines: PipelineSpec,
 }
 
 pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
@@ -69,18 +75,15 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     };
 
     if cli_options.list_templates {
-        return match print_available_templates(cli_options.config_path.as_deref(), bin_name) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("{error}");
-                ExitCode::from(1)
-            }
-        };
+        print_available_templates(bin_name);
+        return ExitCode::SUCCESS;
     }
 
     match run_with_options(cli_options) {
-        Ok(log_path) => {
-            println!("log saved to {}", log_path.display());
+        Ok(result) => {
+            if result.logging_enabled {
+                println!("log saved to {}", result.log_path.display());
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -90,10 +93,10 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
     }
 }
 
-fn run_with_options(cli_options: RouteCliOptions) -> Result<PathBuf, String> {
-    let loaded_config = config::load_config_or_default(cli_options.config_path.as_deref())?;
-    let settings = build_settings(cli_options, loaded_config.config, &loaded_config.lookup)?;
+fn run_with_options(cli_options: RouteCliOptions) -> Result<RouteRunResult, String> {
+    let settings = build_settings(cli_options)?;
     let mut engine = PipelineEngine::new(&settings.pipeline)?;
+    let logging_enabled = settings.session.logging_enabled;
     let mut session = SessionRuntime::new(settings.session)?;
 
     let log_path = session.log_path().to_path_buf();
@@ -112,20 +115,22 @@ fn run_with_options(cli_options: RouteCliOptions) -> Result<PathBuf, String> {
     if let Some(template_name) = &settings.template_name {
         header_lines.push(format!("template: {template_name}"));
     }
-    header_lines.extend([
-        format!(
-            "pipelines: {}",
-            settings
-                .pipeline
-                .pipelines
-                .iter()
-                .map(|pipeline| pipeline.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        format!("log: {log_path_display}"),
-        String::from("Space で表示を一時停止/再開  Ctrl-C で終了"),
-    ]);
+    header_lines.push(format!(
+        "pipelines: {}",
+        settings
+            .pipeline
+            .pipelines
+            .iter()
+            .map(|pipeline| pipeline.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    if logging_enabled {
+        header_lines.push(format!("log: {log_path_display}"));
+    } else {
+        header_lines.push(String::from("log: disabled (--no-log)"));
+    }
+    header_lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
     session.set_header_lines(header_lines);
 
     signal::install_handler();
@@ -138,54 +143,34 @@ fn run_with_options(cli_options: RouteCliOptions) -> Result<PathBuf, String> {
             }
             Ok(())
         },
-    )
+    )?;
+    Ok(RouteRunResult {
+        logging_enabled,
+        log_path,
+    })
 }
 
-fn build_settings(
-    cli_options: RouteCliOptions,
-    file_config: config::AppConfig,
-    config_lookup: &super::paths::ConfigLookup,
-) -> Result<RouteSettings, String> {
-    let route_config = file_config.route;
-    let template_name = cli_options
-        .template
-        .or_else(|| route_config.template.clone());
-    let default_baud = cli_options
-        .baud
-        .or(route_config.baud)
-        .unwrap_or_else(default_baud_rate);
-    let mut display = route_config.display.clone();
-    display.merge_from(cli_options.display);
-
-    let inputs = normalize_inputs(
-        &route_config.inputs,
-        &cli_options.inputs,
-        default_baud,
-        &display,
-    )?;
-    let outputs = normalize_outputs(
-        &route_config.outputs,
-        &cli_options.outputs,
-        default_baud,
-        &display,
-    )?;
+fn build_settings(cli_options: RouteCliOptions) -> Result<RouteSettings, String> {
+    let template_name = cli_options.template;
+    let default_baud = cli_options.baud.unwrap_or_else(default_baud_rate);
+    let display = cli_options.display;
+    let inputs = normalize_inputs(&cli_options.inputs, default_baud, &display)?;
+    let outputs = normalize_outputs(&cli_options.outputs, default_baud, &display)?;
     let pipeline = normalize_pipeline_spec(
-        resolve_pipeline_spec(&route_config, template_name.as_deref(), &inputs, &outputs)?,
+        resolve_pipeline_spec(template_name.as_deref(), &inputs, &outputs)?,
         &inputs,
         &outputs,
     )?;
-    let log_dir = cli_options
-        .log_dir
-        .or(route_config.log_dir)
-        .or(file_config.log_dir)
-        .unwrap_or_else(|| default_log_dir(config_lookup));
+    let log_dir = cli_options.log_dir.unwrap_or_else(default_log_dir);
+    let s3b = cli_options.s3b;
 
     Ok(RouteSettings {
         session: SessionSpec {
             title: String::from("acs route"),
             command_name: String::from("route"),
             log_dir,
-            logging_enabled: true,
+            logging_enabled: !cli_options.no_log,
+            xbee_s3b_recovery: s3b,
             inputs,
             outputs,
         },
@@ -195,60 +180,31 @@ fn build_settings(
 }
 
 fn normalize_inputs(
-    config_inputs: &[config::RouteInputConfig],
-    cli_inputs: &[RoutePortBinding],
+    bindings: &[RoutePortBinding],
     default_baud: u32,
     display: &PortDisplayConfig,
 ) -> Result<Vec<SessionInputSpec>, String> {
-    let mut merged = config_inputs
-        .iter()
-        .map(|input| {
-            (
-                input.id.clone(),
-                input.port.clone(),
-                input.baud.unwrap_or(default_baud),
-                input.display_mode,
-                input.line_break_mode,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    for binding in cli_inputs {
-        if let Some(existing) = merged.iter_mut().find(|(id, _, _, _, _)| id == &binding.id) {
-            existing.1 = binding.port.clone();
-            existing.2 = binding.baud.unwrap_or(default_baud);
-            existing.3 = binding.display_mode;
-            existing.4 = binding.line_break_mode;
-        } else {
-            merged.push((
-                binding.id.clone(),
-                binding.port.clone(),
-                binding.baud.unwrap_or(default_baud),
-                binding.display_mode,
-                binding.line_break_mode,
-            ));
-        }
-    }
-
-    if merged.is_empty() {
+    if bindings.is_empty() {
         return Err(String::from("route requires at least one input port"));
     }
 
     let mut resolved = Vec::new();
-    for (id, port, baud_rate, display_mode, line_break_mode) in merged {
+    for binding in bindings {
         if resolved
             .iter()
-            .any(|input: &SessionInputSpec| input.id == id)
+            .any(|input: &SessionInputSpec| input.id == binding.id)
         {
-            return Err(format!("duplicate route input id: {id}"));
+            return Err(format!("duplicate route input id: {}", binding.id));
         }
-        let port = serial::resolve_port(Some(&port)).map_err(|error| error.to_string())?;
+        let port = serial::resolve_port(Some(&binding.port)).map_err(|error| error.to_string())?;
         resolved.push(SessionInputSpec {
-            id,
-            display_mode: display_mode.unwrap_or(display.resolve_input(&port)),
-            line_break_mode: line_break_mode.unwrap_or(display.resolve_line_break_input(&port)),
+            id: binding.id.clone(),
+            display_mode: binding.display_mode.unwrap_or(display.resolve_input(&port)),
+            line_break_mode: binding
+                .line_break_mode
+                .unwrap_or(display.resolve_line_break_input(&port)),
             port,
-            baud_rate,
+            baud_rate: binding.baud.unwrap_or(default_baud),
         });
     }
 
@@ -256,57 +212,31 @@ fn normalize_inputs(
 }
 
 fn normalize_outputs(
-    config_outputs: &[config::RouteOutputConfig],
-    cli_outputs: &[RoutePortBinding],
+    bindings: &[RoutePortBinding],
     default_baud: u32,
     display: &PortDisplayConfig,
 ) -> Result<Vec<SessionOutputSpec>, String> {
-    let mut merged = config_outputs
-        .iter()
-        .map(|output| {
-            (
-                output.id.clone(),
-                output.port.clone(),
-                output.baud.unwrap_or(default_baud),
-                output.display_mode,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    for binding in cli_outputs {
-        if let Some(existing) = merged.iter_mut().find(|(id, _, _, _)| id == &binding.id) {
-            existing.1 = binding.port.clone();
-            existing.2 = binding.baud.unwrap_or(default_baud);
-            existing.3 = binding.display_mode;
-        } else {
-            merged.push((
-                binding.id.clone(),
-                binding.port.clone(),
-                binding.baud.unwrap_or(default_baud),
-                binding.display_mode,
-            ));
-        }
-    }
-
-    if merged.is_empty() {
+    if bindings.is_empty() {
         return Err(String::from("route requires at least one output port"));
     }
 
     let mut resolved = Vec::new();
-    for (id, port, baud_rate, display_mode) in merged {
+    for binding in bindings {
         if resolved
             .iter()
-            .any(|output: &SessionOutputSpec| output.id == id)
+            .any(|output: &SessionOutputSpec| output.id == binding.id)
         {
-            return Err(format!("duplicate route output id: {id}"));
+            return Err(format!("duplicate route output id: {}", binding.id));
         }
-        let port = serial::resolve_port(Some(&port)).map_err(|error| error.to_string())?;
+        let port = serial::resolve_port(Some(&binding.port)).map_err(|error| error.to_string())?;
         resolved.push(SessionOutputSpec {
-            id,
-            display_mode: display_mode.unwrap_or(display.resolve_output(&port)),
+            id: binding.id.clone(),
+            display_mode: binding
+                .display_mode
+                .unwrap_or(display.resolve_output(&port)),
             format_name: String::from("bytes"),
             port,
-            baud_rate,
+            baud_rate: binding.baud.unwrap_or(default_baud),
         });
     }
 
@@ -373,18 +303,13 @@ fn normalize_pipeline_spec(
 }
 
 fn resolve_pipeline_spec(
-    route_config: &config::RouteConfig,
     template_name: Option<&str>,
     inputs: &[SessionInputSpec],
     outputs: &[SessionOutputSpec],
 ) -> Result<PipelineSpec, String> {
     let Some(template_name) = template_name else {
-        return Ok(route_config.pipelines.clone());
+        return Ok(PipelineSpec::default());
     };
-
-    if let Some(template) = route_config.templates.get(template_name) {
-        return Ok(template.pipelines.clone());
-    }
 
     match template_name {
         "merge" => Ok(builtin_route_template(
@@ -398,75 +323,33 @@ fn resolve_pipeline_spec(
         .pipelines),
         "one-to-one" => Ok(builtin_one_to_one_template(inputs, outputs).pipelines),
         _ => Err(format!(
-            "unknown route template `{template_name}`; use `acs route --list-templates` to inspect available templates"
+            "不明なルートテンプレート `{template_name}` です。利用可能なテンプレートは `acs route --list-templates` で確認できます"
         )),
     }
 }
 
-fn print_available_templates(
-    config_path: Option<&std::path::Path>,
-    bin_name: &str,
-) -> Result<(), String> {
-    let loaded_config = config::load_config_or_default(config_path)?;
-    let templates = collect_available_templates(&loaded_config.config.route);
-
-    println!("Available route templates:");
-    for template in templates.values() {
+fn print_available_templates(bin_name: &str) {
+    println!("利用可能なルートテンプレート:");
+    for template in builtin_route_templates() {
         println!(
-            "  {:<16} [{}] {}",
-            template.id, template.source, template.description
+            "  {:<16} {}",
+            template.id,
+            template
+                .description
+                .unwrap_or_else(|| String::from("組み込みテンプレート"))
         );
     }
     println!();
-    println!("Examples:");
+    println!("例:");
     println!(
         "  {bin_name} route merge -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2"
     );
     println!(
-        "  {bin_name} route one-to-one --config {}",
-        config::DEFAULT_CONFIG_DIR_NAME
+        "  {bin_name} route one-to-one -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_a=/dev/ttyUSB2 -o out_b=/dev/ttyUSB3"
     );
-
-    Ok(())
 }
 
-fn collect_available_templates(
-    route_config: &config::RouteConfig,
-) -> BTreeMap<String, AvailableRouteTemplate> {
-    let mut templates = builtin_route_templates()
-        .into_iter()
-        .map(|template| {
-            (
-                template.id.clone(),
-                AvailableRouteTemplate {
-                    id: template.id,
-                    description: template
-                        .description
-                        .unwrap_or_else(|| String::from("built-in template")),
-                    source: "built-in",
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    for template in route_config.templates.values() {
-        templates.insert(
-            template.id.clone(),
-            AvailableRouteTemplate {
-                id: template.id.clone(),
-                description: template
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| String::from("config-defined template")),
-                source: "config",
-            },
-        );
-    }
-
-    templates
-}
-
-fn builtin_route_templates() -> Vec<config::RouteTemplateConfig> {
+fn builtin_route_templates() -> Vec<RouteTemplateConfig> {
     vec![
         builtin_route_template(
             "merge",
@@ -476,7 +359,7 @@ fn builtin_route_templates() -> Vec<config::RouteTemplateConfig> {
                 outputs: Vec::new(),
             },
         ),
-        config::RouteTemplateConfig {
+        RouteTemplateConfig {
             id: String::from("one-to-one"),
             description: Some(String::from(
                 "入力配列順と出力配列順を1対1に対応させ、対応する相手へだけそのまま流します。",
@@ -491,8 +374,8 @@ fn builtin_route_template(
     description: &str,
     transform: TransformModuleConfig,
     router: RouterModuleConfig,
-) -> config::RouteTemplateConfig {
-    config::RouteTemplateConfig {
+) -> RouteTemplateConfig {
+    RouteTemplateConfig {
         id: id.to_owned(),
         description: Some(description.to_owned()),
         pipelines: PipelineSpec {
@@ -513,14 +396,14 @@ fn builtin_route_template(
 fn builtin_one_to_one_template(
     inputs: &[SessionInputSpec],
     outputs: &[SessionOutputSpec],
-) -> config::RouteTemplateConfig {
+) -> RouteTemplateConfig {
     let routes = inputs
         .iter()
         .zip(outputs.iter())
         .map(|(input, output)| (input.id.clone(), vec![output.id.clone()]))
         .collect::<BTreeMap<_, _>>();
 
-    config::RouteTemplateConfig {
+    RouteTemplateConfig {
         id: String::from("one-to-one"),
         description: Some(String::from(
             "入力配列順と出力配列順を1対1に対応させ、対応する相手へだけそのまま流します。",
@@ -545,9 +428,7 @@ fn builtin_one_to_one_template(
 
 fn apply_default_router_outputs(router: &mut RouterModuleConfig, output_ids: &[String]) {
     match router {
-        RouterModuleConfig::Broadcast { outputs } | RouterModuleConfig::RoundRobin { outputs }
-            if outputs.is_empty() =>
-        {
+        RouterModuleConfig::Broadcast { outputs } if outputs.is_empty() => {
             *outputs = output_ids.to_vec();
         }
         _ => {}
@@ -556,9 +437,7 @@ fn apply_default_router_outputs(router: &mut RouterModuleConfig, output_ids: &[S
 
 fn router_output_ids(router: &RouterModuleConfig) -> Vec<String> {
     match router {
-        RouterModuleConfig::Broadcast { outputs } | RouterModuleConfig::RoundRobin { outputs } => {
-            outputs.clone()
-        }
+        RouterModuleConfig::Broadcast { outputs } => outputs.clone(),
         RouterModuleConfig::SourceMap {
             routes,
             default_outputs,
@@ -566,16 +445,6 @@ fn router_output_ids(router: &RouterModuleConfig) -> Vec<String> {
             let mut outputs = default_outputs.clone();
             for route_outputs in routes.values() {
                 extend_unique_strings(&mut outputs, route_outputs);
-            }
-            outputs
-        }
-        RouterModuleConfig::TagBased {
-            routes,
-            default_outputs,
-        } => {
-            let mut outputs = default_outputs.clone();
-            for rule in routes {
-                extend_unique_strings(&mut outputs, &rule.outputs);
             }
             outputs
         }
@@ -596,6 +465,9 @@ fn parse_route_args(args: Vec<String>) -> Result<RouteCliOptions, String> {
 
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--config" => {
+                apply_route_config_args(&mut options, &next_value(&mut iter, "--config")?)?
+            }
             "--template" => options.template = Some(next_value(&mut iter, "--template")?),
             "--list-templates" => options.list_templates = true,
             "--input-port" | "-i" => options.inputs.push(parse_route_port_binding(&next_value(
@@ -615,12 +487,11 @@ fn parse_route_args(args: Vec<String>) -> Result<RouteCliOptions, String> {
                 let assignment = parse_display_assignment(&value)?;
                 assignment.apply_to(&mut options.display);
             }
-            "--config" => {
-                options.config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?))
-            }
             "--log-dir" => {
                 options.log_dir = Some(PathBuf::from(next_value(&mut iter, "--log-dir")?))
             }
+            "--no-log" => options.no_log = true,
+            "--s3b" => options.s3b = true,
             other if other.starts_with('-') => {
                 return Err(format!("unknown option for route: {other}"));
             }
@@ -634,6 +505,23 @@ fn parse_route_args(args: Vec<String>) -> Result<RouteCliOptions, String> {
     }
 
     Ok(options)
+}
+
+fn apply_route_config_args(options: &mut RouteCliOptions, value: &str) -> Result<(), String> {
+    for assignment in parse_key_value_args("--config", value)? {
+        let key = assignment.key.to_ascii_uppercase();
+        match key.as_str() {
+            "TEMPLATE" => options.template = Some(assignment.value),
+            "DISPLAY" => {
+                let display = parse_display_assignment(&assignment.value)?;
+                display.apply_to(&mut options.display);
+            }
+            "LOG_DIR" => options.log_dir = Some(PathBuf::from(assignment.value)),
+            other => return Err(format!("unknown route config key: {other}")),
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_route_port_binding(value: &str) -> Result<RoutePortBinding, String> {
@@ -669,14 +557,12 @@ fn parse_route_port_binding(value: &str) -> Result<RoutePortBinding, String> {
 #[cfg(test)]
 mod tests {
     use super::{normalize_pipeline_spec, parse_route_args, resolve_pipeline_spec};
-    use crate::app::cli::config::{RouteConfig, RouteTemplateConfig};
     use crate::pipeline::{
         ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineSpec,
         RouterModuleConfig, TransformChainConfig, TransformModuleConfig,
     };
     use crate::port_display::{LineBreakMode, PortDisplayMode};
     use crate::session::runtime::{SessionInputSpec, SessionOutputSpec};
-    use std::collections::BTreeMap;
 
     #[test]
     fn parse_route_args_accepts_positional_template() {
@@ -692,6 +578,31 @@ mod tests {
         assert_eq!(options.template.as_deref(), Some("merge"));
         assert_eq!(options.inputs.len(), 1);
         assert_eq!(options.outputs.len(), 1);
+    }
+
+    #[test]
+    fn parse_route_args_accepts_config_and_no_log() {
+        let options = parse_route_args(vec![
+            String::from("--config"),
+            String::from(
+                "TEMPLATE=one-to-one,DISPLAY=input:default=utf8+packet,LOG_DIR=tmp/route-logs",
+            ),
+            String::from("-i"),
+            String::from("in_a=/dev/ttyUSB0@921600"),
+            String::from("-o"),
+            String::from("out_a=/dev/ttyUSB1@115200"),
+            String::from("--no-log"),
+        ])
+        .unwrap();
+
+        assert_eq!(options.template.as_deref(), Some("one-to-one"));
+        assert_eq!(options.inputs.len(), 1);
+        assert_eq!(options.outputs.len(), 1);
+        assert_eq!(
+            options.log_dir,
+            Some(std::path::PathBuf::from("tmp/route-logs"))
+        );
+        assert!(options.no_log);
     }
 
     #[test]
@@ -749,44 +660,8 @@ mod tests {
     }
 
     #[test]
-    fn config_defined_template_overrides_builtin_template() {
-        let route_config = RouteConfig {
-            templates: BTreeMap::from([(
-                String::from("merge"),
-                RouteTemplateConfig {
-                    id: String::from("merge"),
-                    description: Some(String::from("custom merge")),
-                    pipelines: PipelineSpec {
-                        pipelines: vec![PipelineDefinition {
-                            id: String::from("custom_merge"),
-                            inputs: Vec::new(),
-                            filter: FilterModuleConfig::AllowAll,
-                            transform: TransformChainConfig {
-                                modules: vec![TransformModuleConfig::JoinLatest {
-                                    separator: vec![b','],
-                                    require_all: true,
-                                }],
-                            },
-                            classify: ClassifyModuleConfig::None,
-                            router: RouterModuleConfig::Broadcast {
-                                outputs: Vec::new(),
-                            },
-                        }],
-                    },
-                },
-            )]),
-            ..RouteConfig::default()
-        };
-
-        let resolved = resolve_pipeline_spec(&route_config, Some("merge"), &[], &[]).unwrap();
-
-        assert_eq!(resolved.pipelines[0].id, "custom_merge");
-    }
-
-    #[test]
     fn builtin_one_to_one_pairs_inputs_and_outputs_in_order() {
         let resolved = resolve_pipeline_spec(
-            &RouteConfig::default(),
             Some("one-to-one"),
             &[
                 SessionInputSpec {

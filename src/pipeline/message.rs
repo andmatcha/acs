@@ -1,10 +1,9 @@
-use crate::session::event::IngressFrame;
+use crate::ingress::IngressFrame;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RouteMessage {
     pub source_input_ids: Vec<String>,
     pub payload: Vec<u8>,
-    pub tags: Vec<String>,
 }
 
 impl RouteMessage {
@@ -12,7 +11,6 @@ impl RouteMessage {
         Self {
             source_input_ids: vec![frame.input_id.clone()],
             payload: frame.bytes.clone(),
-            tags: Vec::new(),
         }
     }
 }

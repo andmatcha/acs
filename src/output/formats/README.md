@@ -8,6 +8,8 @@
 ## 主な処理
 
 - `packetacv6` で compact report を 39 バイトの `PacketACv6` パケットへ変換します。
+- `packetmv1` で compact report から生成した `PacketACv6` を XBee 送信用の `PacketMv1` へ削減します。
+- `packetiv1` / `packetbv1` で XBee 送信用に削減した `PacketACv6` 系ダミーフレームを生成します。
 - `packetjfv1` で `PacketJFv1` のダミーフレームを生成します。
 - `crc.rs` で CRC16-CCITT-FALSE を計算します。
 

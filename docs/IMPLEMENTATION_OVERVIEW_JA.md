@@ -2,9 +2,9 @@
 
 ## 概要
 
-`acs` は ARES Project 向けのコマンド群をまとめた Rust 製 CLI です。現在の主なコマンドは `control`、`monitor`、`route`、`send` で、DS4 入力の取得、シリアル監視、入力から出力へのルーティング、ダミーパケット送信を行います。
+`acs` は ARES Project 向けのコマンド群をまとめた Rust 製 CLI です。現在の主なコマンドは `control`、`io`、`monitor`、`route`、`send` で、DS4 入力の取得、シリアル監視、入力から出力へのルーティング、ダミーパケット送信を行います。
 
-全体としては、`app/cli` が実行条件を解決し、`serial` と `session` が実行基盤を提供し、必要に応じて `pipeline` が入力を加工して `output` が送信フォーマットへ変換する構成です。
+全体としては、`app/cli` が実行条件を解決し、`serial` と `session` が実行基盤を提供し、共有の入力フレーム型を介して `pipeline` が入力を加工し、`output` が送信フォーマットへ変換する構成です。
 
 ## 全体アーキテクチャ
 
@@ -14,7 +14,7 @@
    monitor の display では `line` / `packet` も指定でき、表示の改行単位を切り替えられます。
 3. `session` が監視対象ポート、出力ポート、ダッシュボード、ログファイルを初期化します。
 4. 入力があるコマンドでは `serial` の monitor thread がデータを受け、`SessionEvent` としてメインループへ渡します。
-5. `control` と `route` では `pipeline` がフレームをフィルタ・変換・分類・配送し、送信先ごとの `DispatchPlan` を返します。
+5. メインループは共有の `IngressFrame` を組み立て、`control` と `route` では `pipeline` がそのフレームをフィルタ・変換・分類・配送し、送信先ごとの `DispatchPlan` を返します。
 6. `send` と `control` では `output` が必要なフォーマットへエンコードし、`SerialWriter` がシリアルへ書き込みます。
 7. `ui` がターミナルダッシュボードを差分描画し、`logger` がログへ入出力を保存します。
 
@@ -23,14 +23,21 @@
 ### `control`
 
 - `input/ds4_hid` が DUALSHOCK 4 を列挙・選択して HID レポートを読みます。
-- `pipeline` で `Ds4ToCompact -> OutputEncode(PacketACv6)` の変換を行います。
+- `pipeline` で `Ds4ToCompact -> OutputEncode(指定 FORMAT)` の変換を行います。
 - 結果をメイン出力ポートへ送信し、同時に出力ポート自身や追加 monitor ポートも監視できます。
 - `PacketACv6` エンコーダは enable 状態、シーケンス番号、操作プロファイルを内部状態として保持します。
+- `FORMAT=PacketMv1` の場合は、同じ `PacketACv6` エンコーダ出力を `PacketMv1` へ削減して送信します。
 
 ### `monitor`
 
 - 1 個以上のシリアル入力を監視し、受信内容をダッシュボードとログへ記録します。
 - display 設定の `packet` 指定では受信チャンク単位、`line` 指定では改行単位で表示します。
+
+### `io`
+
+- `send` の実行基盤を使い、複数の送信ポートと受信ポートを同一ダッシュボードで扱います。
+- `-i` が受信、`-o` が送信で、各ポートの baud / format / display / rate は `PORT@BAUD,DISPLAY,FORMAT,RATE` のようにポート文字列へ直接付けます。
+- 値なしの `-i` / `-o` では、利用可能なシリアルポート、フォーマット、ボーレート、送信レートを対話式に選択できます。
 
 ### `route`
 
@@ -44,7 +51,7 @@
 - 20ms 周期で連番ループのダミーペイロードを繰り返し送信し、送信履歴を monitor と同じ UI で表示します。
 - 複数の出力ポートを同時に扱え、出力ごとに baud / format / display を分けて設定できます。
 - 出力ポートの受信側や、追加で指定した monitor ポートも同時に監視できます。
-- 現時点で `packetacv6` と `packetjfv1` のダミーデータ送信に対応しています。
+- 現時点で `packetacv6`、`packetjfv1`、`roverupgeneral`、`roverdowngeneral` のダミーデータ送信に対応しています。
 
 ## 主要モジュール
 
@@ -64,8 +71,8 @@
 ### `pipeline`
 
 - `filter -> transform -> classify -> route` から成る小さなデータフローエンジン
-- 変換モジュールとして `Ds4ToCompact`、`OutputEncode`、`JoinLatest` などを提供
-- 分類結果のタグや入力元 ID を使ったルーティングが可能
+- 現在は `AllowAll` filter、`Identity` / `Ds4ToCompact` / `OutputEncode` transform、`Broadcast` / `SourceMap` router を提供
+- 処理コアは `session` ではなく共有の入力フレーム型に依存し、実行基盤との結合を抑えています
 
 ### `output`
 
@@ -83,17 +90,15 @@
 
 ## 設定とデータの扱い
 
-- 設定は JSON ファイル 1 個でもディレクトリでも読めます。
-- ディレクトリ指定時は `*.json` をファイル名順で再帰的に読み、後から読んだ内容で上書きします。
-- `route.inputs` / `route.outputs` / `route.pipelines` / `route.templates` は ID 単位で差し替え可能です。
-- JSON パースは外部クレートに頼らず、必要な最小機能だけを `app/cli/config.rs` で実装しています。
-- ログ出力先は「ローカル設定ならリポジトリ内 `./logs`、グローバル設定なら標準ユーザログディレクトリ」という方針で解決されます。
+- 各コマンドは CLI 引数から直接必要な値を組み立てます。
+- `route` は built-in template を使ってパイプラインを構成します。
+- ログ出力先は既定でリポジトリ内の `./logs` です。
 
 ## ビルド・配布まわり
 
 - `build.rs` が Git の branch / commit / dirty 状態 / source kind をビルド時に埋め込みます。
 - `acs --version` や `acs version` で、そのビルドがどのソースから作られたか確認できます。
-- `Makefile` と `scripts/` が初期化、ビルド、リリース、グローバル導入、更新、設定同期を担当します。
+- `Makefile` と `scripts/` が初期化、ビルド、リリース、グローバル導入、更新を担当します。
 - ルートの `acs` スクリプトは `cargo run --release -- ...` を呼ぶローカルランチャーです。
 
 ## 補足

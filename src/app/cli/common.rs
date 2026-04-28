@@ -1,12 +1,12 @@
-use super::paths::{ConfigLookup, default_log_dir as default_log_dir_for_lookup};
+use super::paths::default_log_dir as default_log_dir_from_paths;
 use crate::port_display::{LineBreakMode, PortDisplayMode, parse_display_value};
 
 pub(crate) fn default_baud_rate() -> u32 {
     115_200
 }
 
-pub(crate) fn default_log_dir(lookup: &ConfigLookup) -> std::path::PathBuf {
-    default_log_dir_for_lookup(lookup)
+pub(crate) fn default_log_dir() -> std::path::PathBuf {
+    default_log_dir_from_paths()
 }
 
 pub(crate) fn next_value(
@@ -21,6 +21,41 @@ pub(crate) fn parse_u32_arg(option: &str, value: &str) -> Result<u32, String> {
     value
         .parse::<u32>()
         .map_err(|_| format!("invalid value for {option}: {value}"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyValueArg {
+    pub key: String,
+    pub value: String,
+}
+
+pub(crate) fn parse_key_value_args(option: &str, value: &str) -> Result<Vec<KeyValueArg>, String> {
+    if value.trim().is_empty() {
+        return Err(format!("missing value for {option}"));
+    }
+
+    let mut args = Vec::new();
+    for assignment in value.split(',') {
+        let assignment = assignment.trim();
+        let Some((key, raw_value)) = assignment.split_once('=') else {
+            return Err(format!(
+                "invalid value for {option}: {value} (expected KEY=VALUE or KEY=VALUE,KEY=VALUE)"
+            ));
+        };
+        let key = key.trim();
+        let raw_value = raw_value.trim();
+        if key.is_empty() || raw_value.is_empty() {
+            return Err(format!(
+                "invalid value for {option}: {value} (expected KEY=VALUE or KEY=VALUE,KEY=VALUE)"
+            ));
+        }
+        args.push(KeyValueArg {
+            key: key.to_owned(),
+            value: raw_value.to_owned(),
+        });
+    }
+
+    Ok(args)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -41,15 +76,6 @@ impl PortSpec {
             line_break_mode: self.line_break_mode,
         })
     }
-}
-
-pub(crate) fn resolve_requested_port_spec(
-    cli_port: Option<PortSpec>,
-    config_port: Option<PortSpec>,
-) -> Option<PortSpec> {
-    cli_port
-        .and_then(PortSpec::normalized)
-        .or_else(|| config_port.and_then(PortSpec::normalized))
 }
 
 pub(crate) fn parse_port_spec(option: &str, value: &str) -> Result<PortSpec, String> {
@@ -95,22 +121,9 @@ pub(crate) fn parse_port_spec(option: &str, value: &str) -> Result<PortSpec, Str
     })
 }
 
-pub(crate) fn merge_port_specs(target: &mut Vec<PortSpec>, specs: Vec<PortSpec>) {
-    for spec in specs {
-        if let Some(existing) = target
-            .iter_mut()
-            .find(|existing| existing.port == spec.port)
-        {
-            *existing = spec;
-        } else {
-            target.push(spec);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{PortSpec, merge_port_specs, parse_port_spec, resolve_requested_port_spec};
+    use super::{KeyValueArg, PortSpec, parse_key_value_args, parse_port_spec};
     use crate::port_display::{LineBreakMode, PortDisplayMode};
 
     #[test]
@@ -142,25 +155,37 @@ mod tests {
                 line_break_mode: Some(LineBreakMode::Packet),
             }
         );
+        assert_eq!(
+            parse_port_spec("--port", "0@460800,hex").unwrap(),
+            PortSpec {
+                port: String::from("0"),
+                baud: Some(460_800),
+                display_mode: Some(PortDisplayMode::Hex),
+                line_break_mode: None,
+            }
+        );
     }
 
     #[test]
-    fn resolve_requested_port_spec_skips_empty_port_names() {
+    fn port_spec_normalized_skips_empty_port_names() {
         assert_eq!(
-            resolve_requested_port_spec(
-                Some(PortSpec {
-                    port: String::from(" "),
-                    baud: Some(115_200),
-                    display_mode: None,
-                    line_break_mode: None,
-                }),
-                Some(PortSpec {
-                    port: String::from("/dev/ttyUSB0"),
-                    baud: Some(921_600),
-                    display_mode: Some(PortDisplayMode::Hex),
-                    line_break_mode: Some(LineBreakMode::Packet),
-                })
-            ),
+            PortSpec {
+                port: String::from(" "),
+                baud: Some(115_200),
+                display_mode: None,
+                line_break_mode: None,
+            }
+            .normalized(),
+            None
+        );
+        assert_eq!(
+            PortSpec {
+                port: String::from("/dev/ttyUSB0"),
+                baud: Some(921_600),
+                display_mode: Some(PortDisplayMode::Hex),
+                line_break_mode: Some(LineBreakMode::Packet),
+            }
+            .normalized(),
             Some(PortSpec {
                 port: String::from("/dev/ttyUSB0"),
                 baud: Some(921_600),
@@ -171,31 +196,27 @@ mod tests {
     }
 
     #[test]
-    fn merge_port_specs_replaces_existing_entry_for_same_port() {
-        let mut specs = vec![PortSpec {
-            port: String::from("/dev/ttyUSB0"),
-            baud: Some(115_200),
-            display_mode: None,
-            line_break_mode: None,
-        }];
-        merge_port_specs(
-            &mut specs,
-            vec![PortSpec {
-                port: String::from("/dev/ttyUSB0"),
-                baud: Some(921_600),
-                display_mode: Some(PortDisplayMode::Hex),
-                line_break_mode: Some(LineBreakMode::Line),
-            }],
-        );
-
+    fn parse_key_value_args_accepts_csv_assignments() {
         assert_eq!(
-            specs,
-            vec![PortSpec {
-                port: String::from("/dev/ttyUSB0"),
-                baud: Some(921_600),
-                display_mode: Some(PortDisplayMode::Hex),
-                line_break_mode: Some(LineBreakMode::Line),
-            }]
+            parse_key_value_args(
+                "--config",
+                "FORMAT=PacketACv6,RATE=100,DISPLAY=input:default=utf8+packet"
+            )
+            .unwrap(),
+            vec![
+                KeyValueArg {
+                    key: String::from("FORMAT"),
+                    value: String::from("PacketACv6"),
+                },
+                KeyValueArg {
+                    key: String::from("RATE"),
+                    value: String::from("100"),
+                },
+                KeyValueArg {
+                    key: String::from("DISPLAY"),
+                    value: String::from("input:default=utf8+packet"),
+                },
+            ]
         );
     }
 }

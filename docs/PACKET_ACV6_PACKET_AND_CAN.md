@@ -191,6 +191,55 @@ motor_command = (current - 255) * 64
 - `fault_code`
 - `crc16`
 
+## XBee 送信用縮小パケット
+
+`basestation_xbee_integration` の uplink は、XBee へ送る直前に `AC v6` を制御モード別の縮小パケットへ変換する。このリポジトリでも同じ wire format を `send` 用フォーマットとして扱う。
+
+| `acs` format | header | 元 `AC v6` mode | サイズ | 保持する主な情報 |
+| --- | --- | --- | ---: | --- |
+| `PacketMv1` | `M` | `MANUAL` (`flags.bit4..5 == 1`) | 19 byte | `seq`, `current[0..6]`, `control_byte`, `crc16` |
+| `PacketIv1` | `I` | `IK` (`flags.bit4..5 == 0`) | 19 byte | `seq`, `current[0]`, `current[1]`, `current[5]`, `current[6]`, `angle[0..2]`, `control_byte`, `crc16` |
+| `PacketBv1` | `B` | `KEYBOARD_AUTO` (`flags.bit4..5 == 2`) | 15 byte | `seq`, `angle[0..2]`, `control_byte`, `base_target_mm_j0`, `auto_flags`, `crc16` |
+
+変換時は `AC` の 2 byte header を 1 byte の `M` / `I` / `B` に置換し、不要フィールドを削除して残りの byte を元の順序のまま詰める。末尾の `crc16` は縮小後のパケット先頭から CRC 直前までに対して `CRC16-CCITT-FALSE` を再計算し、little-endian で格納する。
+
+### `PacketMv1`
+
+| offset | 元 AC byte | フィールド |
+| --- | --- | --- |
+| `0` | 生成 | `M` |
+| `1` | `2` | `seq` |
+| `2..15` | `4..17` | `current[0..6]` |
+| `16` | `30` | `control_byte` |
+| `17..18` | 生成 | `crc16` (`0..16` に対する CRC16-CCITT-FALSE) |
+
+### `PacketIv1`
+
+| offset | 元 AC byte | フィールド |
+| --- | --- | --- |
+| `0` | 生成 | `I` |
+| `1` | `2` | `seq` |
+| `2..5` | `4..7` | `current[0..1]` |
+| `6..9` | `14..17` | `current[5..6]` |
+| `10..15` | `18..23` | `angle[0..2]` |
+| `16` | `30` | `control_byte` |
+| `17..18` | 生成 | `crc16` (`0..16` に対する CRC16-CCITT-FALSE) |
+
+### `PacketBv1`
+
+| offset | 元 AC byte | フィールド |
+| --- | --- | --- |
+| `0` | 生成 | `B` |
+| `1` | `2` | `seq` |
+| `2..7` | `18..23` | `angle[0..2]` |
+| `8` | `30` | `control_byte` |
+| `9..10` | `31..32` | `base_target_mm_j0` |
+| `11..12` | `33..34` | `auto_flags` |
+| `13..14` | 生成 | `crc16` (`0..12` に対する CRC16-CCITT-FALSE) |
+
 ## 根拠
 
 - `src/output/formats/packetacv6/encoder.rs`
+- `src/output/formats/packetacv6/reduced.rs`
+- `/Users/jinaoyagi/workspace/ares/basestation_xbee_integration/AC_PACKET_XBEE_REDUCTION_SPEC.md`
+- `/Users/jinaoyagi/workspace/ares/basestation_xbee_integration/uplink/src/modules/ac_packet_reducer.c`

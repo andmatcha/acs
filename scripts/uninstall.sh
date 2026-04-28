@@ -28,14 +28,11 @@ else
     info "the global $ACS_NAME binary was not installed"
 fi
 
-CONFIG_DIR=$(acs_config_dir)
 LOG_DIR=$(acs_log_dir)
 
 if [ "$PURGE" -eq 1 ]; then
-    rm -rf "$CONFIG_DIR" "$LOG_DIR"
-    info "removed $CONFIG_DIR"
+    rm -rf "$LOG_DIR"
     info "removed $LOG_DIR"
 else
-    info "kept config dir: $CONFIG_DIR"
     info "kept log dir: $LOG_DIR"
 fi

@@ -1,15 +1,16 @@
 mod commands;
 pub(crate) mod common;
-mod config;
 mod control;
 mod help;
-mod monitor;
+mod io;
 mod paths;
 mod route;
-mod send;
 mod signal;
+mod update;
 mod version;
 mod xbee_mock;
+mod xbee_rtt;
+mod xbee_talk;
 mod xbee_test;
 
 use std::env;
@@ -29,14 +30,16 @@ pub fn run() -> ExitCode {
         Some("version") => version::print_version(),
         Some("controllers") => commands::list_controllers(),
         Some("ports") => commands::list_ports(),
+        Some("update") => update::run(args.collect(), &bin_name),
         Some("control") => control::run(args.collect(), &bin_name),
-        Some("monitor") => monitor::run(args.collect(), &bin_name),
+        Some("io") => io::run(args.collect(), &bin_name),
         Some("route") => route::run(args.collect(), &bin_name),
-        Some("send") => send::run(args.collect(), &bin_name),
+        Some("xbee-talk") => xbee_talk::run(args.collect(), &bin_name),
         Some("xbee-mock") => xbee_mock::run(args.collect(), &bin_name),
+        Some("xbee-rtt") => xbee_rtt::run(args.collect(), &bin_name),
         Some("xbee-test") => xbee_test::run(args.collect(), &bin_name),
         Some(command) => {
-            eprintln!("unknown subcommand: {command}");
+            eprintln!("不明なサブコマンドです: {command}");
             help::print_usage(&bin_name);
             ExitCode::from(2)
         }
