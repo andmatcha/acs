@@ -23,7 +23,7 @@ ifeq ($(OS),Windows_NT)
 	@echo make release         バージョン更新、テスト、ビルド、コミット、タグ付けを実行
 	@echo make fmt             Rust コードを整形
 	@echo make test            Rust のテスト一式を実行
-	@echo make install         コミット済みのローカル HEAD または指定 ref から acs をグローバル導入
+	@echo make install         最新 GitHub tag または指定 ref から acs をグローバル導入
 	@echo make update          最新タグまたは指定 ref からグローバル acs を更新
 	@echo make sync-code       現在のチェックアウトからグローバル acs を再インストール
 	@echo make uninstall       グローバル acs をアンインストールし、ユーザーログは残す
@@ -38,7 +38,7 @@ else
 		'make release         バージョン更新、テスト、ビルド、コミット、タグ付けを実行' \
 		'make fmt             Rust コードを整形' \
 		'make test            Rust のテスト一式を実行' \
-		'make install         コミット済みのローカル HEAD または指定 ref から acs をグローバル導入' \
+		'make install         最新 GitHub tag または指定 ref から acs をグローバル導入' \
 		'make update          最新タグまたは指定 ref からグローバル acs を更新' \
 		'make sync-code       現在のチェックアウトからグローバル acs を再インストール' \
 		'make uninstall       グローバル acs をアンインストールし、ユーザーログは残す' \

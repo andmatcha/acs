@@ -254,9 +254,41 @@ source_ref_for_branch() {
 }
 
 latest_remote_tag() {
-    git ls-remote --tags --refs --sort=-v:refname "$(acs_repo_url)" \
-        | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
-        | sed -n '1p'
+    if has_command git; then
+        tag=$(git ls-remote --tags --refs --sort=-v:refname "$(acs_repo_url)" 2>/dev/null \
+            | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
+            | sed -n '1p' || true)
+        if [ -n "$tag" ]; then
+            printf '%s\n' "$tag"
+            return 0
+        fi
+    fi
+
+    slug=$(github_archive_slug)
+    api_output=$(download_to_stdout "https://api.github.com/repos/$slug/tags?per_page=100") || return 1
+    printf '%s\n' "$api_output" \
+        | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | latest_tag_from_stdin
+}
+
+latest_tag_from_stdin() {
+    awk '
+        {
+            tag = $0
+            value = tag
+            sub(/^[vV]/, "", value)
+            n = split(value, parts, /[^0-9]+/)
+            key = ""
+            for (i = 1; i <= 4; i++) {
+                number = 0
+                if (i <= n && parts[i] != "") {
+                    number = parts[i] + 0
+                }
+                key = key sprintf("%09d.", number)
+            }
+            print key "|" tag
+        }
+    ' | sort -r | sed -n '1s/^[^|]*|//p'
 }
 
 clone_local_head_source() {

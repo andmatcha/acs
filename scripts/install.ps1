@@ -73,8 +73,17 @@ try {
         $buildSourceKind = "unknown"
         $buildSourceRef = "unknown"
 
-        if (-not [string]::IsNullOrWhiteSpace($Tag)) {
+        if ([string]::IsNullOrWhiteSpace($Tag) -and [string]::IsNullOrWhiteSpace($Branch) -and [string]::IsNullOrWhiteSpace($Commit)) {
+            $Tag = Get-LatestRemoteTag
+            if ([string]::IsNullOrWhiteSpace($Tag)) {
+                Fail "no remote tags were found at $(Get-AcsRepoUrl)"
+            }
+            Write-Info "installing $script:AcsName from latest remote tag $Tag"
+        } elseif (-not [string]::IsNullOrWhiteSpace($Tag)) {
             Write-Info "installing $script:AcsName from remote tag $Tag"
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($Tag)) {
             if (Test-CommandAvailable "git") {
                 Clone-RemoteTagSource $Tag $sourceDir
                 $buildCommit = Get-GitCommitId $sourceDir
@@ -107,22 +116,6 @@ try {
             $buildBranch = "detached"
             $buildSourceKind = "remote-commit"
             $buildSourceRef = $Commit
-        } elseif (Test-GitRepository $RepoRoot) {
-            $buildBranch = Get-GitBranchName $RepoRoot
-            Write-Info "installing $script:AcsName from local committed source on branch $buildBranch"
-            Clone-LocalHeadSource $RepoRoot $sourceDir
-            $buildCommit = Get-GitCommitId $sourceDir
-            $buildDirty = "clean"
-            $buildSourceKind = "local-commit"
-            $buildSourceRef = Get-SourceRefForBranch $buildBranch $buildCommit
-        } else {
-            Write-Info "installing $script:AcsName from the current source snapshot"
-            Copy-SourceTree $RepoRoot $sourceDir
-            $buildBranch = "unknown"
-            $buildCommit = "unknown"
-            $buildDirty = "dirty"
-            $buildSourceKind = "working-tree"
-            $buildSourceRef = "local-copy"
         }
 
         Install-BinaryFromSource `

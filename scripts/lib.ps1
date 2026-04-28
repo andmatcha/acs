@@ -284,11 +284,89 @@ function Clone-RemoteCommitSource {
     Invoke-NativeCommand "git" @("-c", "advice.detachedHead=false", "-C", $DestinationDir, "checkout", "--detach", $Commit) "failed to check out remote commit $Commit"
 }
 
+function Get-LatestTagFromNames {
+    param([string[]]$Names)
+
+    $selected = $Names |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Sort-Object -Property @{ Expression = { Get-TagSortKey $_ }; Descending = $true } |
+        Select-Object -First 1
+
+    if ($null -eq $selected) {
+        return $null
+    }
+    return [string]$selected
+}
+
+function Get-TagSortKey {
+    param([string]$Tag)
+
+    $value = $Tag -replace "^[vV]", ""
+    $numberParts = @($value -split "[^0-9]+" | Where-Object { $_ -ne "" })
+    $numbers = @(0, 0, 0, 0)
+
+    for ($index = 0; $index -lt $numbers.Count -and $index -lt $numberParts.Count; $index += 1) {
+        $parsed = 0
+        if ([int]::TryParse($numberParts[$index], [ref]$parsed)) {
+            $numbers[$index] = $parsed
+        }
+    }
+
+    return "{0:D9}.{1:D9}.{2:D9}.{3:D9}|{4}" -f $numbers[0], $numbers[1], $numbers[2], $numbers[3], $Tag
+}
+
+function Get-LatestRemoteTag {
+    if (Test-CommandAvailable "git") {
+        $output = Invoke-NativeOutput "git" @(
+            "ls-remote",
+            "--tags",
+            "--refs",
+            "--sort=-v:refname",
+            (Get-AcsRepoUrl)
+        )
+        if (-not [string]::IsNullOrWhiteSpace($output)) {
+            foreach ($line in ($output -split "`n")) {
+                if ($line -match "refs/tags/(.+)$") {
+                    return $matches[1].Trim()
+                }
+            }
+        }
+    }
+
+    $slug = Get-GitHubSlugFromRepoUrl
+    if ([string]::IsNullOrWhiteSpace($slug)) {
+        Fail "Git is required for ACS_REPO_URL=$(Get-AcsRepoUrl); without Git, only GitHub repository URLs can be queried for tags"
+    }
+
+    $tags = Invoke-GitHubJson "https://api.github.com/repos/$slug/tags?per_page=100"
+    return (Get-LatestTagFromNames @($tags | ForEach-Object { $_.name }))
+}
+
 function Enable-Tls12 {
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     } catch {
         # Older hosts may not expose ServicePointManager in the same way. Invoke-WebRequest will report the real error.
+    }
+}
+
+function Invoke-GitHubJson {
+    param([string]$Uri)
+
+    Enable-Tls12
+    $parameters = @{
+        Uri = $Uri
+        Headers = @{ "User-Agent" = $script:AcsName }
+    }
+    if ($PSVersionTable.PSVersion.Major -lt 6) {
+        $parameters.UseBasicParsing = $true
+    }
+
+    try {
+        $response = Invoke-WebRequest @parameters
+        return ($response.Content | ConvertFrom-Json)
+    } catch {
+        Fail "failed to query $Uri`: $($_.Exception.Message)"
     }
 }
 

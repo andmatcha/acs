@@ -49,8 +49,15 @@ TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/acs-install.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM HUP
 SOURCE_DIR="$TMP_ROOT/source"
 
-if [ -n "$TAG" ]; then
+if [ -z "$TAG" ] && [ -z "$BRANCH" ] && [ -z "$COMMIT" ]; then
+    TAG=$(latest_remote_tag)
+    [ -n "$TAG" ] || fail "no remote tags were found at $(acs_repo_url)"
+    info "installing $ACS_NAME from latest remote tag $TAG"
+elif [ -n "$TAG" ]; then
     info "installing $ACS_NAME from remote tag $TAG"
+fi
+
+if [ -n "$TAG" ]; then
     if has_command git; then
         clone_remote_tag_source "$TAG" "$SOURCE_DIR"
     else
@@ -80,19 +87,6 @@ elif [ -n "$COMMIT" ]; then
     BUILD_BRANCH="detached"
     BUILD_SOURCE_KIND="remote-commit"
     BUILD_SOURCE_REF="$COMMIT"
-elif has_command git && git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    BUILD_BRANCH=$(git_branch_name "$REPO_ROOT")
-    info "installing $ACS_NAME from local committed source on branch $BUILD_BRANCH"
-    clone_local_head_source "$REPO_ROOT" "$SOURCE_DIR"
-    BUILD_SOURCE_KIND="local-commit"
-else
-    info "installing $ACS_NAME from the current source snapshot"
-    copy_source_tree "$REPO_ROOT" "$SOURCE_DIR"
-    BUILD_BRANCH="unknown"
-    BUILD_COMMIT="unknown"
-    BUILD_DIRTY="dirty"
-    BUILD_SOURCE_KIND="working-tree"
-    BUILD_SOURCE_REF="local-copy"
 fi
 
 if [ -z "${BUILD_COMMIT:-}" ]; then
