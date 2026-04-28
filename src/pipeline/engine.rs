@@ -102,6 +102,7 @@ pub(crate) mod traits {
 mod tests {
     use super::PipelineEngine;
     use crate::ingress::IngressFrame;
+    use crate::output::OutputFormat;
     use crate::pipeline::{
         ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineSpec,
         RouterModuleConfig, TransformChainConfig, TransformModuleConfig,
@@ -135,5 +136,87 @@ mod tests {
         assert_eq!(dispatches.len(), 1);
         assert_eq!(dispatches[0].output_id, "out_main");
         assert_eq!(dispatches[0].bytes, b"abc");
+    }
+
+    #[test]
+    fn packet_filter_routes_only_matching_complete_packets() {
+        let spec = PipelineSpec {
+            pipelines: vec![PipelineDefinition {
+                id: String::from("ac-only"),
+                inputs: vec![String::from("in_a")],
+                filter: FilterModuleConfig::AllowAll,
+                transform: TransformChainConfig {
+                    modules: vec![TransformModuleConfig::PacketFilter {
+                        formats: vec![OutputFormat::PacketAcV6],
+                    }],
+                },
+                classify: ClassifyModuleConfig::None,
+                router: RouterModuleConfig::Broadcast {
+                    outputs: vec![String::from("out_ac")],
+                },
+            }],
+        };
+        let mut engine = PipelineEngine::new(&spec).unwrap();
+        let ac = OutputFormat::PacketAcV6.encode_dummy_payload().unwrap();
+        let jf = OutputFormat::PacketJfV1.encode_dummy_payload().unwrap();
+
+        let dispatches = engine
+            .process_frame(&IngressFrame {
+                input_id: String::from("in_a"),
+                bytes: [b"noise".as_slice(), &jf, &ac].concat(),
+            })
+            .unwrap();
+
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(dispatches[0].output_id, "out_ac");
+        assert_eq!(dispatches[0].bytes, ac);
+    }
+
+    #[test]
+    fn packet_filter_keeps_decoder_state_per_input() {
+        let spec = PipelineSpec {
+            pipelines: vec![PipelineDefinition {
+                id: String::from("ac-only"),
+                inputs: vec![String::from("in_a"), String::from("in_b")],
+                filter: FilterModuleConfig::AllowAll,
+                transform: TransformChainConfig {
+                    modules: vec![TransformModuleConfig::PacketFilter {
+                        formats: vec![OutputFormat::PacketAcV6],
+                    }],
+                },
+                classify: ClassifyModuleConfig::None,
+                router: RouterModuleConfig::Broadcast {
+                    outputs: vec![String::from("out_ac")],
+                },
+            }],
+        };
+        let mut engine = PipelineEngine::new(&spec).unwrap();
+        let ac_a = OutputFormat::PacketAcV6.encode_dummy_payload().unwrap();
+        let ac_b = OutputFormat::PacketAcV6.encode_dummy_payload().unwrap();
+
+        assert!(
+            engine
+                .process_frame(&IngressFrame {
+                    input_id: String::from("in_a"),
+                    bytes: ac_a[..7].to_vec(),
+                })
+                .unwrap()
+                .is_empty()
+        );
+        let b_dispatches = engine
+            .process_frame(&IngressFrame {
+                input_id: String::from("in_b"),
+                bytes: ac_b.clone(),
+            })
+            .unwrap();
+        let a_dispatches = engine
+            .process_frame(&IngressFrame {
+                input_id: String::from("in_a"),
+                bytes: ac_a[7..].to_vec(),
+            })
+            .unwrap();
+
+        assert_eq!(b_dispatches[0].bytes, ac_b);
+        assert_eq!(a_dispatches[0].bytes, ac_a);
     }
 }

@@ -3,10 +3,14 @@ mod packetacv6;
 mod packetjfv1;
 mod roverdowngeneral;
 mod roverupgeneral;
+mod stream;
 
 use crate::input::compact::CompactReport;
 use crate::port_display::PortDisplayMode;
 pub(crate) use crc::crc16_ccitt_false;
+pub(crate) use stream::MixedFormatDecoder;
+#[cfg(test)]
+pub(crate) use stream::{matches_reduced_ac_packet, matches_rover_down_packet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OutputFormat {

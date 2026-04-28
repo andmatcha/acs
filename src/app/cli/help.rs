@@ -473,7 +473,7 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("使い方: {bin_name} route [テンプレート] [オプション]");
     println!();
     println!("1 つ以上のシリアル入力から 1 つ以上のシリアル出力へバイト列を中継します。");
-    println!("中継動作は組み込みルートテンプレートから選べます。");
+    println!("中継動作は組み込みルートテンプレート、または --map のルールで指定できます。");
     println!();
     println!("オプション:");
     println!("      --list-templates        組み込みルートテンプレートを表示");
@@ -485,6 +485,16 @@ pub(crate) fn print_route_help(bin_name: &str) {
         "                                PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
     );
     println!("                                BAUD を省略した場合は 115200 が使われます");
+    println!("  -r, --map [INPUTS[:FORMAT+...]=OUTPUTS]");
+    println!(
+        "                              入力・フォーマット・出力の対応を追加（繰り返し指定可）"
+    );
+    println!("                              値を省略すると対話式に選択");
+    println!("                              INPUTS/OUTPUTS は `*` または `in_a+in_b` 形式");
+    println!("                              FORMAT を省略すると raw chunk をそのまま中継");
+    println!(
+        "                              FORMAT: packetacv6/packetmv1/packetiv1/packetbv1/packetjfv1/roverupgeneral/roverdowngeneral"
+    );
     println!("      --config <K=V,...>      設定をまとめて指定: `TEMPLATE`, `DISPLAY`, `LOG_DIR`");
     println!("                              `TEMPLATE` は位置引数の TEMPLATE と同じです");
     println!("                              `DISPLAY`: ポートの表示モード");
@@ -505,7 +515,14 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!();
     println!("例:");
     println!("  {bin_name} route merge -i -o");
+    println!("  {bin_name} route -i -o --map");
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
+    println!(
+        "  {bin_name} route -i in_a=/dev/ttyUSB0 -i in_b=/dev/ttyUSB1 -o out_main=/dev/ttyUSB2 --map '*:packetacv6+roverupgeneral=out_main'"
+    );
+    println!(
+        "  {bin_name} route -i rx=/dev/ttyUSB0 -o jf=/dev/ttyUSB1 -o rd=/dev/ttyUSB2 --map rx:packetjfv1=jf --map rx:roverdowngeneral=rd"
+    );
     println!(
         "  {bin_name} route merge -i in_a=/dev/ttyUSB0@921600 -i in_b=/dev/ttyUSB1@115200 -o out_main=/dev/ttyUSB2@921600"
     );
