@@ -235,7 +235,6 @@ struct ControlCommandMonitor {
 struct ControlRuntimeState {
     logging_enabled: bool,
     log_path_display: String,
-    executed_command: Option<String>,
     controller_line: String,
     output_line: String,
     monitors: Vec<ControlHeaderMonitor>,
@@ -271,7 +270,6 @@ impl ControlRuntimeState {
         Self {
             logging_enabled: settings.logging_enabled,
             log_path_display,
-            executed_command: settings.executed_command.clone(),
             controller_line: format!(
                 "controller: {} ({})",
                 controller_info
@@ -404,10 +402,6 @@ impl ControlRuntimeState {
             lines.push(format!("log: {}", self.log_path_display));
         } else {
             lines.push(String::from("log: disabled (--no-log)"));
-        }
-        if let Some(command) = &self.executed_command {
-            lines.push(String::from("実行コマンド:"));
-            lines.push(command.clone());
         }
         lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
         lines
@@ -627,7 +621,7 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
                 println!("log saved to {}", result.log_path.display());
             }
             if let Some(command) = &result.executed_command {
-                println!("実行コマンド:");
+                println!("Command:");
                 println!("{command}");
             }
             ExitCode::SUCCESS
@@ -652,7 +646,10 @@ fn run_with_options(cli_options: ControlRuntimeOptions) -> Result<ControlRunResu
     ))?;
     let started_at = Instant::now();
     let mut session = SessionRuntime::new(SessionSpec {
-        title: String::from("acs control"),
+        title: settings
+            .executed_command
+            .clone()
+            .unwrap_or_else(|| String::from("acs control")),
         command_name: String::from("control"),
         log_dir: settings.log_dir.clone(),
         logging_enabled: settings.logging_enabled,

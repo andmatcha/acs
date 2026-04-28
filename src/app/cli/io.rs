@@ -141,19 +141,11 @@ struct IoHeaderOutput {
     payload_len: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
-struct IoHeaderObservedFormat {
-    port: String,
-    format: OutputFormat,
-}
-
 struct IoRuntimeState {
     logging_enabled: bool,
     log_path_display: String,
-    executed_command: Option<String>,
     header_outputs: Vec<IoHeaderOutput>,
     observed_inputs: BTreeMap<String, ObservedInput>,
-    observed_format_lines: Vec<IoHeaderObservedFormat>,
     last_status_update: Instant,
     header_lines: Vec<String>,
 }
@@ -177,10 +169,6 @@ impl IoRuntimeState {
                 payload_len: payload_lengths.get(&output.session.id).copied(),
             })
             .collect::<Vec<_>>();
-        let output_observed_pairs = header_outputs
-            .iter()
-            .map(|output| (output.port.clone(), output.format))
-            .collect::<BTreeSet<_>>();
         let observed_inputs = settings
             .observed_inputs
             .iter()
@@ -197,27 +185,12 @@ impl IoRuntimeState {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let observed_format_lines = settings
-            .observed_inputs
-            .iter()
-            .flat_map(|spec| {
-                spec.formats.iter().filter_map(|format| {
-                    let key = (spec.port.clone(), *format);
-                    (!output_observed_pairs.contains(&key)).then_some(IoHeaderObservedFormat {
-                        port: spec.port.clone(),
-                        format: *format,
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
 
         Self {
             logging_enabled: settings.logging_enabled,
             log_path_display,
-            executed_command: settings.executed_command.clone(),
             header_outputs,
             observed_inputs,
-            observed_format_lines,
             last_status_update: started_at
                 .checked_sub(STATUS_INTERVAL)
                 .unwrap_or(started_at),
@@ -324,25 +297,10 @@ impl IoRuntimeState {
             ));
         }
 
-        for observed in self.observed_format_lines.clone() {
-            let rx_rate_hz = self
-                .rx_rate_hz(&observed.port, observed.format, now)
-                .unwrap_or_default();
-            lines.push(format!(
-                "input[{}:{}]: rx={rx_rate_hz:.1} Hz",
-                observed.port,
-                observed.format.as_str()
-            ));
-        }
-
         if self.logging_enabled {
             lines.push(format!("log: {}", self.log_path_display));
         } else {
             lines.push(String::from("log: disabled (--no-log)"));
-        }
-        if let Some(command) = &self.executed_command {
-            lines.push(String::from("実行コマンド:"));
-            lines.push(command.clone());
         }
         lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
         lines
@@ -881,6 +839,42 @@ enum IoBindingArg {
     Prompt,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct IoPromptPortPosition {
+    kind: &'static str,
+    index: usize,
+    total: usize,
+}
+
+impl IoPromptPortPosition {
+    fn input(index: usize, total: usize) -> Self {
+        Self {
+            kind: "受信",
+            index,
+            total,
+        }
+    }
+
+    fn output(index: usize, total: usize) -> Self {
+        Self {
+            kind: "送信",
+            index,
+            total,
+        }
+    }
+
+    fn label(self, prompt: &str) -> String {
+        if self.total > 1 {
+            format!(
+                "{prompt} ({}ポート {}/{})",
+                self.kind, self.index, self.total
+            )
+        } else {
+            prompt.to_owned()
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct IoPromptCommand {
     inputs: Vec<String>,
@@ -974,7 +968,7 @@ fn print_io_result(result: &IoRunResult) {
         println!("log saved to {}", result.log_path.display());
     }
     if let Some(command) = &result.executed_command {
-        println!("実行コマンド:");
+        println!("Command:");
         println!("{command}");
     }
 }
@@ -1069,22 +1063,30 @@ fn next_optional_io_binding(
 }
 
 fn resolve_io_options(io_options: IoCliOptions) -> Result<IoRuntimeOptions, String> {
+    let total_inputs = io_options.inputs.len();
+    let total_outputs = io_options.outputs.len();
+    let mut input_index = 0;
+    let mut output_index = 0;
     let mut runtime_options = io_options.runtime_options;
     let mut prompt_command = IoPromptCommand::new(&runtime_options);
 
     for input in io_options.inputs {
+        input_index += 1;
+        let position = IoPromptPortPosition::input(input_index, total_inputs);
         let value = match input {
             IoBindingArg::Provided(value) => value,
-            IoBindingArg::Prompt => prompt_io_input_binding(&prompt_command)?,
+            IoBindingArg::Prompt => prompt_io_input_binding(&prompt_command, position)?,
         };
         runtime_options.inputs.push(parse_io_input_binding(&value)?);
         prompt_command.push_input(value);
     }
 
     for output in io_options.outputs {
+        output_index += 1;
+        let position = IoPromptPortPosition::output(output_index, total_outputs);
         let value = match output {
             IoBindingArg::Provided(value) => value,
-            IoBindingArg::Prompt => prompt_io_output_binding(&prompt_command)?,
+            IoBindingArg::Prompt => prompt_io_output_binding(&prompt_command, position)?,
         };
         runtime_options
             .outputs
@@ -1095,14 +1097,19 @@ fn resolve_io_options(io_options: IoCliOptions) -> Result<IoRuntimeOptions, Stri
     Ok(runtime_options)
 }
 
-fn prompt_io_input_binding(command: &IoPromptCommand) -> Result<String, String> {
-    let port = prompt_serial_port_with_preview("受信ポートを選択", |port| {
+fn prompt_io_input_binding(
+    command: &IoPromptCommand,
+    position: IoPromptPortPosition,
+) -> Result<String, String> {
+    let port_prompt = position.label("受信ポートを選択");
+    let port = prompt_serial_port_with_preview(&port_prompt, |port| {
         Some(command.render(Some(IoPromptBindingPreview::Input(
             &format_prompt_io_input_binding(port, None, None, None),
         ))))
     })?;
+    let baud_prompt = position.label("受信ボーレート");
     let baud = prompt_u32_choice_with_preview(
-        "受信ボーレート",
+        &baud_prompt,
         default_baud_rate(),
         &[115_200, 921_600, 460_800, 230_400, 57_600, 38_400, 9_600],
         |baud| {
@@ -1112,12 +1119,14 @@ fn prompt_io_input_binding(command: &IoPromptCommand) -> Result<String, String> 
         },
     )?;
     let baud_text = baud.to_string();
-    let format = prompt_input_format_with_preview(|format| {
+    let format_prompt = position.label("受信フォーマット");
+    let format = prompt_input_format_with_title_and_preview(&format_prompt, |format| {
         Some(command.render(Some(IoPromptBindingPreview::Input(
             &format_prompt_io_input_binding(&port, Some(&baud_text), None, format),
         ))))
     })?;
-    let display = prompt_display_mode_with_preview("受信表示形式", true, |display| {
+    let display_prompt = position.label("受信表示形式");
+    let display = prompt_display_mode_with_preview(&display_prompt, true, |display| {
         Some(command.render(Some(IoPromptBindingPreview::Input(
             &format_prompt_io_input_binding(
                 &port,
@@ -1136,14 +1145,19 @@ fn prompt_io_input_binding(command: &IoPromptCommand) -> Result<String, String> 
     ))
 }
 
-fn prompt_io_output_binding(command: &IoPromptCommand) -> Result<String, String> {
-    let port = prompt_serial_port_with_preview("送信ポートを選択", |port| {
+fn prompt_io_output_binding(
+    command: &IoPromptCommand,
+    position: IoPromptPortPosition,
+) -> Result<String, String> {
+    let port_prompt = position.label("送信ポートを選択");
+    let port = prompt_serial_port_with_preview(&port_prompt, |port| {
         Some(command.render(Some(IoPromptBindingPreview::Output(
             &format_prompt_io_output_binding(port, None, None, None, None),
         ))))
     })?;
+    let baud_prompt = position.label("送信ボーレート");
     let baud = prompt_u32_choice_with_preview(
-        "送信ボーレート",
+        &baud_prompt,
         default_baud_rate(),
         &[115_200, 921_600, 460_800, 230_400, 57_600, 38_400, 9_600],
         |baud| {
@@ -1153,12 +1167,14 @@ fn prompt_io_output_binding(command: &IoPromptCommand) -> Result<String, String>
         },
     )?;
     let baud_text = baud.to_string();
-    let display = prompt_display_mode_with_preview("送信表示形式", false, |display| {
+    let display_prompt = position.label("送信表示形式");
+    let display = prompt_display_mode_with_preview(&display_prompt, false, |display| {
         Some(command.render(Some(IoPromptBindingPreview::Output(
             &format_prompt_io_output_binding(&port, Some(&baud_text), Some(display), None, None),
         ))))
     })?;
-    let format = prompt_output_format_with_preview(|format| {
+    let format_prompt = position.label("送信フォーマット");
+    let format = prompt_output_format_with_title_and_preview(&format_prompt, |format| {
         Some(command.render(Some(IoPromptBindingPreview::Output(
             &format_prompt_io_output_binding(
                 &port,
@@ -1169,8 +1185,9 @@ fn prompt_io_output_binding(command: &IoPromptCommand) -> Result<String, String>
             ),
         ))))
     })?;
+    let rate_prompt = position.label("送信レート (Hz)");
     let rate_hz = prompt_u32_choice_with_preview(
-        "送信レート (Hz)",
+        &rate_prompt,
         DEFAULT_IO_SEND_RATE_HZ,
         &[10, 50, 100, 20, 1],
         |rate_hz| {
@@ -1498,7 +1515,10 @@ where
     }
 }
 
-pub(crate) fn prompt_output_format_with_preview<F>(preview: F) -> Result<String, String>
+fn prompt_output_format_with_title_and_preview<F>(
+    prompt: &str,
+    preview: F,
+) -> Result<String, String>
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -1507,13 +1527,23 @@ where
         .iter()
         .map(|format| format.display_name().to_owned())
         .collect::<Vec<_>>();
-    let selected = choose_from_menu_with_preview("送信フォーマット", &labels, 0, |index| {
+    let selected = choose_from_menu_with_preview(prompt, &labels, 0, |index| {
         preview(formats[index].as_str())
     })?;
     Ok(formats[selected].as_str().to_owned())
 }
 
 pub(crate) fn prompt_input_format_with_preview<F>(preview: F) -> Result<Option<String>, String>
+where
+    F: Fn(Option<&str>) -> Option<String>,
+{
+    prompt_input_format_with_title_and_preview("受信フォーマット", preview)
+}
+
+fn prompt_input_format_with_title_and_preview<F>(
+    prompt: &str,
+    preview: F,
+) -> Result<Option<String>, String>
 where
     F: Fn(Option<&str>) -> Option<String>,
 {
@@ -1526,7 +1556,7 @@ where
     );
     labels.push(String::from("複数/手入力..."));
 
-    let selected = choose_from_menu_with_preview("受信フォーマット", &labels, 0, |index| {
+    let selected = choose_from_menu_with_preview(prompt, &labels, 0, |index| {
         if index == 0 {
             preview(None)
         } else if index == formats.len() + 1 {
@@ -1627,6 +1657,7 @@ fn choose_from_menu_interactive(
     default_index: usize,
     preview: &dyn Fn(usize) -> Option<String>,
 ) -> Result<usize, String> {
+    let _screen = AlternateScreen::enter()?;
     let _raw_mode = RawTerminalMode::enable()?;
     let mut selected = default_index;
     let mut stdin = io::stdin();
@@ -1716,6 +1747,25 @@ fn clear_screen() -> Result<(), String> {
     io::stdout()
         .flush()
         .map_err(|error| format!("failed to flush output: {error}"))
+}
+
+struct AlternateScreen;
+
+impl AlternateScreen {
+    fn enter() -> Result<Self, String> {
+        print!("\x1b[?1049h\x1b[H");
+        io::stdout()
+            .flush()
+            .map_err(|error| format!("failed to enter alternate screen: {error}"))?;
+        Ok(Self)
+    }
+}
+
+impl Drop for AlternateScreen {
+    fn drop(&mut self) {
+        print!("\x1b[?1049l");
+        let _ = io::stdout().flush();
+    }
 }
 
 fn choose_from_numbered_prompt(
@@ -1824,7 +1874,10 @@ fn run_with_options(cli_options: IoRuntimeOptions) -> Result<IoRunResult, String
 
     let started_at = Instant::now();
     let mut session = SessionRuntime::new(SessionSpec {
-        title: String::from("acs io"),
+        title: settings
+            .executed_command
+            .clone()
+            .unwrap_or_else(|| String::from("acs io")),
         command_name: String::from("io"),
         log_dir: settings.log_dir.clone(),
         logging_enabled: settings.logging_enabled,
@@ -2400,7 +2453,7 @@ fn parse_io_output_binding(value: &str) -> Result<IoOutputBinding, String> {
 mod tests {
     use super::{
         IoCommandInput, IoCommandOutput, IoOutputSettings, IoPromptBindingPreview, IoPromptCommand,
-        IoRuntimeOptions, MixedFormatDecoder, ObservedInput, OutputSchedule,
+        IoPromptPortPosition, IoRuntimeOptions, MixedFormatDecoder, ObservedInput, OutputSchedule,
         build_io_executed_command, estimated_output_line_bps, format_io_input_binding,
         format_io_output_binding, matches_reduced_ac_packet, matches_rover_down_packet,
         parse_io_args, parse_io_input_binding, parse_io_output_binding, parse_output_format_list,
@@ -2572,6 +2625,22 @@ mod tests {
                 "/dev/ttyUSB0@921600,hex,packetmv1,50"
             ))),
             "acs io -i /dev/ttyUSB1@115200,utf8+packet,packetacv6 -o /dev/ttyUSB0@921600,hex,packetmv1,50 --log-dir 'tmp/io logs' --no-log --s3b"
+        );
+    }
+
+    #[test]
+    fn io_prompt_port_position_labels_only_multiple_ports() {
+        assert_eq!(
+            IoPromptPortPosition::input(1, 1).label("受信ポートを選択"),
+            "受信ポートを選択"
+        );
+        assert_eq!(
+            IoPromptPortPosition::input(2, 3).label("受信ボーレート"),
+            "受信ボーレート (受信ポート 2/3)"
+        );
+        assert_eq!(
+            IoPromptPortPosition::output(1, 2).label("送信ボーレート"),
+            "送信ボーレート (送信ポート 1/2)"
         );
     }
 
