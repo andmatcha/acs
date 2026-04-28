@@ -2,34 +2,40 @@
 
 `acs` は ARES Project で使うコマンド群をまとめた ARES Command Set です。
 
-主なコマンドは次のとおりです。
+## インストール
+
+macOS / Linux:
+
+```bash
+make init
+make install
+```
+
+Windows:
+
+```bat
+scripts\init.cmd
+scripts\install.cmd
+```
+
+- `install` は既定で GitHub 上の最新 tag をグローバルインストールします。
+- 通常は macOS / Linux では `~/.cargo/bin/acs`、Windows では `%USERPROFILE%\.cargo\bin\acs.exe` に入るので、そのディレクトリに `PATH` が通っていればどのディレクトリからでも `acs` を実行できます。
+- すでにグローバルに `acs` が入っている場合、`make install` / `scripts\install.cmd` は再インストールせず終了します。差し替えたい場合は `acs update`、`make update`、または `make sync-code` を使ってください。
+- macOS の `make init` は Apple Command Line Tools が無い場合にインストールを要求します。Linux の `make init` は対応する package manager が見つかれば C compiler、`pkg-config`、`libudev` headers、`curl` などを導入します。
+- Windows の `scripts\init.cmd` / `scripts\install.cmd` は Rust が無い場合に rustup を入れ、MSVC toolchain のリンクに必要な Microsoft C++ Build Tools が見つからない場合は `winget` または Visual Studio Build Tools bootstrapper で導入を試みます。
+
+## 主なコマンド
 
 - `acs control`: DUALSHOCK 4 の入力を読み取り、整形したシリアル出力を送信する
 - `acs io`: 複数ポートへのダミーデータ送信と複数ポート受信を同一画面で監視する
 - `acs route`: シリアル入力を built-in template に応じてシリアル出力へ振り分ける
 - `acs xbee-talk`: 端末入力を UTF-8 + CRLF として XBee へ送信する
-- `acs xbee-mock`: `xbee-test` の片側だけを up/down 明示の port binding で実行する。`PAIR=1` なら 1 port 共用、`PAIR=2` なら uplink/downlink を分けて、実機や別プロセスの peer と組み合わせて片側だけの traffic model を流せる
-- `acs xbee-rtt`: XBee 1 ペアに対して対称な疎通確認と RTT 計測を行う。通常は 2 台の PC で同じコマンドを 1 port ずつ使って実行し、`-p/--port` を 2 個指定したときだけ 1 台の PC 上で 2 個の XBee モジュールを相手にして測定する
-- `acs xbee-test`: `base` / `remote` の 2 ポート間で AU(PacketACv6) / RU(RoverUpGeneral) と AD(PacketJFv1) / RD(RoverDownGeneral) の往復試験を行う。`flood` / `ping-pong` / `polling` を切り替えられ、ヘッダに実際の表示更新 fps も表示する
+- `acs xbee-mock`: `xbee-test` の片側だけを実行し、実機や別プロセスの peer と組み合わせて traffic model を流す
+- `acs xbee-rtt`: XBee 1 ペアの疎通確認と RTT 計測を行う
+- `acs xbee-test`: `base` / `remote` の 2 ポート間で往復試験を行う
 - `acs update`: GitHub 上の tag を一覧表示し、最新 tag または指定 tag へ更新する
 
-## グローバルインストール
-
-通常はリポジトリのルートで、まず次を実行してください。
-
-```bash
-make init
-```
-
-そのあとでグローバルインストールを行います。
-
-```bash
-make install
-```
-
-- 既定では、このチェックアウトの「コミット済みの HEAD」の内容だけを使ってグローバルインストールします。未コミット変更は含まれません。
-- 通常は `~/.cargo/bin/acs` に入るので、そのディレクトリに `PATH` が通っていればどのディレクトリからでも `acs` を実行できます。
-- すでにグローバルに `acs` が入っている場合、`make install` は再インストールせず終了します。差し替えたい場合は `make update` か `make sync-code` を使ってください。
+## インストールオプション
 
 特定の ref からインストールしたい場合は `TAG` / `BRANCH` / `COMMIT` を 1 つだけ指定できます。
 
@@ -38,6 +44,16 @@ make install TAG=v0.1.0
 make install BRANCH=main
 make install COMMIT=50d3137a75b821d46b5308f7c7693e513836e11d
 ```
+
+Windows では次のように指定できます。Git が無い場合でも、既定の GitHub repository から tag / branch / commit の archive を取得してインストールします。
+
+```bat
+scripts\install.cmd --tag v0.1.0
+scripts\install.cmd --branch main
+scripts\install.cmd --commit 50d3137a75b821d46b5308f7c7693e513836e11d
+```
+
+ローカルで編集した working tree をそのまま反映したい場合は `make sync-code` を使います。
 
 インストールされたビルド情報は次で確認できます。
 
@@ -168,6 +184,7 @@ acs update list
 詳細は `make help` を見るのが早いです。よく使うものだけ挙げると次のとおりです。
 
 - `make init`: Rust が未導入の環境を初期化し、ローカル release ビルドまで実行する
+- Windows では `scripts\init.cmd` / `scripts\install.cmd` を使うと、`make` や sh が無い環境から初期化とグローバルインストールを実行できる
 - `make build` / `make build-release`: ローカルでビルドする
 - `make fmt` / `make test`: 整形とテストを実行する
 - `make uninstall` / `make purge`: グローバルの `acs` を削除する

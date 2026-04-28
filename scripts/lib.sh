@@ -56,7 +56,14 @@ acs_cargo_bin_dir() {
 }
 
 acs_global_binary_path() {
-    printf '%s\n' "$(acs_cargo_bin_dir)/$ACS_NAME"
+    case "$(acs_os)" in
+        MINGW*|MSYS*|CYGWIN*|Windows_NT)
+            printf '%s\n' "$(acs_cargo_bin_dir)/$ACS_NAME.exe"
+            ;;
+        *)
+            printf '%s\n' "$(acs_cargo_bin_dir)/$ACS_NAME"
+            ;;
+    esac
 }
 
 load_cargo_env() {
@@ -75,6 +82,10 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
+has_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
 require_clean_ref_selection() {
     count=0
     [ -n "${1:-}" ] && count=$((count + 1))
@@ -85,6 +96,114 @@ require_clean_ref_selection() {
 
 ensure_dir() {
     mkdir -p "$1"
+}
+
+run_privileged() {
+    if [ "$(id -u 2>/dev/null || printf '%s\n' 1)" -eq 0 ]; then
+        "$@"
+    elif has_command sudo; then
+        sudo "$@"
+    else
+        fail "sudo is required to install system packages; install the missing build tools manually, then rerun this script"
+    fi
+}
+
+ensure_unix_build_tools() {
+    case "$(acs_os)" in
+        Darwin)
+            if { has_command xcrun && xcrun --find clang >/dev/null 2>&1; } || has_command cc || has_command clang; then
+                return 0
+            fi
+
+            if has_command xcode-select; then
+                info "installing Apple Command Line Tools"
+                xcode-select --install >/dev/null 2>&1 || true
+                fail "Apple Command Line Tools installation was requested. Rerun this script after the installer finishes."
+            fi
+
+            fail "Apple Command Line Tools are required; install them, then rerun this script"
+            ;;
+        Linux)
+            if has_command cc && has_command pkg-config && pkg-config --exists libudev >/dev/null 2>&1; then
+                return 0
+            fi
+
+            if has_command apt-get; then
+                info "installing Linux build dependencies with apt"
+                run_privileged apt-get update
+                run_privileged apt-get install -y build-essential pkg-config libudev-dev curl ca-certificates
+            elif has_command dnf; then
+                info "installing Linux build dependencies with dnf"
+                run_privileged dnf install -y gcc make pkgconf-pkg-config systemd-devel curl ca-certificates
+            elif has_command yum; then
+                info "installing Linux build dependencies with yum"
+                run_privileged yum install -y gcc make pkgconfig systemd-devel curl ca-certificates
+            elif has_command zypper; then
+                info "installing Linux build dependencies with zypper"
+                run_privileged zypper --non-interactive install gcc make pkg-config libudev-devel curl ca-certificates
+            elif has_command pacman; then
+                info "installing Linux build dependencies with pacman"
+                run_privileged pacman -Sy --needed --noconfirm base-devel pkgconf systemd curl ca-certificates
+            elif has_command apk; then
+                info "installing Linux build dependencies with apk"
+                run_privileged apk add build-base pkgconf eudev-dev curl ca-certificates
+            else
+                fail "could not find a supported package manager; install C build tools, pkg-config, and libudev development headers, then rerun this script"
+            fi
+            ;;
+    esac
+}
+
+download_to_stdout() {
+    url=$1
+
+    if has_command curl; then
+        curl --proto '=https' --tlsv1.2 -fsSL "$url"
+    elif has_command wget; then
+        wget -qO- "$url"
+    else
+        fail "required command not found: curl or wget"
+    fi
+}
+
+download_to_file() {
+    url=$1
+    dest=$2
+
+    if has_command curl; then
+        curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$dest"
+    elif has_command wget; then
+        wget -qO "$dest" "$url"
+    else
+        fail "required command not found: curl or wget"
+    fi
+}
+
+install_rustup_if_needed() {
+    load_cargo_env
+
+    if ! has_command rustup; then
+        info "installing rustup with the stable toolchain"
+        download_to_stdout https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+        load_cargo_env
+    fi
+
+    require_command rustup
+    require_command cargo
+}
+
+ensure_rust_toolchain() {
+    with_components=$1
+
+    ensure_unix_build_tools
+    install_rustup_if_needed
+
+    info "ensuring the stable Rust toolchain is available"
+    rustup toolchain install stable --profile minimal
+
+    if [ "$with_components" -eq 1 ]; then
+        rustup component add clippy rustfmt
+    fi
 }
 
 acs_is_globally_installed() {
@@ -135,9 +254,41 @@ source_ref_for_branch() {
 }
 
 latest_remote_tag() {
-    git ls-remote --tags --refs --sort=-v:refname "$(acs_repo_url)" \
-        | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
-        | sed -n '1p'
+    if has_command git; then
+        tag=$(git ls-remote --tags --refs --sort=-v:refname "$(acs_repo_url)" 2>/dev/null \
+            | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
+            | sed -n '1p' || true)
+        if [ -n "$tag" ]; then
+            printf '%s\n' "$tag"
+            return 0
+        fi
+    fi
+
+    slug=$(github_archive_slug)
+    api_output=$(download_to_stdout "https://api.github.com/repos/$slug/tags?per_page=100") || return 1
+    printf '%s\n' "$api_output" \
+        | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | latest_tag_from_stdin
+}
+
+latest_tag_from_stdin() {
+    awk '
+        {
+            tag = $0
+            value = tag
+            sub(/^[vV]/, "", value)
+            n = split(value, parts, /[^0-9]+/)
+            key = ""
+            for (i = 1; i <= 4; i++) {
+                number = 0
+                if (i <= n && parts[i] != "") {
+                    number = parts[i] + 0
+                }
+                key = key sprintf("%09d.", number)
+            }
+            print key "|" tag
+        }
+    ' | sort -r | sed -n '1s/^[^|]*|//p'
 }
 
 clone_local_head_source() {
@@ -166,6 +317,84 @@ clone_remote_commit_source() {
     dest_dir=$2
     git clone "$(acs_repo_url)" "$dest_dir" >/dev/null
     git -c advice.detachedHead=false -C "$dest_dir" checkout --detach "$commit" >/dev/null
+}
+
+copy_source_tree() {
+    source_dir=$1
+    dest_dir=$2
+    archive_path=$dest_dir/source-copy.tar
+
+    ensure_dir "$dest_dir"
+    tar \
+        --exclude ./.git \
+        --exclude ./target \
+        --exclude ./logs \
+        -C "$source_dir" \
+        -cf "$archive_path" .
+    tar -C "$dest_dir" -xf "$archive_path"
+    rm -f "$archive_path"
+}
+
+github_archive_slug() {
+    repo_url=$(acs_repo_url)
+
+    case "$repo_url" in
+        https://github.com/*)
+            slug=${repo_url#https://github.com/}
+            ;;
+        git@github.com:*)
+            slug=${repo_url#git@github.com:}
+            ;;
+        ssh://git@github.com/*)
+            slug=${repo_url#ssh://git@github.com/}
+            ;;
+        *)
+            fail "Git is required for ACS_REPO_URL=$repo_url; without Git, only GitHub repository URLs can be downloaded as archives"
+            ;;
+    esac
+
+    slug=${slug%.git}
+    slug=${slug%/}
+    printf '%s\n' "$slug"
+}
+
+github_archive_url() {
+    kind=$1
+    ref=$2
+    slug=$(github_archive_slug)
+
+    case "$kind" in
+        tag)
+            printf '%s\n' "https://github.com/$slug/archive/refs/tags/$ref.tar.gz"
+            ;;
+        branch)
+            printf '%s\n' "https://github.com/$slug/archive/refs/heads/$ref.tar.gz"
+            ;;
+        commit)
+            printf '%s\n' "https://github.com/$slug/archive/$ref.tar.gz"
+            ;;
+        *)
+            fail "unknown GitHub archive kind: $kind"
+            ;;
+    esac
+}
+
+download_github_source_archive() {
+    kind=$1
+    ref=$2
+    dest_dir=$3
+    archive_url=$(github_archive_url "$kind" "$ref")
+    archive_path=$dest_dir/source.tar.gz
+    extract_root=$dest_dir/archive
+
+    info "Git was not found; downloading $archive_url" >&2
+    download_to_file "$archive_url" "$archive_path"
+    ensure_dir "$extract_root"
+    tar -xzf "$archive_path" -C "$extract_root"
+
+    source_root=$(find "$extract_root" -type f -name Cargo.toml 2>/dev/null | sed -n '1p')
+    [ -n "$source_root" ] || fail "downloaded archive does not contain Cargo.toml"
+    dirname "$source_root"
 }
 
 install_binary_from_source() {

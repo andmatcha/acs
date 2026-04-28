@@ -35,8 +35,6 @@ done
 
 require_clean_ref_selection "$TAG" "$BRANCH" "$COMMIT"
 load_cargo_env
-require_command cargo
-require_command git
 
 if acs_is_globally_installed; then
     info "$ACS_NAME is already installed at $(acs_global_binary_path)"
@@ -45,37 +43,62 @@ if acs_is_globally_installed; then
     exit 0
 fi
 
+ensure_rust_toolchain 0
+
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/acs-install.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM HUP
 SOURCE_DIR="$TMP_ROOT/source"
 
-if [ -n "$TAG" ]; then
+if [ -z "$TAG" ] && [ -z "$BRANCH" ] && [ -z "$COMMIT" ]; then
+    TAG=$(latest_remote_tag)
+    [ -n "$TAG" ] || fail "no remote tags were found at $(acs_repo_url)"
+    info "installing $ACS_NAME from latest remote tag $TAG"
+elif [ -n "$TAG" ]; then
     info "installing $ACS_NAME from remote tag $TAG"
-    clone_remote_tag_source "$TAG" "$SOURCE_DIR"
+fi
+
+if [ -n "$TAG" ]; then
+    if has_command git; then
+        clone_remote_tag_source "$TAG" "$SOURCE_DIR"
+    else
+        SOURCE_DIR=$(download_github_source_archive tag "$TAG" "$TMP_ROOT")
+    fi
     BUILD_BRANCH="detached"
     BUILD_SOURCE_KIND="remote-tag"
     BUILD_SOURCE_REF="$TAG"
 elif [ -n "$BRANCH" ]; then
     info "installing $ACS_NAME from remote branch $BRANCH"
-    clone_remote_branch_source "$BRANCH" "$SOURCE_DIR"
+    if has_command git; then
+        clone_remote_branch_source "$BRANCH" "$SOURCE_DIR"
+    else
+        SOURCE_DIR=$(download_github_source_archive branch "$BRANCH" "$TMP_ROOT")
+    fi
     BUILD_BRANCH="$BRANCH"
     BUILD_SOURCE_KIND="remote-branch"
     BUILD_SOURCE_REF="$BRANCH"
 elif [ -n "$COMMIT" ]; then
     info "installing $ACS_NAME from remote commit $COMMIT"
-    clone_remote_commit_source "$COMMIT" "$SOURCE_DIR"
+    if has_command git; then
+        clone_remote_commit_source "$COMMIT" "$SOURCE_DIR"
+    else
+        SOURCE_DIR=$(download_github_source_archive commit "$COMMIT" "$TMP_ROOT")
+        BUILD_COMMIT="$COMMIT"
+    fi
     BUILD_BRANCH="detached"
     BUILD_SOURCE_KIND="remote-commit"
     BUILD_SOURCE_REF="$COMMIT"
-else
-    BUILD_BRANCH=$(git_branch_name "$REPO_ROOT")
-    info "installing $ACS_NAME from local committed source on branch $BUILD_BRANCH"
-    clone_local_head_source "$REPO_ROOT" "$SOURCE_DIR"
-    BUILD_SOURCE_KIND="local-commit"
 fi
 
-BUILD_COMMIT=$(git_commit_id "$SOURCE_DIR")
-BUILD_DIRTY="clean"
+if [ -z "${BUILD_COMMIT:-}" ]; then
+    if has_command git && git -C "$SOURCE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        BUILD_COMMIT=$(git_commit_id "$SOURCE_DIR")
+    else
+        BUILD_COMMIT="unknown"
+    fi
+fi
+if [ -z "${BUILD_DIRTY:-}" ]; then
+    BUILD_DIRTY="clean"
+fi
 if [ "${BUILD_SOURCE_KIND:-}" = "local-commit" ]; then
     BUILD_SOURCE_REF=$(source_ref_for_branch "$BUILD_BRANCH" "$BUILD_COMMIT")
 fi
