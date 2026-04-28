@@ -13,6 +13,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     eprintln!("  xbee-test   base/remote ポート間で AU/RU と AD/RD を相互試験");
     eprintln!("  controllers 接続中の DUALSHOCK 4 コントローラーを一覧表示");
     eprintln!("  ports       利用可能なシリアルポートを一覧表示");
+    eprintln!("  update      GitHub tag の一覧表示と tag 指定更新");
     eprintln!("  version     ビルド版情報とソース情報を表示");
     eprintln!("  help        コマンドのヘルプを表示");
     eprintln!();
@@ -21,7 +22,7 @@ pub(crate) fn print_usage(bin_name: &str) {
     );
     eprintln!();
     eprintln!(
-        "詳細は `{bin_name} help control`、`{bin_name} help io`、`{bin_name} help route`、`{bin_name} help xbee-talk`、`{bin_name} help xbee-mock`、`{bin_name} help xbee-rtt`、`{bin_name} help xbee-test` で確認できます。"
+        "詳細は `{bin_name} help control`、`{bin_name} help io`、`{bin_name} help route`、`{bin_name} help update`、`{bin_name} help xbee-talk`、`{bin_name} help xbee-mock`、`{bin_name} help xbee-rtt`、`{bin_name} help xbee-test` で確認できます。"
     );
 }
 
@@ -38,6 +39,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("  xbee-test   base/remote ポート間で AU/RU と AD/RD を相互試験");
     println!("  controllers 接続中の DUALSHOCK 4 コントローラーを一覧表示");
     println!("  ports       利用可能なシリアルポートを一覧表示");
+    println!("  update      GitHub tag の一覧表示と tag 指定更新");
     println!("  version     ビルド版情報とソース情報を表示");
     println!("  help        コマンドのヘルプを表示");
     println!();
@@ -58,6 +60,8 @@ pub(crate) fn print_help(bin_name: &str) {
     println!(
         "  {bin_name} xbee-mock base -p /dev/ttyUSB0 --config PAIR=1,TX_FORMAT=packetacv6@100+roverupgeneral@20,RX_FORMAT=packetjfv1+roverdowngeneral,TRAFFIC_PATTERN=flood"
     );
+    println!("  {bin_name} update list");
+    println!("  {bin_name} update latest");
     println!("  {bin_name} --version");
     println!();
     println!("コントローラーまたはシリアルポートが 1 つだけ利用可能な場合は、自動で選択されます。");
@@ -115,6 +119,10 @@ pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode 
             );
             ExitCode::SUCCESS
         }
+        Some("update") => {
+            print_update_help(bin_name);
+            ExitCode::SUCCESS
+        }
         Some("version") => {
             println!("使い方: {bin_name} --version");
             println!("       {bin_name} version");
@@ -130,6 +138,27 @@ pub(crate) fn print_help_topic(bin_name: &str, topic: Option<&str>) -> ExitCode 
             ExitCode::from(2)
         }
     }
+}
+
+pub(crate) fn print_update_help(bin_name: &str) {
+    println!("使い方: {bin_name} update <list|latest|VERSION>");
+    println!();
+    println!("GitHub 上に存在する tag だけを更新対象として扱います。");
+    println!(
+        "更新対象の未指定は許可されません。`list`、`latest`、または VERSION を明示してください。"
+    );
+    println!();
+    println!("引数:");
+    println!("  list     利用可能な GitHub tag を新しい順に表示");
+    println!("  latest   最新の GitHub tag へ更新");
+    println!("  VERSION  指定した GitHub tag へ更新（例: v1.2.2 または 1.2.2）");
+    println!();
+    println!("例:");
+    println!("  {bin_name} update list");
+    println!("  {bin_name} update latest");
+    println!("  {bin_name} update v1.2.2");
+    println!();
+    println!("対象リポジトリは環境変数 ACS_REPO_URL で上書きできます。");
 }
 
 pub(crate) fn print_control_help(bin_name: &str) {

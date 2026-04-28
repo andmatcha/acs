@@ -6,6 +6,7 @@ mod io;
 mod paths;
 mod route;
 mod signal;
+mod update;
 mod version;
 mod xbee_mock;
 mod xbee_rtt;
@@ -29,6 +30,7 @@ pub fn run() -> ExitCode {
         Some("version") => version::print_version(),
         Some("controllers") => commands::list_controllers(),
         Some("ports") => commands::list_ports(),
+        Some("update") => update::run(args.collect(), &bin_name),
         Some("control") => control::run(args.collect(), &bin_name),
         Some("io") => io::run(args.collect(), &bin_name),
         Some("route") => route::run(args.collect(), &bin_name),

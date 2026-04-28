@@ -11,6 +11,7 @@
 - `acs xbee-mock`: `xbee-test` の片側だけを up/down 明示の port binding で実行する。`PAIR=1` なら 1 port 共用、`PAIR=2` なら uplink/downlink を分けて、実機や別プロセスの peer と組み合わせて片側だけの traffic model を流せる
 - `acs xbee-rtt`: XBee 1 ペアに対して対称な疎通確認と RTT 計測を行う。通常は 2 台の PC で同じコマンドを 1 port ずつ使って実行し、`-p/--port` を 2 個指定したときだけ 1 台の PC 上で 2 個の XBee モジュールを相手にして測定する
 - `acs xbee-test`: `base` / `remote` の 2 ポート間で AU(PacketACv6) / RU(RoverUpGeneral) と AD(PacketJFv1) / RD(RoverDownGeneral) の往復試験を行う。`flood` / `ping-pong` / `polling` を切り替えられ、ヘッダに実際の表示更新 fps も表示する
+- `acs update`: GitHub 上の tag を一覧表示し、最新 tag または指定 tag へ更新する
 
 ## グローバルインストール
 
@@ -46,6 +47,21 @@ acs version
 ```
 
 ## 更新方法
+
+### `acs update`
+
+インストール済みの `acs` から直接更新できます。更新対象は GitHub 上に存在する tag のみです。
+
+```bash
+acs update list
+acs update latest
+acs update v1.2.2
+```
+
+- `list` は更新可能な tag を新しい順に表示します。
+- `latest` は最新の GitHub tag へ更新します。
+- バージョン指定は GitHub tag と照合され、`1.2.2` のように `v` を省略した場合は `v1.2.2` も探します。
+- `acs update` のように更新対象を省略した実行は許可されません。
 
 ### `make sync-code`
 
@@ -111,6 +127,7 @@ acs xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 
 acs xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --config MODE=ping-pong,AU_RATE=100,RU_RATE=50
 acs xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 --config MODE=polling,POLL_RATE=100,BASE_REAL_PERCENT=10,REMOTE_REAL_PERCENT=20
 acs --version
+acs update list
 ```
 
 - 1 台だけコントローラーやシリアルポートが見つかる場合は、自動選択されます。
