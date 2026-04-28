@@ -10,7 +10,7 @@ use super::io::{
 };
 use super::signal;
 use crate::ingress::IngressFrame;
-use crate::input::ds4_hid::{Ds4Controller, Ds4DeviceInfo};
+use crate::input::ds4_hid::{Ds4Controller, Ds4DeviceInfo, list_devices};
 use crate::output::OutputFormat;
 use crate::pipeline::{
     ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineEngine, PipelineSpec,
@@ -560,7 +560,7 @@ fn control_transform_modules(format: OutputFormat) -> Vec<TransformModuleConfig>
 fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings, String> {
     let selected_port = cli_options.port.and_then(PortSpec::normalized);
     let default_baud = cli_options.baud.unwrap_or_else(default_baud_rate);
-    let controller = cli_options.controller;
+    let controller = resolve_control_controller(cli_options.controller)?;
     let format_name = cli_options
         .format
         .unwrap_or_else(|| String::from("packetacv6"));
@@ -914,6 +914,38 @@ fn prompt_control_output_format() -> Result<String, String> {
         .collect::<Vec<_>>();
     let selected = choose_from_menu("送信フォーマット", &labels, 0)?;
     Ok(formats[selected].as_str().to_owned())
+}
+
+fn resolve_control_controller(controller: Option<String>) -> Result<Option<String>, String> {
+    if controller.is_some() {
+        return Ok(controller);
+    }
+
+    let devices = list_devices().map_err(|error| format!("failed to list controllers: {error}"))?;
+    match devices.as_slice() {
+        [] | [_] => Ok(None),
+        many => {
+            let labels = many
+                .iter()
+                .enumerate()
+                .map(|(index, device)| format_controller_choice(index, device))
+                .collect::<Vec<_>>();
+            let selected = choose_from_menu("コントローラーを選択", &labels, 0)?;
+            Ok(Some(selected.to_string()))
+        }
+    }
+}
+
+fn format_controller_choice(index: usize, device: &Ds4DeviceInfo) -> String {
+    format!(
+        "[{index}] transport={} vid=0x{:04x} pid=0x{:04x} interface={} product={} path={}",
+        device.transport,
+        device.vendor_id,
+        device.product_id,
+        device.interface_number,
+        device.product_name.as_deref().unwrap_or("unknown"),
+        device.path
+    )
 }
 
 fn display_mode_from_prompt(value: Option<&str>) -> Result<Option<PortDisplayMode>, String> {

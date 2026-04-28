@@ -145,6 +145,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "`acs control` だけで、送信ポート、ボーレート、表示形式、送信フォーマットを対話式に選択できます。"
     );
     println!("`--monitor` を指定した場合だけ、受信監視ポートも対話式または引数で追加できます。");
+    println!("DUALSHOCK 4 が 1 台だけの場合は自動選択し、複数台ある場合だけ対話式に選択します。");
     println!();
     println!("オプション:");
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> シリアル出力ポート");
@@ -155,6 +156,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("                              省略すると対話式に選択します");
     println!("  -f, --format <FORMAT>      送信フォーマット。値を省略すると対話式に選択");
     println!("                              FORMAT: packetacv6/packetmv1");
+    println!("  -c, --controller <INDEX|PATH> 使用する DUALSHOCK 4（省略時は自動/対話選択）");
     println!("  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]>");
     println!(
         "                              受信監視するシリアルポート（繰り返し指定可）。値を省略すると対話式に選択"
