@@ -25,6 +25,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 const DEFAULT_IO_SEND_RATE_HZ: u32 = 10;
+pub(crate) const IO_SEND_RATE_CHOICES: &[u32] = &[10, 50, 100, 20, 1];
 const SEND_LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
 const RATE_WINDOW: Duration = Duration::from_secs(1);
@@ -569,6 +570,7 @@ enum PacketMatcher {
     PacketMv1,
     PacketIv1,
     PacketBv1,
+    PacketGcV1,
     PacketJfV1,
     RoverUpGeneral,
     RoverDownGeneral,
@@ -581,6 +583,7 @@ impl PacketMatcher {
             OutputFormat::PacketMv1 => Self::PacketMv1,
             OutputFormat::PacketIv1 => Self::PacketIv1,
             OutputFormat::PacketBv1 => Self::PacketBv1,
+            OutputFormat::PacketGcV1 => Self::PacketGcV1,
             OutputFormat::PacketJfV1 => Self::PacketJfV1,
             OutputFormat::RoverUpGeneral => Self::RoverUpGeneral,
             OutputFormat::RoverDownGeneral => Self::RoverDownGeneral,
@@ -593,6 +596,7 @@ impl PacketMatcher {
             Self::PacketMv1 => OutputFormat::PacketMv1,
             Self::PacketIv1 => OutputFormat::PacketIv1,
             Self::PacketBv1 => OutputFormat::PacketBv1,
+            Self::PacketGcV1 => OutputFormat::PacketGcV1,
             Self::PacketJfV1 => OutputFormat::PacketJfV1,
             Self::RoverUpGeneral => OutputFormat::RoverUpGeneral,
             Self::RoverDownGeneral => OutputFormat::RoverDownGeneral,
@@ -622,6 +626,7 @@ impl PacketMatcher {
             Self::PacketMv1 => matches_reduced_ac_packet(bytes, b'M', 19),
             Self::PacketIv1 => matches_reduced_ac_packet(bytes, b'I', 19),
             Self::PacketBv1 => matches_reduced_ac_packet(bytes, b'B', 15),
+            Self::PacketGcV1 => matches_crc_packet(bytes, b"GC", 7),
             Self::PacketJfV1 => matches_crc_packet(bytes, b"JF", 14),
             Self::RoverUpGeneral => matches_rover_up_packet(bytes),
             Self::RoverDownGeneral => matches_rover_down_packet(bytes),
@@ -638,6 +643,7 @@ impl PacketMatcher {
             Self::PacketMv1 => could_match_reduced_ac_packet_prefix(bytes, b'M', 19),
             Self::PacketIv1 => could_match_reduced_ac_packet_prefix(bytes, b'I', 19),
             Self::PacketBv1 => could_match_reduced_ac_packet_prefix(bytes, b'B', 15),
+            Self::PacketGcV1 => could_match_crc_packet_prefix(bytes, b"GC", 9),
             Self::PacketJfV1 => could_match_crc_packet_prefix(bytes, b"JF", 16),
             Self::RoverUpGeneral => matches_rover_up_prefix(bytes),
             Self::RoverDownGeneral => matches_rover_down_prefix(bytes),
@@ -1189,7 +1195,7 @@ fn prompt_io_output_binding(
     let rate_hz = prompt_u32_choice_with_preview(
         &rate_prompt,
         DEFAULT_IO_SEND_RATE_HZ,
-        &[10, 50, 100, 20, 1],
+        IO_SEND_RATE_CHOICES,
         |rate_hz| {
             Some(command.render(Some(IoPromptBindingPreview::Output(
                 &format_prompt_io_output_binding(
@@ -1623,6 +1629,7 @@ pub(crate) fn output_format_choices() -> Vec<OutputFormat> {
         OutputFormat::PacketMv1,
         OutputFormat::PacketIv1,
         OutputFormat::PacketBv1,
+        OutputFormat::PacketGcV1,
         OutputFormat::PacketJfV1,
         OutputFormat::RoverUpGeneral,
         OutputFormat::RoverDownGeneral,

@@ -103,7 +103,11 @@ impl MessageTransform for OutputEncodeTransform {
                 self.format.as_str()
             )
         })?;
-        message.payload = self.driver.encode(&compact_report)?;
+        let payload = self.driver.encode(&compact_report)?;
+        if payload.is_empty() {
+            return Ok(Vec::new());
+        }
+        message.payload = payload;
         Ok(vec![message])
     }
 }
