@@ -185,6 +185,10 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("                              省略すると対話式に選択します");
     println!("  -f, --format <FORMAT>      送信フォーマット。値を省略すると対話式に選択");
     println!("                              FORMAT: packetacv6/packetmv1/packetgcv1");
+    println!("  -r, --rate <HZ>            固定送信レート");
+    println!(
+        "                              既定値: packetacv6/packetmv1 は 100 Hz、それ以外は 20 Hz"
+    );
     println!("  -c, --controller <INDEX|PATH> 使用する DUALSHOCK 4（省略時は自動/対話選択）");
     println!("  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]>");
     println!(
@@ -197,11 +201,12 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "                              FORMAT: packetacv6/packetmv1/packetgcv1/packetiv1/packetbv1/packetjfv1/roverupgeneral/roverdowngeneral"
     );
     println!(
-        "      --config <K=V,...>     設定をまとめて指定: `CONTROLLER`, `FORMAT`, `DISPLAY`, `LOG_DIR`"
+        "      --config <K=V,...>     設定をまとめて指定: `CONTROLLER`, `FORMAT`, `RATE`, `DISPLAY`, `LOG_DIR`"
     );
     println!(
         "                              `FORMAT`: 出力フォーマット（packetacv6 / packetmv1 / packetgcv1）"
     );
+    println!("                              `RATE`: 固定送信レート (Hz)");
     println!("                              `DISPLAY`: ポートの表示モード");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
@@ -216,9 +221,9 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!();
     println!("例:");
     println!("  {bin_name} control");
-    println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
-    println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketMv1");
-    println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketGCv1");
+    println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6,RATE=100");
+    println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketMv1,RATE=100");
+    println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketGCv1,RATE=20");
     println!(
         "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8+packet,packetjfv1 --config FORMAT=PacketACv6"
     );

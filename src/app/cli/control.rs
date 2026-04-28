@@ -4,7 +4,7 @@ use super::common::{
 };
 use super::help::{is_help_flag, print_control_help};
 use super::io::{
-    ObservedInput, choose_from_menu_with_preview, format_command_preview,
+    IO_SEND_RATE_CHOICES, ObservedInput, choose_from_menu_with_preview, format_command_preview,
     format_input_display_value, format_io_input_binding, parse_output_format_list,
     prompt_display_mode_with_preview, prompt_input_format_with_preview,
     prompt_serial_port_with_preview, prompt_u32_choice_with_preview, resolve_display_mode,
@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-const LOOP_INTERVAL: Duration = Duration::from_millis(20);
+const SEND_LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const CONTROLLER_POLL_MILLIS: i32 = 0;
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
 const DISPLAY_FLUSH_SLICE: usize = 32;
@@ -41,6 +41,7 @@ struct ControlCliOptions {
     baud: Option<u32>,
     controller: Option<String>,
     format: Option<ControlFormatArg>,
+    rate_hz: Option<u32>,
     display: PortDisplayConfig,
     monitor_ports: Vec<ControlMonitorArg>,
     log_dir: Option<PathBuf>,
@@ -54,6 +55,7 @@ struct ControlRuntimeOptions {
     baud: Option<u32>,
     controller: Option<String>,
     format: Option<String>,
+    rate_hz: Option<u32>,
     display: PortDisplayConfig,
     monitor_ports: Vec<ControlMonitorBinding>,
     log_dir: Option<PathBuf>,
@@ -83,6 +85,7 @@ enum ControlFormatArg {
 struct ControlPromptCommand {
     output: Option<String>,
     format: Option<String>,
+    rate_hz: Option<u32>,
     controller: Option<String>,
     monitors: Vec<String>,
     log_dir: Option<PathBuf>,
@@ -94,6 +97,7 @@ struct ControlPromptCommand {
 enum ControlPromptCandidate<'a> {
     Output(&'a str),
     Format(&'a str),
+    Rate(&'a str),
     Monitor(&'a str),
 }
 
@@ -105,6 +109,7 @@ impl ControlPromptCommand {
                 .as_ref()
                 .map(|port| format_control_port_spec_preview(port)),
             format: options.format.clone(),
+            rate_hz: options.rate_hz,
             controller: options.controller.clone(),
             monitors: options
                 .monitor_ports
@@ -123,6 +128,10 @@ impl ControlPromptCommand {
 
     fn set_format(&mut self, format: String) {
         self.format = Some(format);
+    }
+
+    fn set_rate_hz(&mut self, rate_hz: u32) {
+        self.rate_hz = Some(rate_hz);
     }
 
     fn push_monitor(&mut self, monitor: String) {
@@ -162,6 +171,18 @@ impl ControlPromptCommand {
             args.push(format);
         }
 
+        if let Some(rate_hz) = candidate
+            .and_then(|candidate| match candidate {
+                ControlPromptCandidate::Rate(rate_hz) => Some(rate_hz),
+                _ => None,
+            })
+            .map(str::to_owned)
+            .or_else(|| self.rate_hz.map(|rate_hz| rate_hz.to_string()))
+        {
+            args.push(String::from("--rate"));
+            args.push(rate_hz);
+        }
+
         if let Some(controller) = self.controller.clone() {
             args.push(String::from("--controller"));
             args.push(controller);
@@ -197,6 +218,7 @@ struct ControlSettings {
     header_monitors: Vec<ControlHeaderMonitor>,
     controller: Option<String>,
     format: OutputFormat,
+    rate_hz: u32,
     log_dir: PathBuf,
     logging_enabled: bool,
     s3b: bool,
@@ -279,10 +301,11 @@ impl ControlRuntimeState {
                 controller_info.path
             ),
             output_line: format!(
-                "output: {} @ {} baud, format={}",
+                "output: {} @ {} baud, format={}, tx_target={} Hz",
                 settings.output.port,
                 settings.output.baud_rate,
-                settings.format.as_str()
+                settings.format.as_str(),
+                settings.rate_hz
             ),
             monitors: settings.header_monitors.clone(),
             observed_inputs,
@@ -435,9 +458,17 @@ fn extend_unique_formats(target: &mut Vec<OutputFormat>, values: &[OutputFormat]
     }
 }
 
+fn default_control_rate_hz(format: OutputFormat) -> u32 {
+    match format {
+        OutputFormat::PacketAcV6 | OutputFormat::PacketMv1 => 100,
+        _ => 20,
+    }
+}
+
 fn build_control_executed_command(
     output: &SessionOutputSpec,
     format: OutputFormat,
+    rate_hz: u32,
     monitors: &[ControlCommandMonitor],
     controller: Option<&str>,
     log_dir: Option<&PathBuf>,
@@ -454,6 +485,8 @@ fn build_control_executed_command(
     ));
     args.push(String::from("--format"));
     args.push(format.as_str().to_owned());
+    args.push(String::from("--rate"));
+    args.push(rate_hz.to_string());
 
     if let Some(controller) = controller {
         args.push(String::from("--controller"));
@@ -657,6 +690,7 @@ fn run_with_options(cli_options: ControlRuntimeOptions) -> Result<ControlRunResu
         inputs: settings.inputs.clone(),
         outputs: vec![settings.output.clone()],
     })?;
+    session.set_output_packet_rate_enabled(&settings.output.port, true);
     let log_path = session.log_path().to_path_buf();
     let log_path_display = log_path.display().to_string();
     let runtime_state = RefCell::new(ControlRuntimeState::new(
@@ -670,8 +704,11 @@ fn run_with_options(cli_options: ControlRuntimeOptions) -> Result<ControlRunResu
     session.set_header_lines(initial_header_lines);
 
     signal::install_handler();
+    let send_period = Duration::from_secs_f64(1.0 / settings.rate_hz as f64);
+    let mut next_send_at = started_at;
+    let mut latest_controller_report = None::<Vec<u8>>;
     session.run_loop_with_tick(
-        LOOP_INTERVAL,
+        SEND_LOOP_INTERVAL,
         signal::is_stop_requested,
         |frame, session| runtime_state.borrow_mut().handle_input(frame, session),
         |session| {
@@ -684,29 +721,16 @@ fn run_with_options(cli_options: ControlRuntimeOptions) -> Result<ControlRunResu
             };
 
             if let Some(report) = maybe_report {
-                let frame = IngressFrame {
-                    input_id: controller_input_id.clone(),
-                    bytes: report,
-                };
+                latest_controller_report = Some(report);
+            }
 
-                match engine.process_frame(&frame) {
-                    Ok(dispatches) => {
-                        for dispatch in dispatches {
-                            match session.write_output(&dispatch.output_id, &dispatch.bytes) {
-                                Ok(()) => {
-                                    session.clear_output_error(&dispatch.output_id)?;
-                                }
-                                Err(error) => {
-                                    session.set_output_error(&dispatch.output_id, &error)?;
-                                }
-                            }
-                        }
-                    }
-                    Err(error) if error.starts_with("failed to convert DS4 report:") => {}
-                    Err(error) => {
-                        session.set_status(format!("pipeline error: {error}"));
-                    }
+            let now = Instant::now();
+            if now >= next_send_at {
+                realign_control_send_schedule(&mut next_send_at, send_period, now);
+                if let Some(report) = latest_controller_report.as_ref() {
+                    dispatch_control_report(&mut engine, session, &controller_input_id, report)?;
                 }
+                next_send_at += send_period;
             }
             runtime_state.borrow_mut().on_tick(session)?;
             Ok(())
@@ -718,6 +742,59 @@ fn run_with_options(cli_options: ControlRuntimeOptions) -> Result<ControlRunResu
         log_path,
         executed_command: settings.executed_command,
     })
+}
+
+fn dispatch_control_report(
+    engine: &mut PipelineEngine,
+    session: &mut SessionRuntime,
+    controller_input_id: &str,
+    report: &[u8],
+) -> Result<(), String> {
+    let frame = IngressFrame {
+        input_id: controller_input_id.to_owned(),
+        bytes: report.to_vec(),
+    };
+
+    match engine.process_frame(&frame) {
+        Ok(dispatches) => {
+            for dispatch in dispatches {
+                match session.write_output(&dispatch.output_id, &dispatch.bytes) {
+                    Ok(()) => {
+                        session.clear_output_error(&dispatch.output_id)?;
+                    }
+                    Err(error) => {
+                        session.set_output_error(&dispatch.output_id, &error)?;
+                    }
+                }
+            }
+        }
+        Err(error) if error.starts_with("failed to convert DS4 report:") => {}
+        Err(error) => {
+            session.set_status(format!("pipeline error: {error}"));
+        }
+    }
+
+    Ok(())
+}
+
+fn realign_control_send_schedule(next_send_at: &mut Instant, period: Duration, now: Instant) {
+    if now <= *next_send_at || period.is_zero() {
+        return;
+    }
+
+    let overdue = now.duration_since(*next_send_at);
+    if overdue < period {
+        return;
+    }
+
+    let skipped_periods = (overdue.as_secs_f64() / period.as_secs_f64()).floor() as u32;
+    if skipped_periods > 0 {
+        if let Some(advance) = period.checked_mul(skipped_periods) {
+            *next_send_at += advance;
+        } else {
+            *next_send_at = now;
+        }
+    }
 }
 
 fn build_control_pipeline_spec(controller_input_id: &str, format: OutputFormat) -> PipelineSpec {
@@ -752,6 +829,12 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
         .format
         .unwrap_or_else(|| String::from("packetacv6"));
     let format = OutputFormat::parse(&format_name)?;
+    let rate_hz = cli_options
+        .rate_hz
+        .unwrap_or_else(|| default_control_rate_hz(format));
+    if rate_hz == 0 {
+        return Err(String::from("control send rate must be greater than 0"));
+    }
     let display = cli_options.display;
     let monitor_port_specs = cli_options.monitor_ports;
     let port = match &selected_port {
@@ -909,6 +992,7 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
         build_control_executed_command(
             &output,
             format,
+            rate_hz,
             &command_monitors,
             Some(controller),
             explicit_log_dir.as_ref(),
@@ -919,6 +1003,7 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
     let executed_command = Some(build_control_executed_command(
         &output,
         format,
+        rate_hz,
         &command_monitors,
         controller.as_deref(),
         explicit_log_dir.as_ref(),
@@ -933,6 +1018,7 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
         header_monitors,
         controller,
         format,
+        rate_hz,
         log_dir,
         logging_enabled: !cli_options.no_log,
         s3b: cli_options.s3b,
@@ -959,6 +1045,10 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
             options.format = Some(ControlFormatArg::Provided(value));
             continue;
         }
+        if let Some(value) = strip_control_value(&arg, &["-r", "--rate"]) {
+            options.rate_hz = Some(parse_u32_arg("--rate", &value)?);
+            continue;
+        }
 
         match arg.as_str() {
             "--port" | "-p" => {
@@ -973,6 +1063,10 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
             "--baud" | "-b" => {
                 let value = next_value(&mut iter, "--baud")?;
                 options.baud = Some(parse_u32_arg("--baud", &value)?);
+            }
+            "--rate" | "-r" => {
+                let value = next_value(&mut iter, "--rate")?;
+                options.rate_hz = Some(parse_u32_arg("--rate", &value)?);
             }
             "--controller" | "-c" => {
                 options.controller = Some(next_value(&mut iter, "--controller")?);
@@ -1026,6 +1120,7 @@ fn resolve_control_options(
     let mut runtime_options = ControlRuntimeOptions {
         baud: cli_options.baud,
         controller: cli_options.controller,
+        rate_hz: cli_options.rate_hz,
         display: cli_options.display,
         log_dir: cli_options.log_dir,
         no_log: cli_options.no_log,
@@ -1033,6 +1128,7 @@ fn resolve_control_options(
         ..ControlRuntimeOptions::default()
     };
     let mut prompt_command = ControlPromptCommand::new(&runtime_options);
+    let mut prompt_rate = false;
 
     if let Some(format) = cli_options.format {
         let format = match format {
@@ -1049,6 +1145,7 @@ fn resolve_control_options(
             prompt_command.set_output(value);
         }
         Some(ControlPortArg::Prompt) | None => {
+            prompt_rate = true;
             let (value, format) =
                 prompt_control_output_binding(&prompt_command, runtime_options.format.is_none())?;
             runtime_options.port = Some(parse_port_spec("--port", &value)?);
@@ -1063,6 +1160,17 @@ fn resolve_control_options(
     }
 
     prompt_command.ensure_default_format();
+    if runtime_options.rate_hz.is_none() && prompt_rate {
+        let format = OutputFormat::parse(
+            runtime_options
+                .format
+                .as_deref()
+                .unwrap_or_else(|| prompt_command.format.as_deref().unwrap_or("packetacv6")),
+        )?;
+        let rate_hz = prompt_control_output_rate(&prompt_command, format)?;
+        prompt_command.set_rate_hz(rate_hz);
+        runtime_options.rate_hz = Some(rate_hz);
+    }
     for monitor in cli_options.monitor_ports {
         let value = match monitor {
             ControlMonitorArg::Provided(value) => value,
@@ -1195,6 +1303,18 @@ fn prompt_control_output_format_with_preview(
     Ok(formats[selected].as_str().to_owned())
 }
 
+fn prompt_control_output_rate(
+    command: &ControlPromptCommand,
+    format: OutputFormat,
+) -> Result<u32, String> {
+    prompt_u32_choice_with_preview(
+        "送信レート (Hz)",
+        default_control_rate_hz(format),
+        IO_SEND_RATE_CHOICES,
+        |rate_hz| Some(command.render(Some(ControlPromptCandidate::Rate(rate_hz)))),
+    )
+}
+
 fn resolve_control_controller<F>(
     controller: Option<String>,
     preview: F,
@@ -1277,6 +1397,7 @@ fn apply_control_config_args(options: &mut ControlCliOptions, value: &str) -> Re
         match key.as_str() {
             "CONTROLLER" => options.controller = Some(assignment.value),
             "FORMAT" => options.format = Some(ControlFormatArg::Provided(assignment.value)),
+            "RATE" => options.rate_hz = Some(parse_u32_arg("RATE", &assignment.value)?),
             "DISPLAY" => {
                 let display = parse_display_assignment(&assignment.value)?;
                 display.apply_to(&mut options.display);
@@ -1294,7 +1415,7 @@ mod tests {
     use super::{
         ControlFormatArg, ControlMonitorArg, ControlPortArg, ControlPromptCandidate,
         ControlPromptCommand, ControlRuntimeOptions, build_control_pipeline_spec,
-        parse_control_args, parse_control_monitor_binding,
+        default_control_rate_hz, parse_control_args, parse_control_monitor_binding,
     };
     use crate::output::OutputFormat;
     use crate::pipeline::PipelineEngine;
@@ -1307,7 +1428,7 @@ mod tests {
             String::from("--port"),
             String::from("/dev/ttyUSB0@921600"),
             String::from("--config"),
-            String::from("FORMAT=PacketACv6,CONTROLLER=0,DISPLAY=input:default=utf8+packet,LOG_DIR=tmp/control-logs"),
+            String::from("FORMAT=PacketACv6,RATE=100,CONTROLLER=0,DISPLAY=input:default=utf8+packet,LOG_DIR=tmp/control-logs"),
             String::from("--monitor"),
             String::from("/dev/ttyUSB1@115200,hex"),
             String::from("--no-log"),
@@ -1325,6 +1446,7 @@ mod tests {
             options.format,
             Some(ControlFormatArg::Provided(String::from("PacketACv6")))
         );
+        assert_eq!(options.rate_hz, Some(100));
         assert_eq!(options.monitor_ports.len(), 1);
         assert_eq!(
             options.monitor_ports[0],
@@ -1374,6 +1496,21 @@ mod tests {
             options.format,
             Some(ControlFormatArg::Provided(String::from("PacketMv1")))
         );
+    }
+
+    #[test]
+    fn parse_control_args_accepts_rate_option() {
+        let options = parse_control_args(vec![String::from("--rate"), String::from("20")])
+            .expect("should parse");
+
+        assert_eq!(options.rate_hz, Some(20));
+    }
+
+    #[test]
+    fn default_control_rates_match_formats() {
+        assert_eq!(default_control_rate_hz(OutputFormat::PacketAcV6), 100);
+        assert_eq!(default_control_rate_hz(OutputFormat::PacketMv1), 100);
+        assert_eq!(default_control_rate_hz(OutputFormat::PacketGcV1), 20);
     }
 
     #[test]

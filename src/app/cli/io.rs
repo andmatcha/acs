@@ -25,6 +25,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 const DEFAULT_IO_SEND_RATE_HZ: u32 = 10;
+pub(crate) const IO_SEND_RATE_CHOICES: &[u32] = &[10, 50, 100, 20, 1];
 const SEND_LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
 const RATE_WINDOW: Duration = Duration::from_secs(1);
@@ -1194,7 +1195,7 @@ fn prompt_io_output_binding(
     let rate_hz = prompt_u32_choice_with_preview(
         &rate_prompt,
         DEFAULT_IO_SEND_RATE_HZ,
-        &[10, 50, 100, 20, 1],
+        IO_SEND_RATE_CHOICES,
         |rate_hz| {
             Some(command.render(Some(IoPromptBindingPreview::Output(
                 &format_prompt_io_output_binding(
