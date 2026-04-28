@@ -477,12 +477,14 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!();
     println!("オプション:");
     println!("      --list-templates        組み込みルートテンプレートを表示");
-    println!("  -i, --input-port <ID=PORT[@BAUD][,DISPLAY]>  中継元の入力ポート（繰り返し指定可）");
-    println!("  -o, --output-port <ID=PORT[@BAUD][,DISPLAY]> 中継先の出力ポート（繰り返し指定可）");
+    println!("  -i, --input-port [ID=PORT[@BAUD][,DISPLAY]]  中継元の入力ポート（繰り返し指定可）");
+    println!("                                値を省略すると対話式に選択");
+    println!("  -o, --output-port [ID=PORT[@BAUD][,DISPLAY]] 中継先の出力ポート（繰り返し指定可）");
+    println!("                                値を省略すると対話式に選択");
     println!(
-        "                               PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
+        "                                PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
     );
-    println!("                               BAUD を省略した場合は 115200 が使われます");
+    println!("                                BAUD を省略した場合は 115200 が使われます");
     println!("      --config <K=V,...>      設定をまとめて指定: `TEMPLATE`, `DISPLAY`, `LOG_DIR`");
     println!("                              `TEMPLATE` は位置引数の TEMPLATE と同じです");
     println!("                              `DISPLAY`: ポートの表示モード");
@@ -502,6 +504,7 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("  one-to-one       入出力配列を順番で対応付けてそのまま中継");
     println!();
     println!("例:");
+    println!("  {bin_name} route merge -i -o");
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0 -o out_main=/dev/ttyUSB1");
     println!(
         "  {bin_name} route merge -i in_a=/dev/ttyUSB0@921600 -i in_b=/dev/ttyUSB1@115200 -o out_main=/dev/ttyUSB2@921600"
