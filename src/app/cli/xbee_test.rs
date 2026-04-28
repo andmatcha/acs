@@ -2342,7 +2342,14 @@ fn packet_is_valid(packet: &[u8], definition: PacketDefinition) -> bool {
 }
 
 fn matches_reduced_ac_packet(packet: &[u8], header: u8, packet_len: usize) -> bool {
-    packet.len() == packet_len && packet.first().copied() == Some(header)
+    if packet.len() != packet_len || packet.first().copied() != Some(header) {
+        return false;
+    }
+
+    let payload_len = packet_len - 2;
+    let expected_crc = crc16_ccitt_false(&packet[..payload_len]);
+    let actual_crc = u16::from_le_bytes([packet[payload_len], packet[payload_len + 1]]);
+    expected_crc == actual_crc
 }
 
 fn matches_rover_up_packet(bytes: &[u8]) -> bool {
@@ -2446,7 +2453,8 @@ mod tests {
     use super::{
         ExpectedPacketTracker, OutputFormat, PacketDefinition, PacketStreamDecoder,
         XbeeTestFrameKind, XbeeTestMode, build_poll_frame, matches_poll_frame,
-        matches_rover_down_packet, parse_xbee_test_args, parse_xbee_test_port_binding,
+        matches_reduced_ac_packet, matches_rover_down_packet, parse_xbee_test_args,
+        parse_xbee_test_port_binding,
     };
 
     #[test]
@@ -2650,6 +2658,26 @@ mod tests {
         assert!(super::packet_is_valid(&payload, definition));
         payload[2] ^= 0x01;
         assert!(!super::packet_is_valid(&payload, definition));
+    }
+
+    #[test]
+    fn reduced_ac_packet_matcher_checks_crc() {
+        let mut payload = OutputFormat::PacketMv1
+            .encode_dummy_payload()
+            .expect("payload");
+
+        assert!(matches_reduced_ac_packet(
+            &payload,
+            b'M',
+            OutputFormat::PacketMv1.packet_len()
+        ));
+
+        payload[2] ^= 0x01;
+        assert!(!matches_reduced_ac_packet(
+            &payload,
+            b'M',
+            OutputFormat::PacketMv1.packet_len()
+        ));
     }
 
     #[test]

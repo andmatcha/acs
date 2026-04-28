@@ -124,11 +124,12 @@ pub(crate) fn reduce_packetacv6_for_kind(
 
     let mut reduced = Vec::with_capacity(packet_len(kind));
     reduced.push(kind.header_byte());
-    for index in AC_PACKET_HEADER_LEN..PACKET_ACV6_PACKET_LEN {
+    for index in AC_PACKET_HEADER_LEN..PACKET_ACV6_PAYLOAD_LEN {
         if !kind.is_deleted_index(index) {
             reduced.push(ac_packet[index]);
         }
     }
+    append_crc16(&mut reduced);
 
     debug_assert_eq!(reduced.len(), packet_len(kind));
     Ok(reduced)
@@ -364,6 +365,11 @@ fn write_i16_le(packet: &mut [u8], cursor: &mut usize, value: i16) {
     write_bytes(packet, cursor, &value.to_le_bytes());
 }
 
+fn append_crc16(packet: &mut Vec<u8>) {
+    let crc = crc16_ccitt_false(packet);
+    packet.extend_from_slice(&crc.to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -381,10 +387,9 @@ mod tests {
         assert_eq!(reduced[1], source[2]);
         assert_eq!(&reduced[2..16], &source[4..18]);
         assert_eq!(reduced[16], source[30]);
-        assert_eq!(&reduced[17..19], &source[37..39]);
         assert_eq!(
             u16::from_le_bytes([reduced[17], reduced[18]]),
-            crc16_ccitt_false(&source[..37])
+            crc16_ccitt_false(&reduced[..17])
         );
     }
 
@@ -400,7 +405,10 @@ mod tests {
         assert_eq!(&reduced[6..10], &source[14..18]);
         assert_eq!(&reduced[10..16], &source[18..24]);
         assert_eq!(reduced[16], source[30]);
-        assert_eq!(&reduced[17..19], &source[37..39]);
+        assert_eq!(
+            u16::from_le_bytes([reduced[17], reduced[18]]),
+            crc16_ccitt_false(&reduced[..17])
+        );
     }
 
     #[test]
@@ -414,7 +422,10 @@ mod tests {
         assert_eq!(&reduced[2..8], &source[18..24]);
         assert_eq!(reduced[8], source[30]);
         assert_eq!(&reduced[9..13], &source[31..35]);
-        assert_eq!(&reduced[13..15], &source[37..39]);
+        assert_eq!(
+            u16::from_le_bytes([reduced[13], reduced[14]]),
+            crc16_ccitt_false(&reduced[..13])
+        );
     }
 
     #[test]

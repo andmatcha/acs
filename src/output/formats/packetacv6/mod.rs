@@ -13,6 +13,10 @@ pub(crate) fn create_driver() -> Box<dyn OutputDriver> {
     Box::new(PacketAcV6OutputDriver::new())
 }
 
+pub(crate) fn create_packet_mv1_driver() -> Box<dyn OutputDriver> {
+    Box::new(ReducedAcOutputDriver::new(ReducedAcPacketKind::PacketMv1))
+}
+
 pub(crate) const fn packet_len() -> usize {
     crate::output::formats::packetacv6::definition::PACKET_ACV6_PACKET_LEN
 }
@@ -69,6 +73,27 @@ impl OutputDriver for PacketAcV6OutputDriver {
             self.sound_player.play(update.profile.as_str());
         }
         Ok(update.packet.to_vec())
+    }
+}
+
+struct ReducedAcOutputDriver {
+    source_driver: PacketAcV6OutputDriver,
+    kind: ReducedAcPacketKind,
+}
+
+impl ReducedAcOutputDriver {
+    fn new(kind: ReducedAcPacketKind) -> Self {
+        Self {
+            source_driver: PacketAcV6OutputDriver::new(),
+            kind,
+        }
+    }
+}
+
+impl OutputDriver for ReducedAcOutputDriver {
+    fn encode(&mut self, compact_report: &CompactReport) -> Result<Vec<u8>, String> {
+        let ac_packet = self.source_driver.encode(compact_report)?;
+        reduced::reduce_packetacv6_for_kind(&ac_packet, self.kind)
     }
 }
 

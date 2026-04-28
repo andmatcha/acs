@@ -153,7 +153,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!(
         "      --config <K=V,...>     設定をまとめて指定: `CONTROLLER`, `FORMAT`, `DISPLAY`, `LOG_DIR`"
     );
-    println!("                              `FORMAT`: 出力フォーマット（現状: packetacv6）");
+    println!("                              `FORMAT`: 出力フォーマット（packetacv6 / packetmv1）");
     println!("                              `DISPLAY`: ポートの表示モード");
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
@@ -168,6 +168,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!();
     println!("例:");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
+    println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketMv1");
     println!(
         "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8 --config FORMAT=PacketACv6"
     );

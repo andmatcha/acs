@@ -39,7 +39,7 @@ const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[
         format: OutputFormat::PacketMv1,
         names: &["packetmv1"],
         packet_len: packetacv6::packet_mv1_len(),
-        create_driver: None,
+        create_driver: Some(packetacv6::create_packet_mv1_driver),
         create_dummy_generator: packetacv6::create_packet_mv1_dummy_generator,
     },
     OutputFormatDefinition {
@@ -163,7 +163,7 @@ fn find_definition(format: OutputFormat) -> &'static OutputFormatDefinition {
 
 #[cfg(test)]
 mod tests {
-    use super::OutputFormat;
+    use super::{OutputFormat, crc16_ccitt_false};
 
     #[test]
     fn parse_rejects_arm9() {
@@ -243,12 +243,41 @@ mod tests {
     }
 
     #[test]
-    fn reduced_ac_packets_reject_compact_encoding_driver() {
-        for format in [
-            OutputFormat::PacketMv1,
-            OutputFormat::PacketIv1,
-            OutputFormat::PacketBv1,
-        ] {
+    fn packetmv1_compact_driver_reduces_packetacv6_output() {
+        let mut driver = OutputFormat::PacketMv1
+            .create_driver()
+            .expect("PacketMv1 should create a compact encoding driver");
+
+        let first = driver
+            .encode(&[0, 1 << 3, 0, 128, 0, 128, 0, 255])
+            .expect("should encode");
+        let second = driver
+            .encode(&[1 << 0, 0, 0, 128, 0, 128, 0, 0])
+            .expect("should encode");
+
+        assert_eq!(first.len(), OutputFormat::PacketMv1.packet_len());
+        assert_eq!(first[0], b'M');
+        assert_eq!(first[1], 0x01);
+        assert_eq!(u16::from_le_bytes([first[2], first[3]]), 155);
+        assert_eq!(first[16], 0);
+        assert_eq!(
+            u16::from_le_bytes([first[17], first[18]]),
+            crc16_ccitt_false(&first[..17])
+        );
+
+        assert_eq!(second[0], b'M');
+        assert_eq!(second[1], 0x02);
+        assert_eq!(second[16], 1 << 3);
+        assert_eq!(
+            u16::from_le_bytes([second[17], second[18]]),
+            crc16_ccitt_false(&second[..17])
+        );
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn non_manual_reduced_ac_packets_reject_compact_encoding_driver() {
+        for format in [OutputFormat::PacketIv1, OutputFormat::PacketBv1] {
             match format.create_driver() {
                 Ok(_) => panic!(
                     "{} should not create a compact encoding driver",

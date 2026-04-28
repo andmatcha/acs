@@ -93,6 +93,7 @@ acs help xbee-test
 acs ports
 acs controllers
 acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6
+acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketMv1
 acs route merge -i in_a=/dev/ttyUSB0@921600 -o out_main=/dev/ttyUSB1@921600 --no-log
 acs io -i /dev/ttyUSB1@115200,utf8,packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,10
 acs io -i

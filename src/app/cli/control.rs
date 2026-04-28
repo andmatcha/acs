@@ -355,7 +355,9 @@ fn apply_control_config_args(options: &mut ControlCliOptions, value: &str) -> Re
 
 #[cfg(test)]
 mod tests {
-    use super::parse_control_args;
+    use super::{build_control_pipeline_spec, parse_control_args};
+    use crate::output::OutputFormat;
+    use crate::pipeline::PipelineEngine;
     use std::path::PathBuf;
 
     #[test]
@@ -385,5 +387,23 @@ mod tests {
         assert_eq!(options.monitor_ports[0].port, "/dev/ttyUSB1");
         assert_eq!(options.log_dir, Some(PathBuf::from("tmp/control-logs")));
         assert!(options.no_log);
+    }
+
+    #[test]
+    fn parse_control_args_accepts_packetmv1_format() {
+        let options = parse_control_args(vec![
+            String::from("--config"),
+            String::from("FORMAT=PacketMv1"),
+        ])
+        .expect("should parse");
+
+        assert_eq!(options.format.as_deref(), Some("PacketMv1"));
+    }
+
+    #[test]
+    fn control_pipeline_accepts_packetmv1_format() {
+        let spec = build_control_pipeline_spec("ds4_main", OutputFormat::PacketMv1);
+
+        PipelineEngine::new(&spec).expect("PacketMv1 should build a control pipeline");
     }
 }

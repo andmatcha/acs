@@ -707,7 +707,13 @@ fn could_match_crc_packet_prefix(bytes: &[u8], header: &[u8; 2], packet_len: usi
 }
 
 fn matches_reduced_ac_packet(bytes: &[u8], header: u8, packet_len: usize) -> bool {
-    bytes.len() == packet_len && bytes.first().copied() == Some(header)
+    if bytes.len() != packet_len || bytes.first().copied() != Some(header) {
+        return false;
+    }
+
+    let payload_len = packet_len - 2;
+    let expected_crc = u16::from_le_bytes([bytes[payload_len], bytes[payload_len + 1]]);
+    crc16_ccitt_false(&bytes[..payload_len]) == expected_crc
 }
 
 fn could_match_reduced_ac_packet_prefix(bytes: &[u8], header: u8, packet_len: usize) -> bool {
@@ -2126,10 +2132,10 @@ mod tests {
     use super::{
         IoCommandInput, IoCommandOutput, IoOutputSettings, MixedFormatDecoder, ObservedInput,
         OutputSchedule, build_io_executed_command, estimated_output_line_bps,
-        format_io_input_binding, format_io_output_binding, matches_rover_down_packet,
-        parse_io_args, parse_io_input_binding, parse_io_output_binding, parse_output_format_list,
-        realign_output_schedule, resolve_display_mode, resolve_input_line_break_mode,
-        validate_output_port_loads,
+        format_io_input_binding, format_io_output_binding, matches_reduced_ac_packet,
+        matches_rover_down_packet, parse_io_args, parse_io_input_binding, parse_io_output_binding,
+        parse_output_format_list, realign_output_schedule, resolve_display_mode,
+        resolve_input_line_break_mode, validate_output_port_loads,
     };
     use crate::output::OutputFormat;
     use crate::port_display::{LineBreakMode, PortDisplayMode};
@@ -2313,6 +2319,26 @@ mod tests {
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].format, OutputFormat::RoverUpGeneral);
         assert_eq!(decoded[0].bytes, up);
+    }
+
+    #[test]
+    fn reduced_ac_packet_matcher_checks_crc() {
+        let mut packet = OutputFormat::PacketMv1
+            .encode_dummy_payload()
+            .expect("packetmv1 dummy payload");
+
+        assert!(matches_reduced_ac_packet(
+            &packet,
+            b'M',
+            OutputFormat::PacketMv1.packet_len()
+        ));
+
+        packet[2] ^= 0x01;
+        assert!(!matches_reduced_ac_packet(
+            &packet,
+            b'M',
+            OutputFormat::PacketMv1.packet_len()
+        ));
     }
 
     #[test]

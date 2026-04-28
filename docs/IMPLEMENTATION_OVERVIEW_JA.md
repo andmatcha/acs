@@ -23,9 +23,10 @@
 ### `control`
 
 - `input/ds4_hid` が DUALSHOCK 4 を列挙・選択して HID レポートを読みます。
-- `pipeline` で `Ds4ToCompact -> OutputEncode(PacketACv6)` の変換を行います。
+- `pipeline` で `Ds4ToCompact -> OutputEncode(指定 FORMAT)` の変換を行います。
 - 結果をメイン出力ポートへ送信し、同時に出力ポート自身や追加 monitor ポートも監視できます。
 - `PacketACv6` エンコーダは enable 状態、シーケンス番号、操作プロファイルを内部状態として保持します。
+- `FORMAT=PacketMv1` の場合は、同じ `PacketACv6` エンコーダ出力を `PacketMv1` へ削減して送信します。
 
 ### `monitor`
 
