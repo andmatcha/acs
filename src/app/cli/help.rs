@@ -142,8 +142,9 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "受信監視は `--monitor` で明示したポートだけを開きます。出力ポートを監視したい場合も `--monitor` で指定してください。"
     );
     println!(
-        "`--port` または `--monitor` を値なしで指定すると、io コマンドと同じ対話式メニューで選択できます。"
+        "`acs control` だけで、送信ポート、ボーレート、表示形式、送信フォーマットを対話式に選択できます。"
     );
+    println!("`--monitor` を指定した場合だけ、受信監視ポートも対話式または引数で追加できます。");
     println!();
     println!("オプション:");
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> シリアル出力ポート");
@@ -151,9 +152,9 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "                              PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
     );
     println!("                              BAUD を省略した場合は 115200 が使われます");
-    println!(
-        "                              省略すると USB シリアルまたは ST-LINK が 1 つだけある場合に自動選択します"
-    );
+    println!("                              省略すると対話式に選択します");
+    println!("  -f, --format <FORMAT>      送信フォーマット。値を省略すると対話式に選択");
+    println!("                              FORMAT: packetacv6/packetmv1");
     println!("  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]>");
     println!(
         "                              受信監視するシリアルポート（繰り返し指定可）。値を省略すると対話式に選択"
@@ -181,6 +182,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("  -h, --help                 このヘルプを表示");
     println!();
     println!("例:");
+    println!("  {bin_name} control");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketMv1");
     println!(
@@ -192,7 +194,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!(
         "  {bin_name} control --config DISPLAY=input:/dev/ttyUSB0=utf8 --config DISPLAY=output:/dev/ttyUSB0=hex"
     );
-    println!("  {bin_name} control -p -m");
+    println!("  {bin_name} control -m");
     println!(
         "  {bin_name} control --config CONTROLLER=0 --monitor /dev/ttyUSB1,packetjfv1 --no-log"
     );

@@ -1357,7 +1357,7 @@ pub(crate) fn output_format_choices() -> Vec<OutputFormat> {
     ]
 }
 
-fn choose_from_menu(
+pub(crate) fn choose_from_menu(
     prompt: &str,
     labels: &[String],
     default_index: usize,

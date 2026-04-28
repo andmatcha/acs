@@ -4,8 +4,8 @@ use super::common::{
 };
 use super::help::{is_help_flag, print_control_help};
 use super::io::{
-    ObservedInput, format_input_display_value, format_io_input_binding, parse_output_format_list,
-    prompt_display_mode, prompt_input_format, prompt_output_format, prompt_serial_port,
+    ObservedInput, choose_from_menu, format_input_display_value, format_io_input_binding,
+    parse_output_format_list, prompt_display_mode, prompt_input_format, prompt_serial_port,
     prompt_u32_choice, resolve_display_mode, resolve_input_line_break_mode, shell_quote_arg,
 };
 use super::signal;
@@ -38,7 +38,7 @@ struct ControlCliOptions {
     port: Option<ControlPortArg>,
     baud: Option<u32>,
     controller: Option<String>,
-    format: Option<String>,
+    format: Option<ControlFormatArg>,
     display: PortDisplayConfig,
     monitor_ports: Vec<ControlMonitorArg>,
     log_dir: Option<PathBuf>,
@@ -67,6 +67,12 @@ enum ControlPortArg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ControlMonitorArg {
+    Provided(String),
+    Prompt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ControlFormatArg {
     Provided(String),
     Prompt,
 }
@@ -751,6 +757,10 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
                 .push(ControlMonitorArg::Provided(value));
             continue;
         }
+        if let Some(value) = strip_control_value(&arg, &["-f", "--format"]) {
+            options.format = Some(ControlFormatArg::Provided(value));
+            continue;
+        }
 
         match arg.as_str() {
             "--port" | "-p" => {
@@ -769,7 +779,12 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
             "--controller" | "-c" => {
                 options.controller = Some(next_value(&mut iter, "--controller")?);
             }
-            "--format" | "-f" => options.format = Some(next_value(&mut iter, "--format")?),
+            "--format" | "-f" => {
+                options.format = Some(
+                    next_optional_control_binding(&mut iter)
+                        .map_or(ControlFormatArg::Prompt, ControlFormatArg::Provided),
+                );
+            }
             "--display" => {
                 let value = next_value(&mut iter, "--display")?;
                 let assignment = parse_display_assignment(&value)?;
@@ -813,7 +828,6 @@ fn resolve_control_options(
     let mut runtime_options = ControlRuntimeOptions {
         baud: cli_options.baud,
         controller: cli_options.controller,
-        format: cli_options.format,
         display: cli_options.display,
         log_dir: cli_options.log_dir,
         no_log: cli_options.no_log,
@@ -821,18 +835,22 @@ fn resolve_control_options(
         ..ControlRuntimeOptions::default()
     };
 
-    if let Some(port) = cli_options.port {
-        match port {
-            ControlPortArg::Provided(value) => {
-                runtime_options.port = Some(parse_port_spec("--port", &value)?);
-            }
-            ControlPortArg::Prompt => {
-                let (value, format) =
-                    prompt_control_output_binding(runtime_options.format.is_none())?;
-                runtime_options.port = Some(parse_port_spec("--port", &value)?);
-                if runtime_options.format.is_none() {
-                    runtime_options.format = format;
-                }
+    if let Some(format) = cli_options.format {
+        runtime_options.format = Some(match format {
+            ControlFormatArg::Provided(value) => value,
+            ControlFormatArg::Prompt => prompt_control_output_format()?,
+        });
+    }
+
+    match cli_options.port {
+        Some(ControlPortArg::Provided(value)) => {
+            runtime_options.port = Some(parse_port_spec("--port", &value)?);
+        }
+        Some(ControlPortArg::Prompt) | None => {
+            let (value, format) = prompt_control_output_binding(runtime_options.format.is_none())?;
+            runtime_options.port = Some(parse_port_spec("--port", &value)?);
+            if runtime_options.format.is_none() {
+                runtime_options.format = format;
             }
         }
     }
@@ -859,7 +877,7 @@ fn prompt_control_output_binding(prompt_format: bool) -> Result<(String, Option<
     )?;
     let display = prompt_display_mode("送信表示形式", false)?;
     let format = if prompt_format {
-        Some(prompt_output_format()?)
+        Some(prompt_control_output_format()?)
     } else {
         None
     };
@@ -886,6 +904,16 @@ fn prompt_control_monitor_binding() -> Result<String, String> {
         display.as_deref(),
         format.as_deref(),
     ))
+}
+
+fn prompt_control_output_format() -> Result<String, String> {
+    let formats = vec![OutputFormat::PacketAcV6, OutputFormat::PacketMv1];
+    let labels = formats
+        .iter()
+        .map(|format| format.display_name().to_owned())
+        .collect::<Vec<_>>();
+    let selected = choose_from_menu("送信フォーマット", &labels, 0)?;
+    Ok(formats[selected].as_str().to_owned())
 }
 
 fn display_mode_from_prompt(value: Option<&str>) -> Result<Option<PortDisplayMode>, String> {
@@ -926,7 +954,7 @@ fn apply_control_config_args(options: &mut ControlCliOptions, value: &str) -> Re
         let key = assignment.key.to_ascii_uppercase();
         match key.as_str() {
             "CONTROLLER" => options.controller = Some(assignment.value),
-            "FORMAT" => options.format = Some(assignment.value),
+            "FORMAT" => options.format = Some(ControlFormatArg::Provided(assignment.value)),
             "DISPLAY" => {
                 let display = parse_display_assignment(&assignment.value)?;
                 display.apply_to(&mut options.display);
@@ -942,8 +970,8 @@ fn apply_control_config_args(options: &mut ControlCliOptions, value: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::{
-        ControlMonitorArg, ControlPortArg, build_control_pipeline_spec, parse_control_args,
-        parse_control_monitor_binding,
+        ControlFormatArg, ControlMonitorArg, ControlPortArg, build_control_pipeline_spec,
+        parse_control_args, parse_control_monitor_binding,
     };
     use crate::output::OutputFormat;
     use crate::pipeline::PipelineEngine;
@@ -970,7 +998,10 @@ mod tests {
             )))
         );
         assert_eq!(options.controller.as_deref(), Some("0"));
-        assert_eq!(options.format.as_deref(), Some("PacketACv6"));
+        assert_eq!(
+            options.format,
+            Some(ControlFormatArg::Provided(String::from("PacketACv6")))
+        );
         assert_eq!(options.monitor_ports.len(), 1);
         assert_eq!(
             options.monitor_ports[0],
@@ -987,6 +1018,13 @@ mod tests {
 
         assert_eq!(options.port, Some(ControlPortArg::Prompt));
         assert_eq!(options.monitor_ports, vec![ControlMonitorArg::Prompt]);
+    }
+
+    #[test]
+    fn parse_control_args_accepts_bare_format_for_prompting() {
+        let options = parse_control_args(vec![String::from("-f")]).expect("should parse");
+
+        assert_eq!(options.format, Some(ControlFormatArg::Prompt));
     }
 
     #[test]
@@ -1009,7 +1047,10 @@ mod tests {
         ])
         .expect("should parse");
 
-        assert_eq!(options.format.as_deref(), Some("PacketMv1"));
+        assert_eq!(
+            options.format,
+            Some(ControlFormatArg::Provided(String::from("PacketMv1")))
+        );
     }
 
     #[test]
