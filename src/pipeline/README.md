@@ -14,6 +14,7 @@
 ## 実装の要点
 
 - 各パイプラインは `filter -> transform* -> classify -> route` の順で処理されます。
+- `PacketFilter` transform は mixed serial stream から指定 format の完全な packet だけを切り出し、format 単位の route map を実現します。
 - フレーム型は `session` ではなく共有モジュールから受け取り、処理コアの依存方向を単純に保っています。
 - 1 つの入力フレームから複数メッセージへ分岐したり、複数出力へ配送したりできる柔軟な構成です。
 - `route` コマンドだけでなく、`control` も内部ではこのパイプラインエンジンを使って DS4 入力を送信形式へ変換しています。

@@ -111,6 +111,8 @@ acs controllers
 acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6
 acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketMv1
 acs route merge -i in_a=/dev/ttyUSB0@921600 -o out_main=/dev/ttyUSB1@921600 --no-log
+acs route -i up_a=/dev/ttyUSB0@921600 -i up_b=/dev/ttyUSB1@921600 -o up=/dev/ttyUSB2@921600 --map '*:packetacv6+roverupgeneral=up'
+acs route -i down=/dev/ttyUSB0@921600 -o jf=/dev/ttyUSB1@921600 -o rd=/dev/ttyUSB2@921600 --map down:packetjfv1=jf --map down:roverdowngeneral=rd
 acs io -i /dev/ttyUSB1@115200,utf8,packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,10
 acs io -i
 acs io -o
@@ -147,6 +149,7 @@ acs update list
 - `acs xbee-test` は `AU(PacketACv6) + RU(RoverUpGeneral)` と `AD(PacketJFv1) + RD(RoverDownGeneral)` をそれぞれ混在送信でき、各 format の送受信 Hz と照合結果を表示します。
 - `acs xbee-test --config MODE=polling,...` は `PollGreeting` / `PollResponse` を基本にしつつ、`base` 側と `remote` 側で独立した確率で実パケット対へ差し替えます。
 - `acs io` は `-i` を受信ポート、`-o` を送信ポートとして繰り返し指定できます。ポート名の後ろに `@BAUD,DISPLAY,FORMAT,RATE` を付けられ、値なしの `-i` / `-o` は矢印上下と Enter で対話式に設定します。既定値は baud `115200`、送信レート `10` Hz です。
+- `acs route` も `-i` / `-o` を値なしで指定すると、`io` と同じ対話式メニューでポート、baud、表示形式を選んで中継設定を完了できます。`--map` で `INPUTS[:FORMAT+...]=OUTPUTS` のルールを繰り返し指定でき、値なしの `--map` は入力、フォーマット、出力を対話式に選びます。例: `acs route -i -o --map`
 - `acs xbee-talk` は旧 `acs send -i` 相当の対話送信です。入力した 1 行を UTF-8 として送信し、末尾に `\r\n` を付けます。
 - ログを保存する `acs control` / `acs io` / `acs route` / `acs xbee-talk` / `acs xbee-test` / `acs xbee-mock` は、すべて `--no-log` でログファイル作成を止めて I/O 負荷を減らせます。
 

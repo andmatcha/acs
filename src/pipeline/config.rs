@@ -27,9 +27,10 @@ pub(crate) struct TransformChainConfig {
     pub modules: Vec<TransformModuleConfig>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TransformModuleConfig {
     Identity,
+    PacketFilter { formats: Vec<OutputFormat> },
     Ds4ToCompact,
     OutputEncode { format: OutputFormat },
 }

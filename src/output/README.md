@@ -10,6 +10,7 @@
 - 形式名の文字列から内部表現を解決します。
 - compact report をエンコードできる形式では `OutputDriver` を生成します。
 - `io` コマンド向けに、各形式のダミーペイロード生成も提供します。
+- `io` / `route` で使う mixed format stream decoder を提供し、既知 packet の境界検出と CRC 検証を共通化します。
 
 ## 実装の要点
 

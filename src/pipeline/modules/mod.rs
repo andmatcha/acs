@@ -1,6 +1,7 @@
 use crate::ingress::IngressFrame;
 use crate::input::compact;
 use crate::output::OutputFormat;
+use crate::output::formats::MixedFormatDecoder;
 use crate::pipeline::config::{
     ClassifyModuleConfig, FilterModuleConfig, RouterModuleConfig, TransformChainConfig,
     TransformModuleConfig,
@@ -55,6 +56,9 @@ fn build_transform(
 ) -> Result<Box<dyn MessageTransform>, String> {
     match config {
         TransformModuleConfig::Identity => Ok(Box::new(IdentityTransform)),
+        TransformModuleConfig::PacketFilter { formats } => {
+            Ok(Box::new(PacketFilterTransform::new(formats.clone())))
+        }
         TransformModuleConfig::Ds4ToCompact => Ok(Box::new(Ds4ToCompactTransform)),
         TransformModuleConfig::OutputEncode { format } => Ok(Box::new(OutputEncodeTransform {
             format: *format,
@@ -76,6 +80,42 @@ struct IdentityTransform;
 impl MessageTransform for IdentityTransform {
     fn transform(&mut self, message: RouteMessage) -> Result<Vec<RouteMessage>, String> {
         Ok(vec![message])
+    }
+}
+
+struct PacketFilterTransform {
+    formats: Vec<OutputFormat>,
+    decoders: BTreeMap<String, MixedFormatDecoder>,
+}
+
+impl PacketFilterTransform {
+    fn new(formats: Vec<OutputFormat>) -> Self {
+        Self {
+            formats,
+            decoders: BTreeMap::new(),
+        }
+    }
+}
+
+impl MessageTransform for PacketFilterTransform {
+    fn transform(&mut self, message: RouteMessage) -> Result<Vec<RouteMessage>, String> {
+        let decoder_id = message
+            .source_input_ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| String::from("default"));
+        let decoder = self
+            .decoders
+            .entry(decoder_id)
+            .or_insert_with(|| MixedFormatDecoder::new(self.formats.clone()));
+        Ok(decoder
+            .push(&message.payload)
+            .into_iter()
+            .map(|packet| RouteMessage {
+                source_input_ids: message.source_input_ids.clone(),
+                payload: packet.bytes,
+            })
+            .collect())
     }
 }
 
