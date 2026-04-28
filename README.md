@@ -15,21 +15,27 @@
 
 ## グローバルインストール
 
-通常はリポジトリのルートで、まず次を実行してください。
+リポジトリのルートで、まず初期化を実行してください。
+
+Windows の素の Command Prompt / PowerShell では、`make` や POSIX shell が無くても動く `.cmd` 入口を使います。
+
+```bat
+scripts\init.cmd
+scripts\install.cmd
+```
+
+macOS / Linux などでは従来どおり `make` を使えます。
 
 ```bash
 make init
-```
-
-そのあとでグローバルインストールを行います。
-
-```bash
 make install
 ```
 
 - 既定では、このチェックアウトの「コミット済みの HEAD」の内容だけを使ってグローバルインストールします。未コミット変更は含まれません。
-- 通常は `~/.cargo/bin/acs` に入るので、そのディレクトリに `PATH` が通っていればどのディレクトリからでも `acs` を実行できます。
-- すでにグローバルに `acs` が入っている場合、`make install` は再インストールせず終了します。差し替えたい場合は `make update` か `make sync-code` を使ってください。
+- Windows で Git が無い、または ZIP 展開したソースのように Git checkout ではない場合は、現在のソーススナップショットからインストールします。
+- 通常は macOS / Linux では `~/.cargo/bin/acs`、Windows では `%USERPROFILE%\.cargo\bin\acs.exe` に入るので、そのディレクトリに `PATH` が通っていればどのディレクトリからでも `acs` を実行できます。
+- すでにグローバルに `acs` が入っている場合、`make install` / `scripts\install.cmd` は再インストールせず終了します。差し替えたい場合は `acs update`、`make update`、または `make sync-code` を使ってください。
+- Windows の `scripts\init.cmd` / `scripts\install.cmd` は Rust が無い場合に rustup を入れ、MSVC toolchain のリンクに必要な Microsoft C++ Build Tools が見つからない場合は `winget` または Visual Studio Build Tools bootstrapper で導入を試みます。
 
 特定の ref からインストールしたい場合は `TAG` / `BRANCH` / `COMMIT` を 1 つだけ指定できます。
 
@@ -37,6 +43,14 @@ make install
 make install TAG=v0.1.0
 make install BRANCH=main
 make install COMMIT=50d3137a75b821d46b5308f7c7693e513836e11d
+```
+
+Windows では次のように指定できます。Git が無い場合でも、既定の GitHub repository から tag / branch / commit の ZIP archive を取得してインストールします。
+
+```bat
+scripts\install.cmd --tag v0.1.0
+scripts\install.cmd --branch main
+scripts\install.cmd --commit 50d3137a75b821d46b5308f7c7693e513836e11d
 ```
 
 インストールされたビルド情報は次で確認できます。
@@ -168,6 +182,7 @@ acs update list
 詳細は `make help` を見るのが早いです。よく使うものだけ挙げると次のとおりです。
 
 - `make init`: Rust が未導入の環境を初期化し、ローカル release ビルドまで実行する
+- Windows では `scripts\init.cmd` / `scripts\install.cmd` を使うと、`make` や sh が無い環境から初期化とグローバルインストールを実行できる
 - `make build` / `make build-release`: ローカルでビルドする
 - `make fmt` / `make test`: 整形とテストを実行する
 - `make uninstall` / `make purge`: グローバルの `acs` を削除する
