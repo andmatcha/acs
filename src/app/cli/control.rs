@@ -4,9 +4,11 @@ use super::common::{
 };
 use super::help::{is_help_flag, print_control_help};
 use super::io::{
-    ObservedInput, choose_from_menu, format_input_display_value, format_io_input_binding,
-    parse_output_format_list, prompt_display_mode, prompt_input_format, prompt_serial_port,
-    prompt_u32_choice, resolve_display_mode, resolve_input_line_break_mode, shell_quote_arg,
+    ObservedInput, choose_from_menu_with_preview, format_command_preview,
+    format_input_display_value, format_io_input_binding, parse_output_format_list,
+    prompt_display_mode_with_preview, prompt_input_format_with_preview,
+    prompt_serial_port_with_preview, prompt_u32_choice_with_preview, resolve_display_mode,
+    resolve_input_line_break_mode, shell_quote_arg,
 };
 use super::signal;
 use crate::ingress::IngressFrame;
@@ -77,6 +79,108 @@ enum ControlFormatArg {
     Prompt,
 }
 
+#[derive(Debug, Clone)]
+struct ControlPromptCommand {
+    output: Option<String>,
+    format: Option<String>,
+    controller: Option<String>,
+    monitors: Vec<String>,
+    log_dir: Option<PathBuf>,
+    no_log: bool,
+    s3b: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ControlPromptCandidate<'a> {
+    Output(&'a str),
+    Format(&'a str),
+    Monitor(&'a str),
+}
+
+impl ControlPromptCommand {
+    fn new(options: &ControlRuntimeOptions) -> Self {
+        Self {
+            output: options
+                .port
+                .as_ref()
+                .map(|port| format_control_port_spec_preview(port)),
+            format: options.format.clone(),
+            controller: options.controller.clone(),
+            monitors: options
+                .monitor_ports
+                .iter()
+                .map(format_control_monitor_binding_preview)
+                .collect(),
+            log_dir: options.log_dir.clone(),
+            no_log: options.no_log,
+            s3b: options.s3b,
+        }
+    }
+
+    fn set_output(&mut self, output: String) {
+        self.output = Some(output);
+    }
+
+    fn set_format(&mut self, format: String) {
+        self.format = Some(format);
+    }
+
+    fn push_monitor(&mut self, monitor: String) {
+        self.monitors.push(monitor);
+    }
+
+    fn ensure_default_format(&mut self) {
+        if self.format.is_none() {
+            self.format = Some(String::from("packetacv6"));
+        }
+    }
+
+    fn render(&self, candidate: Option<ControlPromptCandidate<'_>>) -> String {
+        let mut args = vec![String::from("acs"), String::from("control")];
+
+        if let Some(output) = candidate
+            .and_then(|candidate| match candidate {
+                ControlPromptCandidate::Output(output) => Some(output),
+                _ => None,
+            })
+            .map(str::to_owned)
+            .or_else(|| self.output.clone())
+        {
+            args.push(String::from("-p"));
+            args.push(output);
+        }
+
+        if let Some(format) = candidate
+            .and_then(|candidate| match candidate {
+                ControlPromptCandidate::Format(format) => Some(format),
+                _ => None,
+            })
+            .map(str::to_owned)
+            .or_else(|| self.format.clone())
+        {
+            args.push(String::from("--format"));
+            args.push(format);
+        }
+
+        if let Some(controller) = self.controller.clone() {
+            args.push(String::from("--controller"));
+            args.push(controller);
+        }
+
+        for monitor in &self.monitors {
+            args.push(String::from("-m"));
+            args.push(monitor.clone());
+        }
+        if let Some(ControlPromptCandidate::Monitor(monitor)) = candidate {
+            args.push(String::from("-m"));
+            args.push(monitor.to_owned());
+        }
+
+        append_control_prompt_common_args(&mut args, self.log_dir.as_ref(), self.no_log, self.s3b);
+        format_command_preview(&args)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ControlMonitorBinding {
     port: String,
@@ -131,6 +235,7 @@ struct ControlCommandMonitor {
 struct ControlRuntimeState {
     logging_enabled: bool,
     log_path_display: String,
+    executed_command: Option<String>,
     controller_line: String,
     output_line: String,
     monitors: Vec<ControlHeaderMonitor>,
@@ -166,6 +271,7 @@ impl ControlRuntimeState {
         Self {
             logging_enabled: settings.logging_enabled,
             log_path_display,
+            executed_command: settings.executed_command.clone(),
             controller_line: format!(
                 "controller: {} ({})",
                 controller_info
@@ -299,6 +405,10 @@ impl ControlRuntimeState {
         } else {
             lines.push(String::from("log: disabled (--no-log)"));
         }
+        if let Some(command) = &self.executed_command {
+            lines.push(String::from("実行コマンド:"));
+            lines.push(command.clone());
+        }
         lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
         lines
     }
@@ -399,6 +509,31 @@ fn format_control_port_binding(
     value
 }
 
+fn format_control_port_spec_preview(port: &PortSpec) -> String {
+    format_prompt_control_port_binding(
+        &port.port,
+        port.baud.as_ref().map(ToString::to_string).as_deref(),
+        port.display_mode.map(super::io::display_mode_value),
+    )
+}
+
+fn format_prompt_control_port_binding(
+    port: &str,
+    baud: Option<&str>,
+    display: Option<&str>,
+) -> String {
+    let mut value = port.to_owned();
+    if let Some(baud) = baud {
+        value.push('@');
+        value.push_str(baud);
+    }
+    if let Some(display) = display {
+        value.push(',');
+        value.push_str(display);
+    }
+    value
+}
+
 fn format_monitor_format_arg(formats: &[OutputFormat]) -> Option<String> {
     (!formats.is_empty()).then(|| {
         formats
@@ -407,6 +542,60 @@ fn format_monitor_format_arg(formats: &[OutputFormat]) -> Option<String> {
             .collect::<Vec<_>>()
             .join("+")
     })
+}
+
+fn format_control_monitor_binding_preview(monitor: &ControlMonitorBinding) -> String {
+    let baud = monitor.baud.as_ref().map(ToString::to_string);
+    let display = monitor.display_mode.map(super::io::display_mode_value);
+    let input_display = match (display, monitor.line_break_mode) {
+        (Some(display), Some(line_break)) => Some(format!(
+            "{display}+{}",
+            super::io::line_break_mode_value(line_break)
+        )),
+        (Some(display), None) => Some(display.to_owned()),
+        (None, Some(line_break)) => Some(super::io::line_break_mode_value(line_break).to_owned()),
+        (None, None) => None,
+    };
+    format_prompt_control_monitor_binding(
+        &monitor.port,
+        baud.as_deref(),
+        input_display.as_deref(),
+        (!monitor.formats.is_empty())
+            .then(|| monitor.formats.join("+"))
+            .as_deref(),
+    )
+}
+
+fn format_prompt_control_monitor_binding(
+    port: &str,
+    baud: Option<&str>,
+    display: Option<&str>,
+    format: Option<&str>,
+) -> String {
+    let mut value = format_prompt_control_port_binding(port, baud, display);
+    if let Some(format) = format {
+        value.push(',');
+        value.push_str(format);
+    }
+    value
+}
+
+fn append_control_prompt_common_args(
+    args: &mut Vec<String>,
+    log_dir: Option<&PathBuf>,
+    no_log: bool,
+    s3b: bool,
+) {
+    if let Some(log_dir) = log_dir {
+        args.push(String::from("--log-dir"));
+        args.push(log_dir.display().to_string());
+    }
+    if no_log {
+        args.push(String::from("--no-log"));
+    }
+    if s3b {
+        args.push(String::from("--s3b"));
+    }
 }
 
 pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
@@ -438,7 +627,8 @@ pub(crate) fn run(args: Vec<String>, bin_name: &str) -> ExitCode {
                 println!("log saved to {}", result.log_path.display());
             }
             if let Some(command) = &result.executed_command {
-                println!("実行コマンド: {command}");
+                println!("実行コマンド:");
+                println!("{command}");
             }
             ExitCode::SUCCESS
         }
@@ -560,7 +750,7 @@ fn control_transform_modules(format: OutputFormat) -> Vec<TransformModuleConfig>
 fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings, String> {
     let selected_port = cli_options.port.and_then(PortSpec::normalized);
     let default_baud = cli_options.baud.unwrap_or_else(default_baud_rate);
-    let controller = resolve_control_controller(cli_options.controller)?;
+    let requested_controller = cli_options.controller;
     let format_name = cli_options
         .format
         .unwrap_or_else(|| String::from("packetacv6"));
@@ -718,6 +908,17 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
         format_name: format.as_str().to_owned(),
         display_mode: output_display_mode,
     };
+    let controller = resolve_control_controller(requested_controller, |controller| {
+        build_control_executed_command(
+            &output,
+            format,
+            &command_monitors,
+            Some(controller),
+            explicit_log_dir.as_ref(),
+            cli_options.no_log,
+            cli_options.s3b,
+        )
+    })?;
     let executed_command = Some(build_control_executed_command(
         &output,
         format,
@@ -834,50 +1035,83 @@ fn resolve_control_options(
         s3b: cli_options.s3b,
         ..ControlRuntimeOptions::default()
     };
+    let mut prompt_command = ControlPromptCommand::new(&runtime_options);
 
     if let Some(format) = cli_options.format {
-        runtime_options.format = Some(match format {
+        let format = match format {
             ControlFormatArg::Provided(value) => value,
-            ControlFormatArg::Prompt => prompt_control_output_format()?,
-        });
+            ControlFormatArg::Prompt => prompt_control_output_format(&prompt_command)?,
+        };
+        prompt_command.set_format(format.clone());
+        runtime_options.format = Some(format);
     }
 
     match cli_options.port {
         Some(ControlPortArg::Provided(value)) => {
             runtime_options.port = Some(parse_port_spec("--port", &value)?);
+            prompt_command.set_output(value);
         }
         Some(ControlPortArg::Prompt) | None => {
-            let (value, format) = prompt_control_output_binding(runtime_options.format.is_none())?;
+            let (value, format) =
+                prompt_control_output_binding(&prompt_command, runtime_options.format.is_none())?;
             runtime_options.port = Some(parse_port_spec("--port", &value)?);
+            prompt_command.set_output(value.clone());
             if runtime_options.format.is_none() {
-                runtime_options.format = format;
+                if let Some(format) = format {
+                    prompt_command.set_format(format.clone());
+                    runtime_options.format = Some(format);
+                }
             }
         }
     }
 
+    prompt_command.ensure_default_format();
     for monitor in cli_options.monitor_ports {
         let value = match monitor {
             ControlMonitorArg::Provided(value) => value,
-            ControlMonitorArg::Prompt => prompt_control_monitor_binding()?,
+            ControlMonitorArg::Prompt => prompt_control_monitor_binding(&prompt_command)?,
         };
         runtime_options
             .monitor_ports
             .push(parse_control_monitor_binding(&value)?);
+        prompt_command.push_monitor(value);
     }
 
     Ok(runtime_options)
 }
 
-fn prompt_control_output_binding(prompt_format: bool) -> Result<(String, Option<String>), String> {
-    let port = prompt_serial_port("送信ポートを選択")?;
-    let baud = prompt_u32_choice(
+fn prompt_control_output_binding(
+    command: &ControlPromptCommand,
+    prompt_format: bool,
+) -> Result<(String, Option<String>), String> {
+    let port = prompt_serial_port_with_preview("送信ポートを選択", |port| {
+        Some(command.render(Some(ControlPromptCandidate::Output(
+            &format_prompt_control_port_binding(port, None, None),
+        ))))
+    })?;
+    let baud = prompt_u32_choice_with_preview(
         "送信ボーレート",
         default_baud_rate(),
         &[115_200, 921_600, 460_800, 230_400, 57_600, 38_400, 9_600],
+        |baud| {
+            Some(command.render(Some(ControlPromptCandidate::Output(
+                &format_prompt_control_port_binding(&port, Some(baud), None),
+            ))))
+        },
     )?;
-    let display = prompt_display_mode("送信表示形式", false)?;
+    let baud_text = baud.to_string();
+    let display = prompt_display_mode_with_preview("送信表示形式", false, |display| {
+        Some(command.render(Some(ControlPromptCandidate::Output(
+            &format_prompt_control_port_binding(&port, Some(&baud_text), Some(display)),
+        ))))
+    })?;
     let format = if prompt_format {
-        Some(prompt_control_output_format()?)
+        let output_binding =
+            format_prompt_control_port_binding(&port, Some(&baud_text), display.as_deref());
+        Some(prompt_control_output_format_with_output(
+            command,
+            &output_binding,
+        )?)
     } else {
         None
     };
@@ -888,15 +1122,38 @@ fn prompt_control_output_binding(prompt_format: bool) -> Result<(String, Option<
     ))
 }
 
-fn prompt_control_monitor_binding() -> Result<String, String> {
-    let port = prompt_serial_port("受信ポートを選択")?;
-    let baud = prompt_u32_choice(
+fn prompt_control_monitor_binding(command: &ControlPromptCommand) -> Result<String, String> {
+    let port = prompt_serial_port_with_preview("受信ポートを選択", |port| {
+        Some(command.render(Some(ControlPromptCandidate::Monitor(
+            &format_prompt_control_monitor_binding(port, None, None, None),
+        ))))
+    })?;
+    let baud = prompt_u32_choice_with_preview(
         "受信ボーレート",
         default_baud_rate(),
         &[115_200, 921_600, 460_800, 230_400, 57_600, 38_400, 9_600],
+        |baud| {
+            Some(command.render(Some(ControlPromptCandidate::Monitor(
+                &format_prompt_control_monitor_binding(&port, Some(baud), None, None),
+            ))))
+        },
     )?;
-    let format = prompt_input_format()?;
-    let display = prompt_display_mode("受信表示形式", true)?;
+    let baud_text = baud.to_string();
+    let format = prompt_input_format_with_preview(|format| {
+        Some(command.render(Some(ControlPromptCandidate::Monitor(
+            &format_prompt_control_monitor_binding(&port, Some(&baud_text), None, format),
+        ))))
+    })?;
+    let display = prompt_display_mode_with_preview("受信表示形式", true, |display| {
+        Some(command.render(Some(ControlPromptCandidate::Monitor(
+            &format_prompt_control_monitor_binding(
+                &port,
+                Some(&baud_text),
+                Some(display),
+                format.as_deref(),
+            ),
+        ))))
+    })?;
 
     Ok(format_io_input_binding(
         &port,
@@ -906,17 +1163,44 @@ fn prompt_control_monitor_binding() -> Result<String, String> {
     ))
 }
 
-fn prompt_control_output_format() -> Result<String, String> {
+fn prompt_control_output_format(command: &ControlPromptCommand) -> Result<String, String> {
+    prompt_control_output_format_with_preview(command, None)
+}
+
+fn prompt_control_output_format_with_output(
+    command: &ControlPromptCommand,
+    output_binding: &str,
+) -> Result<String, String> {
+    prompt_control_output_format_with_preview(command, Some(output_binding))
+}
+
+fn prompt_control_output_format_with_preview(
+    command: &ControlPromptCommand,
+    output_binding: Option<&str>,
+) -> Result<String, String> {
     let formats = vec![OutputFormat::PacketAcV6, OutputFormat::PacketMv1];
     let labels = formats
         .iter()
         .map(|format| format.display_name().to_owned())
         .collect::<Vec<_>>();
-    let selected = choose_from_menu("送信フォーマット", &labels, 0)?;
+    let selected = choose_from_menu_with_preview("送信フォーマット", &labels, 0, |index| {
+        let format = formats[index].as_str();
+        let mut command = command.clone();
+        if let Some(output_binding) = output_binding {
+            command.set_output(output_binding.to_owned());
+        }
+        Some(command.render(Some(ControlPromptCandidate::Format(format))))
+    })?;
     Ok(formats[selected].as_str().to_owned())
 }
 
-fn resolve_control_controller(controller: Option<String>) -> Result<Option<String>, String> {
+fn resolve_control_controller<F>(
+    controller: Option<String>,
+    preview: F,
+) -> Result<Option<String>, String>
+where
+    F: Fn(&str) -> String,
+{
     if controller.is_some() {
         return Ok(controller);
     }
@@ -930,7 +1214,12 @@ fn resolve_control_controller(controller: Option<String>) -> Result<Option<Strin
                 .enumerate()
                 .map(|(index, device)| format_controller_choice(index, device))
                 .collect::<Vec<_>>();
-            let selected = choose_from_menu("コントローラーを選択", &labels, 0)?;
+            let selected = choose_from_menu_with_preview(
+                "コントローラーを選択",
+                &labels,
+                0,
+                |index| Some(preview(&index.to_string())),
+            )?;
             Ok(Some(selected.to_string()))
         }
     }
@@ -1002,7 +1291,8 @@ fn apply_control_config_args(options: &mut ControlCliOptions, value: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::{
-        ControlFormatArg, ControlMonitorArg, ControlPortArg, build_control_pipeline_spec,
+        ControlFormatArg, ControlMonitorArg, ControlPortArg, ControlPromptCandidate,
+        ControlPromptCommand, ControlRuntimeOptions, build_control_pipeline_spec,
         parse_control_args, parse_control_monitor_binding,
     };
     use crate::output::OutputFormat;
@@ -1082,6 +1372,27 @@ mod tests {
         assert_eq!(
             options.format,
             Some(ControlFormatArg::Provided(String::from("PacketMv1")))
+        );
+    }
+
+    #[test]
+    fn control_prompt_command_renders_current_candidate() {
+        let options = ControlRuntimeOptions {
+            controller: Some(String::from("0")),
+            log_dir: Some(PathBuf::from("tmp/control logs")),
+            no_log: true,
+            s3b: true,
+            ..ControlRuntimeOptions::default()
+        };
+        let mut command = ControlPromptCommand::new(&options);
+        command.set_output(String::from("/dev/ttyUSB0@921600,hex"));
+        command.set_format(String::from("packetacv6"));
+
+        assert_eq!(
+            command.render(Some(ControlPromptCandidate::Monitor(
+                "/dev/ttyUSB1@115200,utf8+packet,packetjfv1"
+            ))),
+            "acs control -p /dev/ttyUSB0@921600,hex --format packetacv6 --controller 0 -m /dev/ttyUSB1@115200,utf8+packet,packetjfv1 --log-dir 'tmp/control logs' --no-log --s3b"
         );
     }
 
