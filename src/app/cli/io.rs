@@ -350,9 +350,9 @@ impl IoRuntimeState {
     }
 }
 
-struct ObservedInput {
-    input_id: String,
-    port: String,
+pub(crate) struct ObservedInput {
+    pub(crate) input_id: String,
+    pub(crate) port: String,
     formats: Vec<OutputFormat>,
     decoder: MixedFormatDecoder,
     display_queue: PacketDisplayQueue,
@@ -361,7 +361,7 @@ struct ObservedInput {
 }
 
 impl ObservedInput {
-    fn new(
+    pub(crate) fn new(
         input_id: String,
         port: String,
         formats: Vec<OutputFormat>,
@@ -382,7 +382,7 @@ impl ObservedInput {
         }
     }
 
-    fn observe(&mut self, bytes: &[u8], at: Instant) -> ObservedInputBatch {
+    pub(crate) fn observe(&mut self, bytes: &[u8], at: Instant) -> ObservedInputBatch {
         let packets = self.decoder.push(bytes);
         let mut valid_byte_len = 0usize;
         let mut valid_packet_count = 0usize;
@@ -415,7 +415,7 @@ impl ObservedInput {
         }
     }
 
-    fn flush_display_batch(
+    pub(crate) fn flush_display_batch(
         &mut self,
         session: &mut SessionRuntime,
         max_packets: usize,
@@ -424,21 +424,21 @@ impl ObservedInput {
             .flush_input_batch(session, &self.port, max_packets)
     }
 
-    fn packet_rate_hz(&mut self, format: OutputFormat, now: Instant) -> Option<f64> {
+    pub(crate) fn packet_rate_hz(&mut self, format: OutputFormat, now: Instant) -> Option<f64> {
         self.rate_trackers
             .get_mut(&format)
             .map(|tracker| tracker.packets_per_second(now))
     }
 
-    fn known_formats(&self) -> &[OutputFormat] {
+    pub(crate) fn known_formats(&self) -> &[OutputFormat] {
         &self.formats
     }
 }
 
-struct ObservedInputBatch {
-    valid_byte_len: usize,
-    valid_packet_count: usize,
-    per_format_totals: BTreeMap<OutputFormat, (usize, usize)>,
+pub(crate) struct ObservedInputBatch {
+    pub(crate) valid_byte_len: usize,
+    pub(crate) valid_packet_count: usize,
+    pub(crate) per_format_totals: BTreeMap<OutputFormat, (usize, usize)>,
 }
 
 struct PacketRateTracker {
@@ -1067,7 +1067,7 @@ fn prompt_io_output_binding() -> Result<String, String> {
     ))
 }
 
-fn format_io_input_binding(
+pub(crate) fn format_io_input_binding(
     port: &str,
     baud: u32,
     display: Option<&str>,
@@ -1173,7 +1173,7 @@ fn format_output_format_list(formats: &[OutputFormat]) -> Option<String> {
     })
 }
 
-fn format_input_display_value(
+pub(crate) fn format_input_display_value(
     display_mode: PortDisplayMode,
     line_break_mode: LineBreakMode,
 ) -> String {
@@ -1184,7 +1184,7 @@ fn format_input_display_value(
     )
 }
 
-fn display_mode_value(mode: PortDisplayMode) -> &'static str {
+pub(crate) fn display_mode_value(mode: PortDisplayMode) -> &'static str {
     match mode {
         PortDisplayMode::Hex => "hex",
         PortDisplayMode::Ascii => "ascii",
@@ -1194,7 +1194,7 @@ fn display_mode_value(mode: PortDisplayMode) -> &'static str {
     }
 }
 
-fn line_break_mode_value(mode: LineBreakMode) -> &'static str {
+pub(crate) fn line_break_mode_value(mode: LineBreakMode) -> &'static str {
     match mode {
         LineBreakMode::Line => "line",
         LineBreakMode::Packet => "packet",
@@ -1202,7 +1202,7 @@ fn line_break_mode_value(mode: LineBreakMode) -> &'static str {
     }
 }
 
-fn shell_quote_arg(value: &str) -> String {
+pub(crate) fn shell_quote_arg(value: &str) -> String {
     if value.is_empty() {
         return String::from("''");
     }
@@ -1217,7 +1217,7 @@ fn shell_quote_arg(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn prompt_serial_port(prompt: &str) -> Result<String, String> {
+pub(crate) fn prompt_serial_port(prompt: &str) -> Result<String, String> {
     let ports = serial::available_ports().map_err(|error| error.to_string())?;
     if ports.is_empty() {
         return prompt_text(&format!("{prompt}: "), None);
@@ -1254,7 +1254,11 @@ fn format_serial_port_choice(index: usize, port: &serialport::SerialPortInfo) ->
     }
 }
 
-fn prompt_u32_choice(prompt: &str, default: u32, choices: &[u32]) -> Result<u32, String> {
+pub(crate) fn prompt_u32_choice(
+    prompt: &str,
+    default: u32,
+    choices: &[u32],
+) -> Result<u32, String> {
     let mut values = Vec::new();
     values.push(default);
     for choice in choices {
@@ -1281,7 +1285,7 @@ fn prompt_u32_choice(prompt: &str, default: u32, choices: &[u32]) -> Result<u32,
     }
 }
 
-fn prompt_output_format() -> Result<String, String> {
+pub(crate) fn prompt_output_format() -> Result<String, String> {
     let formats = output_format_choices();
     let labels = formats
         .iter()
@@ -1291,7 +1295,7 @@ fn prompt_output_format() -> Result<String, String> {
     Ok(formats[selected].as_str().to_owned())
 }
 
-fn prompt_input_format() -> Result<Option<String>, String> {
+pub(crate) fn prompt_input_format() -> Result<Option<String>, String> {
     let formats = output_format_choices();
     let mut labels = vec![String::from("raw (フォーマット指定なし)")];
     labels.extend(
@@ -1314,7 +1318,7 @@ fn prompt_input_format() -> Result<Option<String>, String> {
     Ok(Some(formats[selected - 1].as_str().to_owned()))
 }
 
-fn prompt_display_mode(prompt: &str, input: bool) -> Result<Option<String>, String> {
+pub(crate) fn prompt_display_mode(prompt: &str, input: bool) -> Result<Option<String>, String> {
     let mut choices = vec![
         String::from("hex"),
         String::from("ascii"),
@@ -1341,7 +1345,7 @@ fn prompt_display_mode(prompt: &str, input: bool) -> Result<Option<String>, Stri
     }
 }
 
-fn output_format_choices() -> Vec<OutputFormat> {
+pub(crate) fn output_format_choices() -> Vec<OutputFormat> {
     vec![
         OutputFormat::PacketAcV6,
         OutputFormat::PacketMv1,
@@ -1857,7 +1861,7 @@ fn build_settings(cli_options: IoRuntimeOptions) -> Result<IoRuntimeSettings, St
     })
 }
 
-fn resolve_display_mode(
+pub(crate) fn resolve_display_mode(
     explicit_mode: Option<PortDisplayMode>,
     configured_mode: Option<PortDisplayMode>,
     built_in_mode: Option<PortDisplayMode>,
@@ -1868,7 +1872,7 @@ fn resolve_display_mode(
         .unwrap_or_default()
 }
 
-fn resolve_input_line_break_mode(
+pub(crate) fn resolve_input_line_break_mode(
     explicit_mode: Option<LineBreakMode>,
     has_formats: bool,
     configured_mode: LineBreakMode,
@@ -2063,7 +2067,7 @@ fn parse_io_input_binding(value: &str) -> Result<IoInputBinding, String> {
     })
 }
 
-fn parse_output_format_list(value: &str) -> Option<Vec<String>> {
+pub(crate) fn parse_output_format_list(value: &str) -> Option<Vec<String>> {
     let mut formats = Vec::new();
 
     for candidate in value.split('+') {

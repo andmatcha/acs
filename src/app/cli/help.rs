@@ -44,7 +44,7 @@ pub(crate) fn print_help(bin_name: &str) {
     println!("例:");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
     println!(
-        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8 --config FORMAT=PacketACv6"
+        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8+packet,packetjfv1 --config FORMAT=PacketACv6"
     );
     println!("  {bin_name} route merge -i in_a=/dev/ttyUSB0,utf8 -o out_main=/dev/ttyUSB1,hex");
     println!(
@@ -138,7 +138,12 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!(
         "DUALSHOCK 4 コントローラーを読み取り、整形したバイト列をシリアルポートへ書き込みます。"
     );
-    println!("出力ポートも入力として監視され、追加ポートは `--monitor` で増やせます。");
+    println!(
+        "受信監視は `--monitor` で明示したポートだけを開きます。出力ポートを監視したい場合も `--monitor` で指定してください。"
+    );
+    println!(
+        "`--port` または `--monitor` を値なしで指定すると、io コマンドと同じ対話式メニューで選択できます。"
+    );
     println!();
     println!("オプション:");
     println!("  -p, --port <PORT[@BAUD][,DISPLAY]> シリアル出力ポート");
@@ -149,7 +154,16 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!(
         "                              省略すると USB シリアルまたは ST-LINK が 1 つだけある場合に自動選択します"
     );
-    println!("  -m, --monitor <PORT[@BAUD][,DISPLAY]> 追加で監視するシリアルポート");
+    println!("  -m, --monitor <PORT[@BAUD][,DISPLAY][,FORMAT[+FORMAT...]]>");
+    println!(
+        "                              受信監視するシリアルポート（繰り返し指定可）。値を省略すると対話式に選択"
+    );
+    println!(
+        "                              FORMAT 指定時はパケット単位で表示し、RX Hz とデータレートを表示します"
+    );
+    println!(
+        "                              FORMAT: packetacv6/packetmv1/packetiv1/packetbv1/packetjfv1/roverupgeneral/roverdowngeneral"
+    );
     println!(
         "      --config <K=V,...>     設定をまとめて指定: `CONTROLLER`, `FORMAT`, `DISPLAY`, `LOG_DIR`"
     );
@@ -170,15 +184,18 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketMv1");
     println!(
-        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8 --config FORMAT=PacketACv6"
+        "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8+packet,packetjfv1 --config FORMAT=PacketACv6"
     );
     println!(
-        "  {bin_name} control --config DISPLAY=input:default=utf8+packet --monitor /dev/ttyUSB1"
+        "  {bin_name} control --config DISPLAY=input:default=utf8+packet --monitor /dev/ttyUSB1,packetjfv1"
     );
     println!(
         "  {bin_name} control --config DISPLAY=input:/dev/ttyUSB0=utf8 --config DISPLAY=output:/dev/ttyUSB0=hex"
     );
-    println!("  {bin_name} control --config CONTROLLER=0 --monitor /dev/ttyUSB1 --no-log");
+    println!("  {bin_name} control -p -m");
+    println!(
+        "  {bin_name} control --config CONTROLLER=0 --monitor /dev/ttyUSB1,packetjfv1 --no-log"
+    );
 }
 
 pub(crate) fn print_io_help(bin_name: &str) {
