@@ -19,4 +19,5 @@
 - `mod.rs` で format 名と実装を対応付けるレジストリ風の構成になっています。
 - フォーマットごとの差分はサブディレクトリに閉じ込め、上位層は `OutputDriver` 越しに扱います。
 - `packetgcv1` は `acs control` 用に HOME / STOP / MANUAL_POSITION / MANUAL_RATE だけを出力します。
+  - 位置値は 0.1 度単位で、角度範囲は `0..270` 度です。HOME は中央の `135.0` 度を送ります。
 - `packetjfv1` は現状ダミー送信専用で、compact からの一般エンコードは未対応です。

@@ -175,12 +175,17 @@ impl SessionDashboard {
                     .map_err(|error| format!("failed to write log: {error}"))?;
                 return Ok(true);
             }
-            LineBreakMode::Line => {}
+            LineBreakMode::Line | LineBreakMode::Crlf => {}
         }
 
         let mut changed = false;
         for line in self.line_buffer.push_chunk(port, bytes) {
-            self.dashboard.add_input(port, &line);
+            self.dashboard.add_input_with_options(
+                port,
+                &line,
+                None,
+                line_break.preserve_entry_line_breaks(),
+            );
             self.logger
                 .log_input(port, &line)
                 .map_err(|error| format!("failed to write log: {error}"))?;
@@ -282,7 +287,12 @@ impl SessionDashboard {
             if matches!(line_break, LineBreakMode::Packet | LineBreakMode::Wrap) {
                 continue;
             }
-            self.dashboard.add_input(&line.port, &line.bytes);
+            self.dashboard.add_input_with_options(
+                &line.port,
+                &line.bytes,
+                None,
+                line_break.preserve_entry_line_breaks(),
+            );
             self.logger
                 .log_input(&line.port, &line.bytes)
                 .map_err(|error| format!("failed to write log: {error}"))?;

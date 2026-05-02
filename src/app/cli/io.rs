@@ -81,6 +81,7 @@ struct IoObservedInputSpec {
     port: String,
     formats: Vec<OutputFormat>,
     per_format_display_modes: Option<BTreeMap<OutputFormat, PortDisplayMode>>,
+    preserve_line_breaks: bool,
 }
 
 struct IoRuntimeSettings {
@@ -182,6 +183,7 @@ impl IoRuntimeState {
                         spec.port,
                         spec.formats,
                         spec.per_format_display_modes,
+                        spec.preserve_line_breaks,
                     ),
                 )
             })
@@ -323,6 +325,7 @@ pub(crate) struct ObservedInput {
     display_queue: PacketDisplayQueue,
     rate_trackers: BTreeMap<OutputFormat, PacketRateTracker>,
     per_format_display_modes: Option<BTreeMap<OutputFormat, PortDisplayMode>>,
+    preserve_line_breaks: bool,
 }
 
 impl ObservedInput {
@@ -331,6 +334,7 @@ impl ObservedInput {
         port: String,
         formats: Vec<OutputFormat>,
         per_format_display_modes: Option<BTreeMap<OutputFormat, PortDisplayMode>>,
+        preserve_line_breaks: bool,
     ) -> Self {
         let rate_trackers = formats
             .iter()
@@ -344,6 +348,7 @@ impl ObservedInput {
             display_queue: PacketDisplayQueue::new(),
             rate_trackers,
             per_format_display_modes,
+            preserve_line_breaks,
         }
     }
 
@@ -370,7 +375,7 @@ impl ObservedInput {
                     .and_then(|display_modes| display_modes.get(&packet.format).copied())
             };
             self.display_queue
-                .enqueue(packet.bytes, display_mode, false);
+                .enqueue(packet.bytes, display_mode, self.preserve_line_breaks);
         }
 
         ObservedInputBatch {
@@ -1387,6 +1392,7 @@ pub(crate) fn line_break_mode_value(mode: LineBreakMode) -> &'static str {
         LineBreakMode::Line => "line",
         LineBreakMode::Packet => "packet",
         LineBreakMode::Wrap => "wrap",
+        LineBreakMode::Crlf => "crlf",
     }
 }
 
@@ -1600,6 +1606,8 @@ where
     ];
     if input {
         choices.extend([
+            String::from("ascii+crlf"),
+            String::from("utf8+crlf"),
             String::from("hex+packet"),
             String::from("utf8+packet"),
             String::from("hex+utf8+wrap"),
@@ -2094,7 +2102,7 @@ fn build_settings(cli_options: IoRuntimeOptions) -> Result<IoRuntimeSettings, St
         let line_break_mode = resolve_input_line_break_mode(
             port_spec.line_break_mode,
             input_has_formats,
-            display.resolve_line_break_input(&input_port),
+            display.resolve_line_break_input_override(&input_port),
         );
         io_command_inputs.push(IoCommandInput {
             port: input_port.clone(),
@@ -2159,11 +2167,17 @@ fn build_settings(cli_options: IoRuntimeOptions) -> Result<IoRuntimeSettings, St
                 .iter()
                 .find(|input| input.port == port)
                 .map(|input| input.id.clone())?;
+            let preserve_line_breaks = inputs
+                .iter()
+                .find(|input| input.port == port)
+                .map(|input| input.line_break_mode.preserve_entry_line_breaks())
+                .unwrap_or(false);
             Some(IoObservedInputSpec {
                 input_id,
                 port,
                 formats,
                 per_format_display_modes,
+                preserve_line_breaks,
             })
         })
         .collect();
@@ -2200,10 +2214,10 @@ pub(crate) fn resolve_display_mode(
 pub(crate) fn resolve_input_line_break_mode(
     explicit_mode: Option<LineBreakMode>,
     has_formats: bool,
-    configured_mode: LineBreakMode,
+    configured_mode: Option<LineBreakMode>,
 ) -> LineBreakMode {
-    explicit_mode.unwrap_or(if has_formats {
-        configured_mode
+    explicit_mode.or(configured_mode).unwrap_or(if has_formats {
+        LineBreakMode::Line
     } else {
         LineBreakMode::Wrap
     })
@@ -2485,6 +2499,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_io_input_binding_accepts_ascii_crlf_mode() {
+        let binding =
+            parse_io_input_binding("/dev/ttyUSB1@115200,ascii+crlf,roverdowngeneral").unwrap();
+
+        assert_eq!(binding.port, "/dev/ttyUSB1");
+        assert_eq!(binding.baud, Some(115_200));
+        assert_eq!(binding.formats, vec![String::from("roverdowngeneral")]);
+        assert_eq!(binding.display_mode, Some(PortDisplayMode::Ascii));
+        assert_eq!(binding.line_break_mode, Some(LineBreakMode::Crlf));
+    }
+
+    #[test]
     fn parse_io_input_binding_accepts_multiple_formats() {
         let binding =
             parse_io_input_binding("/dev/ttyUSB1,packetacv6+packetmv1+packetjfv1").unwrap();
@@ -2503,7 +2529,7 @@ mod tests {
     #[test]
     fn input_without_format_defaults_to_wrap_mode() {
         assert_eq!(
-            resolve_input_line_break_mode(None, false, LineBreakMode::Line),
+            resolve_input_line_break_mode(None, false, None),
             LineBreakMode::Wrap
         );
     }
@@ -2511,12 +2537,24 @@ mod tests {
     #[test]
     fn input_with_format_uses_configured_line_break_mode() {
         assert_eq!(
-            resolve_input_line_break_mode(None, true, LineBreakMode::Packet),
+            resolve_input_line_break_mode(None, true, Some(LineBreakMode::Packet)),
             LineBreakMode::Packet
         );
         assert_eq!(
-            resolve_input_line_break_mode(Some(LineBreakMode::Line), false, LineBreakMode::Packet),
+            resolve_input_line_break_mode(
+                Some(LineBreakMode::Line),
+                false,
+                Some(LineBreakMode::Packet)
+            ),
             LineBreakMode::Line
+        );
+    }
+
+    #[test]
+    fn configured_input_line_break_mode_applies_without_format() {
+        assert_eq!(
+            resolve_input_line_break_mode(None, false, Some(LineBreakMode::Crlf)),
+            LineBreakMode::Crlf
         );
     }
 
@@ -2716,6 +2754,7 @@ mod tests {
             String::from("/dev/ttyUSB1"),
             vec![OutputFormat::RoverUpGeneral],
             None,
+            false,
         );
 
         let batch = observed.observe(&packet, Instant::now());
@@ -2731,6 +2770,31 @@ mod tests {
         assert_eq!(queued.display_mode, Some(PortDisplayMode::Ascii));
         assert!(!queued.preserve_line_breaks);
         assert_eq!(queued.bytes, packet);
+    }
+
+    #[test]
+    fn observed_input_preserves_line_breaks_when_requested() {
+        let packet = OutputFormat::RoverUpGeneral
+            .encode_dummy_payload()
+            .expect("roverupgeneral dummy payload");
+        let mut observed = ObservedInput::new(
+            String::from("input-up"),
+            String::from("/dev/ttyUSB1"),
+            vec![OutputFormat::RoverUpGeneral],
+            None,
+            true,
+        );
+
+        let batch = observed.observe(&packet, Instant::now());
+
+        assert_eq!(batch.valid_packet_count, 1);
+        let queued = observed
+            .display_queue
+            .pending_packets
+            .front()
+            .expect("queued roverup packet");
+        assert!(queued.preserve_line_breaks);
+        assert_eq!(queued.display_mode, Some(PortDisplayMode::Ascii));
     }
 
     #[test]

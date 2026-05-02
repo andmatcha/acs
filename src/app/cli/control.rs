@@ -237,6 +237,7 @@ struct ControlObservedInputSpec {
     port: String,
     formats: Vec<OutputFormat>,
     per_format_display_modes: Option<BTreeMap<OutputFormat, PortDisplayMode>>,
+    preserve_line_breaks: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +285,7 @@ impl ControlRuntimeState {
                         spec.port,
                         spec.formats,
                         spec.per_format_display_modes,
+                        spec.preserve_line_breaks,
                     ),
                 )
             })
@@ -887,7 +889,7 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
         let line_break_mode = resolve_input_line_break_mode(
             port_spec.line_break_mode,
             input_has_formats,
-            display.resolve_line_break_input(&monitor_port),
+            display.resolve_line_break_input_override(&monitor_port),
         );
 
         if let Some(existing_input) = inputs.iter().find(|input| input.port == monitor_port) {
@@ -972,11 +974,17 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
                 .iter()
                 .find(|input| input.port == port)
                 .map(|input| input.id.clone())?;
+            let preserve_line_breaks = inputs
+                .iter()
+                .find(|input| input.port == port)
+                .map(|input| input.line_break_mode.preserve_entry_line_breaks())
+                .unwrap_or(false);
             Some(ControlObservedInputSpec {
                 input_id,
                 port,
                 formats,
                 per_format_display_modes,
+                preserve_line_breaks,
             })
         })
         .collect();
@@ -1482,6 +1490,18 @@ mod tests {
         assert_eq!(binding.formats, vec![String::from("packetjfv1")]);
         assert_eq!(binding.display_mode, Some(PortDisplayMode::Utf8));
         assert_eq!(binding.line_break_mode, Some(LineBreakMode::Packet));
+    }
+
+    #[test]
+    fn parse_control_monitor_binding_accepts_ascii_crlf_mode() {
+        let binding =
+            parse_control_monitor_binding("/dev/ttyUSB1@115200,ascii+crlf,roverupgeneral").unwrap();
+
+        assert_eq!(binding.port, "/dev/ttyUSB1");
+        assert_eq!(binding.baud, Some(115_200));
+        assert_eq!(binding.formats, vec![String::from("roverupgeneral")]);
+        assert_eq!(binding.display_mode, Some(PortDisplayMode::Ascii));
+        assert_eq!(binding.line_break_mode, Some(LineBreakMode::Crlf));
     }
 
     #[test]

@@ -156,6 +156,15 @@ mod tests {
             }
         );
         assert_eq!(
+            parse_port_spec("--port", "/dev/ttyUSB3,ascii+crlf").unwrap(),
+            PortSpec {
+                port: String::from("/dev/ttyUSB3"),
+                baud: None,
+                display_mode: Some(PortDisplayMode::Ascii),
+                line_break_mode: Some(LineBreakMode::Crlf),
+            }
+        );
+        assert_eq!(
             parse_port_spec("--port", "0@460800,hex").unwrap(),
             PortSpec {
                 port: String::from("0"),

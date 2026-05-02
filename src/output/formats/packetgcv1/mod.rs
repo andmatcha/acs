@@ -10,8 +10,11 @@ const GC_TYPE_MANUAL_RATE: u8 = 0x03;
 const GC_TYPE_STOP: u8 = 0x04;
 const GC_TYPE_HOME: u8 = 0x05;
 
-const MANUAL_POSITION_L1_TENTHS: i16 = 2700;
-const MANUAL_POSITION_R1_TENTHS: i16 = 0;
+const GC_POSITION_MIN_TENTHS: i16 = 0;
+const GC_POSITION_MAX_TENTHS: i16 = 2700;
+const HOME_POSITION_TENTHS: i16 = 1350;
+const MANUAL_POSITION_L1_TENTHS: i16 = GC_POSITION_MAX_TENTHS;
+const MANUAL_POSITION_R1_TENTHS: i16 = GC_POSITION_MIN_TENTHS;
 const MANUAL_RATE_FULL_SCALE: i16 = 1000;
 
 pub(crate) const fn packet_len() -> usize {
@@ -57,7 +60,7 @@ impl GcCommand {
     const fn home() -> Self {
         Self {
             packet_type: GC_TYPE_HOME,
-            value: 0,
+            value: HOME_POSITION_TENTHS,
         }
     }
 }
@@ -189,8 +192,8 @@ impl<'a> CompactGcState<'a> {
 mod tests {
     use super::{
         GC_PACKET_LEN, GC_TYPE_HOME, GC_TYPE_MANUAL_POSITION, GC_TYPE_MANUAL_RATE, GC_TYPE_STOP,
-        MANUAL_POSITION_L1_TENTHS, MANUAL_POSITION_R1_TENTHS, PacketGcV1OutputDriver,
-        crc16_ccitt_false,
+        HOME_POSITION_TENTHS, MANUAL_POSITION_L1_TENTHS, MANUAL_POSITION_R1_TENTHS,
+        PacketGcV1OutputDriver, crc16_ccitt_false,
     };
     use crate::output::formats::OutputDriver;
 
@@ -230,7 +233,11 @@ mod tests {
 
     #[test]
     fn supported_buttons_encode_discrete_commands() {
-        assert_single_command([1 << 6, 0, 0, 128, 0, 128, 0, 0], GC_TYPE_HOME, 0);
+        assert_single_command(
+            [1 << 6, 0, 0, 128, 0, 128, 0, 0],
+            GC_TYPE_HOME,
+            HOME_POSITION_TENTHS,
+        );
         assert_single_command([1 << 5, 0, 0, 128, 0, 128, 0, 0], GC_TYPE_STOP, 0);
         assert_single_command(
             [0, 1 << 0, 0, 128, 0, 128, 0, 0],
@@ -260,8 +267,30 @@ mod tests {
         let first = generator.next_payload().expect("should encode");
         let second = generator.next_payload().expect("should encode");
 
-        assert_gc_packet(&first, 1, GC_TYPE_MANUAL_POSITION, 2700);
-        assert_gc_packet(&second, 2, GC_TYPE_MANUAL_POSITION, 0);
+        assert_gc_packet(
+            &first,
+            1,
+            GC_TYPE_MANUAL_POSITION,
+            MANUAL_POSITION_L1_TENTHS,
+        );
+        assert_gc_packet(
+            &second,
+            2,
+            GC_TYPE_MANUAL_POSITION,
+            MANUAL_POSITION_R1_TENTHS,
+        );
+    }
+
+    #[test]
+    fn dummy_payload_generator_uses_midrange_home() {
+        let mut generator = super::create_dummy_generator().expect("should create generator");
+
+        for _ in 0..4 {
+            generator.next_payload().expect("should encode");
+        }
+        let home = generator.next_payload().expect("should encode home");
+
+        assert_gc_packet(&home, 5, GC_TYPE_HOME, HOME_POSITION_TENTHS);
     }
 
     fn assert_single_command(report: [u8; 8], packet_type: u8, value: i16) {

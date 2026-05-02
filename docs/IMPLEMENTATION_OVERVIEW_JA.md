@@ -11,7 +11,7 @@
 1. `src/main.rs` が `app::cli::run()` を呼び、サブコマンドへ振り分けます。
 2. `app/cli` が引数、設定ファイル、既定値、ポート名、ログ保存先を解決します。
    port ごとの baud / display は CLI の `PORT@BAUD,DISPLAY` や config object から個別解決されます。
-   monitor の display では `line` / `packet` も指定でき、表示の改行単位を切り替えられます。
+   monitor の display では `line` / `packet` / `wrap` / `crlf` も指定でき、表示の改行単位や CR/LF の描画を切り替えられます。
 3. `session` が監視対象ポート、出力ポート、ダッシュボード、ログファイルを初期化します。
 4. 入力があるコマンドでは `serial` の monitor thread がデータを受け、`SessionEvent` としてメインループへ渡します。
 5. メインループは共有の `IngressFrame` を組み立て、`control` と `route` では `pipeline` がそのフレームをフィルタ・変換・分類・配送し、送信先ごとの `DispatchPlan` を返します。
@@ -31,7 +31,7 @@
 ### `monitor`
 
 - 1 個以上のシリアル入力を監視し、受信内容をダッシュボードとログへ記録します。
-- display 設定の `packet` 指定では受信チャンク単位、`line` 指定では改行単位で表示します。
+- display 設定の `packet` 指定では受信チャンク単位、`line` 指定では改行単位、`crlf` 指定では ASCII/UTF-8 内の CR/LF を実改行として表示します。
 
 ### `io`
 

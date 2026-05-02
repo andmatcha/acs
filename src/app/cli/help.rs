@@ -211,7 +211,9 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
-    println!("                                    入力表示では任意で +line/+packet を追加できます");
+    println!(
+        "                                    入力表示では任意で +line/+packet/+wrap/+crlf を追加できます"
+    );
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
     println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!(
@@ -230,6 +232,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!(
         "  {bin_name} control --config DISPLAY=input:default=utf8+packet --monitor /dev/ttyUSB1,packetjfv1"
     );
+    println!("  {bin_name} control --monitor /dev/ttyUSB1,ascii+crlf,roverupgeneral");
     println!(
         "  {bin_name} control --config DISPLAY=input:/dev/ttyUSB0=utf8 --config DISPLAY=output:/dev/ttyUSB0=hex"
     );
@@ -264,7 +267,7 @@ pub(crate) fn print_io_help(bin_name: &str) {
     );
     println!("                              ID= は同一ポートへ複数形式を送る場合に指定します");
     println!("                              DISPLAY: hex/ascii/utf8/hex+ascii/hex+utf8");
-    println!("                              受信では +line/+packet/+wrap も指定できます");
+    println!("                              受信では +line/+packet/+wrap/+crlf も指定できます");
     println!(
         "                              FORMAT: packetacv6/packetmv1/packetgcv1/packetiv1/packetbv1/packetjfv1/roverupgeneral/roverdowngeneral"
     );
@@ -282,6 +285,9 @@ pub(crate) fn print_io_help(bin_name: &str) {
     );
     println!(
         "  {bin_name} io -i /dev/ttyUSB1,packetacv6+packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100"
+    );
+    println!(
+        "  {bin_name} io -i /dev/ttyUSB1,ascii+crlf,roverdowngeneral -o rover=/dev/ttyUSB0,ascii,roverupgeneral,20"
     );
 }
 
@@ -301,7 +307,7 @@ pub(crate) fn print_xbee_talk_help(bin_name: &str) {
     println!("                              BAUD を省略した場合は 115200 が使われます");
     println!("      --input <PORT[@BAUD][,DISPLAY]> 追加で受信監視するポート");
     println!("  -m, --monitor <PORT[@BAUD][,DISPLAY]> `--input` と同じ");
-    println!("      --display <TARGET=MODE> 表示形式を上書き");
+    println!("      --display <TARGET=MODE> 表示形式を上書き。受信では +crlf も指定できます");
     println!("      --config <K=V,...>     設定をまとめて指定: `BAUD`, `DISPLAY`, `LOG_DIR`");
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
     println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
@@ -311,6 +317,7 @@ pub(crate) fn print_xbee_talk_help(bin_name: &str) {
     println!("  {bin_name} xbee-talk --port /dev/ttyUSB0");
     println!("  {bin_name} xbee-talk --port /dev/ttyUSB0@115200,utf8");
     println!("  {bin_name} xbee-talk --port /dev/ttyUSB0 --input /dev/ttyUSB1,hex+packet");
+    println!("  {bin_name} xbee-talk --port /dev/ttyUSB0 --input /dev/ttyUSB1,ascii+crlf");
     println!("  {bin_name} xbee-talk --port /dev/ttyUSB0 --config DISPLAY=input:default=utf8+line");
 }
 
@@ -497,7 +504,9 @@ pub(crate) fn print_route_help(bin_name: &str) {
     println!("                              TARGET: PORT, input:PORT, output:PORT,");
     println!("                                      default, input:default, output:default");
     println!("                              MODE: hex/ascii/utf8/hex+ascii/hex+utf8");
-    println!("                                    入力表示では任意で +line/+packet を追加できます");
+    println!(
+        "                                    入力表示では任意で +line/+packet/+wrap/+crlf を追加できます"
+    );
     println!("      --no-log                ログファイル作成を無効化して最大スループットを優先");
     println!("      --s3b                   XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
     println!(

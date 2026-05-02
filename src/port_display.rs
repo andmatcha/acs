@@ -26,13 +26,15 @@ impl PortDisplayMode {
 }
 
 /// 入力データの表示単位。
-/// line=改行まで1行、packet=読み取りチャンク単位、wrap=端末幅で折り返す raw stream。
+/// line=改行まで1行、packet=読み取りチャンク単位、wrap=端末幅で折り返す raw stream、
+/// crlf=改行まで1行にまとめ、ASCII/UTF-8 表示では CR/LF を実改行として描画。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineBreakMode {
     #[default]
     Line,
     Packet,
     Wrap,
+    Crlf,
 }
 
 impl LineBreakMode {
@@ -41,10 +43,15 @@ impl LineBreakMode {
             "line" => Ok(Self::Line),
             "packet" | "raw" => Ok(Self::Packet),
             "wrap" | "stream" => Ok(Self::Wrap),
+            "crlf" | "newline" | "lines" => Ok(Self::Crlf),
             other => Err(format!(
-                "invalid line break mode: {other} (expected line/packet/wrap)"
+                "invalid line break mode: {other} (expected line/packet/wrap/crlf)"
             )),
         }
+    }
+
+    pub fn preserve_entry_line_breaks(self) -> bool {
+        matches!(self, Self::Crlf)
     }
 }
 
@@ -105,6 +112,10 @@ impl LineBreakScopeConfig {
             .copied()
             .or(self.default_mode)
             .unwrap_or_default()
+    }
+
+    fn resolve_override(&self, port: &str) -> Option<LineBreakMode> {
+        self.per_port.get(port).copied().or(self.default_mode)
     }
 }
 
@@ -168,6 +179,10 @@ impl PortDisplayConfig {
     pub fn resolve_line_break_input(&self, port: &str) -> LineBreakMode {
         self.input_line_break.resolve(port)
     }
+
+    pub fn resolve_line_break_input_override(&self, port: &str) -> Option<LineBreakMode> {
+        self.input_line_break.resolve_override(port)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,12 +205,12 @@ impl PortDisplayAssignment {
 }
 
 /// `[stream:]target=mode` 形式をパースする。
-/// mode に `line` / `packet` / `wrap` を含む場合は LineBreakMode として解釈する。
-/// `hex+packet` や `hex+wrap` のように組み合わせ指定も可能。
+/// mode に `line` / `packet` / `wrap` / `crlf` を含む場合は LineBreakMode として解釈する。
+/// `hex+packet` や `ascii+crlf` のように組み合わせ指定も可能。
 pub fn parse_display_assignment(value: &str) -> Result<PortDisplayAssignment, String> {
     let (target, mode_str) = value.split_once('=').ok_or_else(|| {
         String::from(
-                "display must be in the form <PORT>=<hex|ascii|utf8|hex+ascii|hex+utf8|line|packet|wrap>",
+                "display must be in the form <PORT>=<hex|ascii|utf8|hex+ascii|hex+utf8|line|packet|wrap|crlf>",
         )
     })?;
 
@@ -221,7 +236,7 @@ pub fn parse_display_assignment(value: &str) -> Result<PortDisplayAssignment, St
 
     if encoding.is_none() && line_break.is_none() {
         return Err(format!(
-            "invalid display mode: {mode_str} (expected hex/ascii/utf8/hex+ascii/hex+utf8/line/packet/wrap)"
+            "invalid display mode: {mode_str} (expected hex/ascii/utf8/hex+ascii/hex+utf8/line/packet/wrap/crlf)"
         ));
     }
 
@@ -253,7 +268,7 @@ pub fn parse_display_value(
         let enc_str = encoding_parts.join("+");
         Some(PortDisplayMode::parse(&enc_str).map_err(|_| {
             format!(
-                "invalid display mode: {value} (expected hex/ascii/utf8/hex+ascii/hex+utf8/line/packet/wrap)"
+                "invalid display mode: {value} (expected hex/ascii/utf8/hex+ascii/hex+utf8/line/packet/wrap/crlf)"
             )
         })?)
     };
@@ -310,6 +325,10 @@ mod tests {
         let e = parse_display_assignment("input:/dev/ttyUSB1=hex+wrap").unwrap();
         assert_eq!(e.encoding, Some(PortDisplayMode::Hex));
         assert_eq!(e.line_break, Some(LineBreakMode::Wrap));
+
+        let f = parse_display_assignment("input:/dev/ttyUSB2=ascii+crlf").unwrap();
+        assert_eq!(f.encoding, Some(PortDisplayMode::Ascii));
+        assert_eq!(f.line_break, Some(LineBreakMode::Crlf));
     }
 
     #[test]
@@ -329,6 +348,10 @@ mod tests {
         assert_eq!(
             parse_display_value("wrap").unwrap(),
             (None, Some(LineBreakMode::Wrap))
+        );
+        assert_eq!(
+            parse_display_value("ascii+newline").unwrap(),
+            (Some(PortDisplayMode::Ascii), Some(LineBreakMode::Crlf))
         );
     }
 
@@ -388,6 +411,18 @@ mod tests {
         assert_eq!(
             config.resolve_line_break_input("/dev/ttyUSB1"),
             LineBreakMode::Packet
+        );
+        assert_eq!(
+            config.resolve_line_break_input_override("/dev/ttyUSB1"),
+            Some(LineBreakMode::Packet)
+        );
+        assert_eq!(
+            config.resolve_line_break_input_override("/dev/ttyUSB2"),
+            Some(LineBreakMode::Packet)
+        );
+        assert_eq!(
+            PortDisplayConfig::default().resolve_line_break_input_override("/dev/ttyUSB2"),
+            None
         );
     }
 }
