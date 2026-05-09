@@ -470,7 +470,7 @@ fn extend_unique_formats(target: &mut Vec<OutputFormat>, values: &[OutputFormat]
 
 fn default_control_rate_hz(format: OutputFormat) -> u32 {
     match format {
-        OutputFormat::PacketAcV6 | OutputFormat::PacketMv1 => 100,
+        OutputFormat::PacketAcV6 | OutputFormat::PacketAcV6Usb | OutputFormat::PacketMv1 => 100,
         _ => 20,
     }
 }

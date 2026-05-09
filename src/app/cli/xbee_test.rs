@@ -177,7 +177,7 @@ struct PacketDefinition {
 impl PacketDefinition {
     fn for_format(format: OutputFormat) -> Self {
         match format {
-            OutputFormat::PacketAcV6 => Self {
+            OutputFormat::PacketAcV6 | OutputFormat::PacketAcV6Usb => Self {
                 packet_len: 39,
                 payload_len: 37,
                 header: *b"AC",
@@ -209,6 +209,7 @@ impl PacketDefinition {
 pub(crate) fn xbee_test_format_label(kind: XbeeTestFrameKind) -> &'static str {
     match kind {
         XbeeTestFrameKind::Format(OutputFormat::PacketAcV6) => "AU(PacketACv6)",
+        XbeeTestFrameKind::Format(OutputFormat::PacketAcV6Usb) => "AU(PacketACv6USB)",
         XbeeTestFrameKind::Format(OutputFormat::PacketMv1) => "M(PacketMv1)",
         XbeeTestFrameKind::Format(OutputFormat::PacketIv1) => "I(PacketIv1)",
         XbeeTestFrameKind::Format(OutputFormat::PacketBv1) => "B(PacketBv1)",
@@ -329,6 +330,7 @@ fn packet_len(kind: XbeeTestFrameKind) -> usize {
 fn packet_start_len(kind: XbeeTestFrameKind) -> usize {
     match kind {
         XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketAcV6Usb)
         | XbeeTestFrameKind::Format(OutputFormat::PacketGcV1)
         | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1)
         | XbeeTestFrameKind::PollGreeting
@@ -343,7 +345,8 @@ fn packet_start_len(kind: XbeeTestFrameKind) -> usize {
 
 fn find_packet_start(buffer: &[u8], kind: XbeeTestFrameKind) -> Option<usize> {
     match kind {
-        XbeeTestFrameKind::Format(OutputFormat::PacketAcV6) => find_header(buffer, b"AC"),
+        XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketAcV6Usb) => find_header(buffer, b"AC"),
         XbeeTestFrameKind::Format(OutputFormat::PacketGcV1) => find_header(buffer, b"GC"),
         XbeeTestFrameKind::Format(OutputFormat::PacketMv1) => find_byte(buffer, b'M'),
         XbeeTestFrameKind::Format(OutputFormat::PacketIv1) => find_byte(buffer, b'I'),
@@ -359,6 +362,7 @@ fn find_packet_start(buffer: &[u8], kind: XbeeTestFrameKind) -> Option<usize> {
 fn packet_matches(kind: XbeeTestFrameKind, packet: &[u8]) -> bool {
     match kind {
         XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketAcV6Usb)
         | XbeeTestFrameKind::Format(OutputFormat::PacketGcV1)
         | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => {
             let XbeeTestFrameKind::Format(format) = kind else {

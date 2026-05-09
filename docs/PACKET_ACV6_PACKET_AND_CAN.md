@@ -103,6 +103,20 @@ DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet (+ PC keyboard R U
 
 そのほかの bit は、この実装では 0 のままである。
 
+### `PacketACv6USB`
+
+`acs io` 用の `packetacv6usb` は、`PacketACv6` と同じ 39 byte の AC v6 パケットを生成する。
+通常のダミー `packetacv6` と違い、`USB_READ` (`flags.bit6`) 以外は初期値に保つ。
+
+- `flags = 0x50` (`Manual` + `USB_READ`)
+- `current[0..6] = 255`
+- `angle[0..2] = 0`
+- `vel[0..2] = 0`
+- `control_byte = 0`
+- `base_target_mm_j0 = 0`
+- `auto_flags = 0`
+- `fault_code = 0`
+
 ### エンディアン
 
 - `u16` / `i16` は little-endian で格納する

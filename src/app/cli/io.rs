@@ -572,6 +572,7 @@ struct DecodedPacket {
 #[derive(Debug, Clone, Copy)]
 enum PacketMatcher {
     PacketAcV6,
+    PacketAcV6Usb,
     PacketMv1,
     PacketIv1,
     PacketBv1,
@@ -585,6 +586,7 @@ impl PacketMatcher {
     fn new(format: OutputFormat) -> Self {
         match format {
             OutputFormat::PacketAcV6 => Self::PacketAcV6,
+            OutputFormat::PacketAcV6Usb => Self::PacketAcV6Usb,
             OutputFormat::PacketMv1 => Self::PacketMv1,
             OutputFormat::PacketIv1 => Self::PacketIv1,
             OutputFormat::PacketBv1 => Self::PacketBv1,
@@ -598,6 +600,7 @@ impl PacketMatcher {
     fn format(self) -> OutputFormat {
         match self {
             Self::PacketAcV6 => OutputFormat::PacketAcV6,
+            Self::PacketAcV6Usb => OutputFormat::PacketAcV6Usb,
             Self::PacketMv1 => OutputFormat::PacketMv1,
             Self::PacketIv1 => OutputFormat::PacketIv1,
             Self::PacketBv1 => OutputFormat::PacketBv1,
@@ -627,7 +630,7 @@ impl PacketMatcher {
 
     fn matches_packet(self, bytes: &[u8]) -> bool {
         match self {
-            Self::PacketAcV6 => matches_crc_packet(bytes, b"AC", 37),
+            Self::PacketAcV6 | Self::PacketAcV6Usb => matches_crc_packet(bytes, b"AC", 37),
             Self::PacketMv1 => matches_reduced_ac_packet(bytes, b'M', 19),
             Self::PacketIv1 => matches_reduced_ac_packet(bytes, b'I', 19),
             Self::PacketBv1 => matches_reduced_ac_packet(bytes, b'B', 15),
@@ -644,7 +647,9 @@ impl PacketMatcher {
         }
 
         match self {
-            Self::PacketAcV6 => could_match_crc_packet_prefix(bytes, b"AC", 39),
+            Self::PacketAcV6 | Self::PacketAcV6Usb => {
+                could_match_crc_packet_prefix(bytes, b"AC", 39)
+            }
             Self::PacketMv1 => could_match_reduced_ac_packet_prefix(bytes, b'M', 19),
             Self::PacketIv1 => could_match_reduced_ac_packet_prefix(bytes, b'I', 19),
             Self::PacketBv1 => could_match_reduced_ac_packet_prefix(bytes, b'B', 15),
@@ -1634,6 +1639,7 @@ where
 pub(crate) fn output_format_choices() -> Vec<OutputFormat> {
     vec![
         OutputFormat::PacketAcV6,
+        OutputFormat::PacketAcV6Usb,
         OutputFormat::PacketMv1,
         OutputFormat::PacketIv1,
         OutputFormat::PacketBv1,
@@ -2572,6 +2578,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_io_output_binding_accepts_packetacv6usb_format() {
+        let binding =
+            parse_io_output_binding("main=/dev/ttyUSB0@921600,hex,PacketACv6USB,10").unwrap();
+
+        assert_eq!(binding.id, "main");
+        assert_eq!(binding.format.as_deref(), Some("PacketACv6USB"));
+        assert_eq!(binding.rate_hz, Some(10));
+    }
+
+    #[test]
     fn parse_io_args_accepts_input_output_values_and_defaults_rate() {
         let options = parse_io_args(vec![
             String::from("-i"),
@@ -2725,6 +2741,20 @@ mod tests {
     }
 
     #[test]
+    fn mixed_decoder_accepts_packetacv6usb_packets() {
+        let packet = OutputFormat::PacketAcV6Usb
+            .encode_dummy_payload()
+            .expect("packetacv6usb dummy payload");
+        let mut decoder = MixedFormatDecoder::new(vec![OutputFormat::PacketAcV6Usb]);
+
+        let decoded = decoder.push(&packet);
+
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].format, OutputFormat::PacketAcV6Usb);
+        assert_eq!(decoded[0].bytes, packet);
+    }
+
+    #[test]
     fn reduced_ac_packet_matcher_checks_crc() {
         let mut packet = OutputFormat::PacketMv1
             .encode_dummy_payload()
@@ -2801,6 +2831,10 @@ mod tests {
     fn estimated_output_line_bps_uses_packet_length_and_rate() {
         assert_eq!(
             estimated_output_line_bps(OutputFormat::PacketAcV6, 100),
+            39_000
+        );
+        assert_eq!(
+            estimated_output_line_bps(OutputFormat::PacketAcV6Usb, 100),
             39_000
         );
         assert_eq!(

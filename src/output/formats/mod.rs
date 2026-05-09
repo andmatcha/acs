@@ -12,6 +12,7 @@ pub(crate) use crc::crc16_ccitt_false;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OutputFormat {
     PacketAcV6,
+    PacketAcV6Usb,
     PacketMv1,
     PacketIv1,
     PacketBv1,
@@ -36,6 +37,13 @@ const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[
         packet_len: packetacv6::packet_len(),
         create_driver: Some(packetacv6::create_driver),
         create_dummy_generator: packetacv6::create_dummy_generator,
+    },
+    OutputFormatDefinition {
+        format: OutputFormat::PacketAcV6Usb,
+        names: &["packetacv6usb"],
+        packet_len: packetacv6::packet_len(),
+        create_driver: None,
+        create_dummy_generator: packetacv6::create_usb_read_dummy_generator,
     },
     OutputFormatDefinition {
         format: OutputFormat::PacketMv1,
@@ -109,6 +117,7 @@ impl OutputFormat {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::PacketAcV6 => "PacketACv6",
+            Self::PacketAcV6Usb => "PacketACv6USB",
             Self::PacketMv1 => "PacketMv1",
             Self::PacketIv1 => "PacketIv1",
             Self::PacketBv1 => "PacketBv1",
@@ -147,6 +156,7 @@ impl OutputFormat {
     pub fn default_display_mode(self) -> PortDisplayMode {
         match self {
             Self::PacketAcV6
+            | Self::PacketAcV6Usb
             | Self::PacketMv1
             | Self::PacketIv1
             | Self::PacketBv1
@@ -158,7 +168,7 @@ impl OutputFormat {
 
     pub(crate) fn set_usb_read_flag(self, payload: &mut [u8]) -> Result<(), String> {
         match self {
-            Self::PacketAcV6 => packetacv6::set_usb_read_flag(payload),
+            Self::PacketAcV6 | Self::PacketAcV6Usb => packetacv6::set_usb_read_flag(payload),
             _ => Err(format!(
                 "output format `{}` does not carry packetacv6 USB_READ",
                 self.as_str()
@@ -207,6 +217,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_supports_packetacv6usb_alias() {
+        assert_eq!(
+            OutputFormat::parse("packetacv6usb").expect("should parse"),
+            OutputFormat::PacketAcV6Usb
+        );
+        assert_eq!(
+            OutputFormat::parse("PacketACv6USB").expect("should parse"),
+            OutputFormat::PacketAcV6Usb
+        );
+    }
+
+    #[test]
     fn packetacv6_dummy_payload_has_ac_header() {
         let mut generator = OutputFormat::PacketAcV6
             .create_dummy_generator()
@@ -217,6 +239,22 @@ mod tests {
         assert_eq!(payload.len(), 39);
         assert_eq!(&payload[..2], b"AC");
         assert_ne!(payload, next_payload);
+    }
+
+    #[test]
+    fn packetacv6usb_dummy_payload_only_sets_usb_read_flag_over_initial_packet() {
+        let payload = OutputFormat::PacketAcV6Usb
+            .encode_dummy_payload()
+            .expect("packetacv6usb dummy payload");
+
+        assert_eq!(payload.len(), 39);
+        assert_eq!(&payload[..2], b"AC");
+        assert_eq!(payload[3], 0x50);
+        for index in 0..7 {
+            assert_eq!(read_u16_le(&payload, 4 + index * 2), 255);
+        }
+        assert_eq!(payload[30], 0);
+        assert_eq!(read_u16_le(&payload, 37), crc16_ccitt_false(&payload[..37]));
     }
 
     #[test]
@@ -297,8 +335,12 @@ mod tests {
     }
 
     #[test]
-    fn non_manual_reduced_ac_packets_reject_compact_encoding_driver() {
-        for format in [OutputFormat::PacketIv1, OutputFormat::PacketBv1] {
+    fn dummy_only_ac_packets_reject_compact_encoding_driver() {
+        for format in [
+            OutputFormat::PacketAcV6Usb,
+            OutputFormat::PacketIv1,
+            OutputFormat::PacketBv1,
+        ] {
             match format.create_driver() {
                 Ok(_) => panic!(
                     "{} should not create a compact encoding driver",
@@ -474,6 +516,7 @@ mod tests {
     #[test]
     fn packet_lengths_match_documented_formats() {
         assert_eq!(OutputFormat::PacketAcV6.packet_len(), 39);
+        assert_eq!(OutputFormat::PacketAcV6Usb.packet_len(), 39);
         assert_eq!(OutputFormat::PacketMv1.packet_len(), 19);
         assert_eq!(OutputFormat::PacketIv1.packet_len(), 19);
         assert_eq!(OutputFormat::PacketBv1.packet_len(), 15);
@@ -487,6 +530,10 @@ mod tests {
     fn default_display_modes_match_packet_families() {
         assert_eq!(
             OutputFormat::PacketAcV6.default_display_mode(),
+            crate::port_display::PortDisplayMode::Hex
+        );
+        assert_eq!(
+            OutputFormat::PacketAcV6Usb.default_display_mode(),
             crate::port_display::PortDisplayMode::Hex
         );
         assert_eq!(
@@ -517,5 +564,9 @@ mod tests {
             OutputFormat::RoverDownGeneral.default_display_mode(),
             crate::port_display::PortDisplayMode::Ascii
         );
+    }
+
+    fn read_u16_le(packet: &[u8], offset: usize) -> u16 {
+        u16::from_le_bytes([packet[offset], packet[offset + 1]])
     }
 }

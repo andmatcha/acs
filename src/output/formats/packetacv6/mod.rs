@@ -47,6 +47,10 @@ pub(crate) fn create_dummy_generator() -> Result<Box<dyn DummyPayloadGenerator>,
     Ok(Box::new(PacketAcV6DummyGenerator::default()))
 }
 
+pub(crate) fn create_usb_read_dummy_generator() -> Result<Box<dyn DummyPayloadGenerator>, String> {
+    Ok(Box::new(PacketAcV6UsbReadDummyGenerator::default()))
+}
+
 pub(crate) const fn packet_mv1_len() -> usize {
     reduced::packet_len(ReducedAcPacketKind::PacketMv1)
 }
@@ -137,6 +141,23 @@ impl DummyPayloadGenerator for PacketAcV6DummyGenerator {
     fn next_payload(&mut self) -> Result<Vec<u8>, String> {
         let payload = self.driver.encode(&build_dummy_compact_report(self.step))?;
         self.step = self.step.wrapping_add(1);
+        Ok(payload)
+    }
+}
+
+#[derive(Default)]
+struct PacketAcV6UsbReadDummyGenerator {
+    encoder: PacketAcV6PacketEncoder,
+}
+
+impl DummyPayloadGenerator for PacketAcV6UsbReadDummyGenerator {
+    fn next_payload(&mut self) -> Result<Vec<u8>, String> {
+        let mut payload = self
+            .encoder
+            .encode_compact_report_update(&[0u8; 8])
+            .packet
+            .to_vec();
+        set_usb_read_flag(&mut payload)?;
         Ok(payload)
     }
 }

@@ -129,6 +129,7 @@ acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketMv1,RATE=100
 acs control --port /dev/ttyUSB0@115200 --config FORMAT=PacketGCv1,RATE=20
 acs route merge -i in_a=/dev/ttyUSB0@921600 -o out_main=/dev/ttyUSB1@921600 --no-log
 acs io -i /dev/ttyUSB1@115200,utf8,packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,10
+acs io -o usb=/dev/ttyUSB0@921600,hex,packetacv6usb,10
 acs io -i
 acs io -o
 acs xbee-talk --port /dev/ttyUSB0@115200,utf8

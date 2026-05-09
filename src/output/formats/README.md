@@ -8,6 +8,7 @@
 ## 主な処理
 
 - `packetacv6` で compact report を 39 バイトの `PacketACv6` パケットへ変換します。
+- `packetacv6usb` で `USB_READ` flag だけを立てた中立 `PacketACv6` ダミーパケットを生成します。
 - `packetmv1` で compact report から生成した `PacketACv6` を XBee 送信用の `PacketMv1` へ削減します。
 - `packetiv1` / `packetbv1` で XBee 送信用に削減した `PacketACv6` 系ダミーフレームを生成します。
 - `packetgcv1` で compact report をアンテナサーボ向けの 9 バイト `PacketGCv1` コマンドへ変換します。
