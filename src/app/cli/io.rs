@@ -578,6 +578,7 @@ enum PacketMatcher {
     PacketBv1,
     PacketGcV1,
     PacketJfV1,
+    PacketUfV1,
     RoverUpGeneral,
     RoverDownGeneral,
 }
@@ -592,6 +593,7 @@ impl PacketMatcher {
             OutputFormat::PacketBv1 => Self::PacketBv1,
             OutputFormat::PacketGcV1 => Self::PacketGcV1,
             OutputFormat::PacketJfV1 => Self::PacketJfV1,
+            OutputFormat::PacketUfV1 => Self::PacketUfV1,
             OutputFormat::RoverUpGeneral => Self::RoverUpGeneral,
             OutputFormat::RoverDownGeneral => Self::RoverDownGeneral,
         }
@@ -606,6 +608,7 @@ impl PacketMatcher {
             Self::PacketBv1 => OutputFormat::PacketBv1,
             Self::PacketGcV1 => OutputFormat::PacketGcV1,
             Self::PacketJfV1 => OutputFormat::PacketJfV1,
+            Self::PacketUfV1 => OutputFormat::PacketUfV1,
             Self::RoverUpGeneral => OutputFormat::RoverUpGeneral,
             Self::RoverDownGeneral => OutputFormat::RoverDownGeneral,
         }
@@ -636,6 +639,7 @@ impl PacketMatcher {
             Self::PacketBv1 => matches_reduced_ac_packet(bytes, b'B', 15),
             Self::PacketGcV1 => matches_crc_packet(bytes, b"GC", 7),
             Self::PacketJfV1 => matches_crc_packet(bytes, b"JF", 14),
+            Self::PacketUfV1 => matches_crc_packet(bytes, b"UF", 12),
             Self::RoverUpGeneral => matches_rover_up_packet(bytes),
             Self::RoverDownGeneral => matches_rover_down_packet(bytes),
         }
@@ -655,6 +659,7 @@ impl PacketMatcher {
             Self::PacketBv1 => could_match_reduced_ac_packet_prefix(bytes, b'B', 15),
             Self::PacketGcV1 => could_match_crc_packet_prefix(bytes, b"GC", 9),
             Self::PacketJfV1 => could_match_crc_packet_prefix(bytes, b"JF", 16),
+            Self::PacketUfV1 => could_match_crc_packet_prefix(bytes, b"UF", 14),
             Self::RoverUpGeneral => matches_rover_up_prefix(bytes),
             Self::RoverDownGeneral => matches_rover_down_prefix(bytes),
         }
@@ -1645,6 +1650,7 @@ pub(crate) fn output_format_choices() -> Vec<OutputFormat> {
         OutputFormat::PacketBv1,
         OutputFormat::PacketGcV1,
         OutputFormat::PacketJfV1,
+        OutputFormat::PacketUfV1,
         OutputFormat::RoverUpGeneral,
         OutputFormat::RoverDownGeneral,
     ]
@@ -2517,6 +2523,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_io_input_binding_accepts_packetufv1_format() {
+        let binding = parse_io_input_binding("/dev/ttyUSB1@921600,hex+packet,PacketUFv1").unwrap();
+
+        assert_eq!(binding.port, "/dev/ttyUSB1");
+        assert_eq!(binding.baud, Some(921_600));
+        assert_eq!(binding.formats, vec![String::from("packetufv1")]);
+        assert_eq!(binding.display_mode, Some(PortDisplayMode::Hex));
+        assert_eq!(binding.line_break_mode, Some(LineBreakMode::Packet));
+    }
+
+    #[test]
     fn parse_io_input_binding_accepts_multiple_formats() {
         let binding =
             parse_io_input_binding("/dev/ttyUSB1,packetacv6+packetmv1+packetjfv1").unwrap();
@@ -2755,6 +2772,21 @@ mod tests {
     }
 
     #[test]
+    fn mixed_decoder_accepts_packetufv1_packets() {
+        let packet = OutputFormat::PacketUfV1
+            .encode_dummy_payload()
+            .expect("packetufv1 dummy payload");
+        let mut decoder = MixedFormatDecoder::new(vec![OutputFormat::PacketUfV1]);
+
+        assert!(decoder.push(&packet[..5]).is_empty());
+        let decoded = decoder.push(&packet[5..]);
+
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].format, OutputFormat::PacketUfV1);
+        assert_eq!(decoded[0].bytes, packet);
+    }
+
+    #[test]
     fn reduced_ac_packet_matcher_checks_crc() {
         let mut packet = OutputFormat::PacketMv1
             .encode_dummy_payload()
@@ -2836,6 +2868,10 @@ mod tests {
         assert_eq!(
             estimated_output_line_bps(OutputFormat::PacketAcV6Usb, 100),
             39_000
+        );
+        assert_eq!(
+            estimated_output_line_bps(OutputFormat::PacketUfV1, 100),
+            14_000
         );
         assert_eq!(
             estimated_output_line_bps(OutputFormat::RoverUpGeneral, 100),

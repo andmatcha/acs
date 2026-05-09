@@ -51,7 +51,7 @@
 - 20ms 周期で連番ループのダミーペイロードを繰り返し送信し、送信履歴を monitor と同じ UI で表示します。
 - 複数の出力ポートを同時に扱え、出力ごとに baud / format / display を分けて設定できます。
 - 出力ポートの受信側や、追加で指定した monitor ポートも同時に監視できます。
-- 現時点で `packetacv6`、`packetacv6usb`、`packetjfv1`、`roverupgeneral`、`roverdowngeneral` のダミーデータ送信に対応しています。
+- 現時点で `packetacv6`、`packetacv6usb`、`packetjfv1`、`packetufv1`、`roverupgeneral`、`roverdowngeneral` のダミーデータ送信に対応しています。
 
 ## 主要モジュール
 
@@ -78,7 +78,7 @@
 
 - 出力形式名と実装の対応付け
 - `PacketACv6` の状態付きエンコード
-- `PacketJFv1` のダミーフレーム生成
+- `PacketJFv1` / `PacketUFv1` のダミーフレーム生成
 - CRC16-CCITT-FALSE 計算
 
 ### `serial` / `session` / `ui`

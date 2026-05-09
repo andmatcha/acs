@@ -198,7 +198,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "                              FORMAT 指定時はパケット単位で表示し、RX Hz とデータレートを表示します"
     );
     println!(
-        "                              FORMAT: packetacv6/packetacv6usb/packetmv1/packetgcv1/packetiv1/packetbv1/packetjfv1/roverupgeneral/roverdowngeneral"
+        "                              FORMAT: packetacv6/packetacv6usb/packetmv1/packetgcv1/packetiv1/packetbv1/packetjfv1/packetufv1/roverupgeneral/roverdowngeneral"
     );
     println!(
         "      --config <K=V,...>     設定をまとめて指定: `CONTROLLER`, `FORMAT`, `RATE`, `DISPLAY`, `LOG_DIR`"
@@ -269,7 +269,7 @@ pub(crate) fn print_io_help(bin_name: &str) {
     println!("                              DISPLAY: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("                              受信では +line/+packet/+wrap/+crlf も指定できます");
     println!(
-        "                              FORMAT: packetacv6/packetacv6usb/packetmv1/packetgcv1/packetiv1/packetbv1/packetjfv1/roverupgeneral/roverdowngeneral"
+        "                              FORMAT: packetacv6/packetacv6usb/packetmv1/packetgcv1/packetiv1/packetbv1/packetjfv1/packetufv1/roverupgeneral/roverdowngeneral"
     );
     println!("      --display <TARGET=MODE> 既存コマンドと同じ表示上書き");
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
@@ -280,6 +280,7 @@ pub(crate) fn print_io_help(bin_name: &str) {
     println!("  {bin_name} io -i");
     println!("  {bin_name} io -o");
     println!("  {bin_name} io -i /dev/ttyUSB1@115200,utf8,packetjfv1");
+    println!("  {bin_name} io -i /dev/ttyUSB1@921600,hex+packet,packetufv1");
     println!(
         "  {bin_name} io -o main=/dev/ttyUSB0@921600,hex,packetacv6,10 -o sub=/dev/ttyUSB1@115200,utf8,roverupgeneral,10"
     );

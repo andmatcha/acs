@@ -192,6 +192,11 @@ impl PacketDefinition {
                 payload_len: 14,
                 header: *b"JF",
             },
+            OutputFormat::PacketUfV1 => Self {
+                packet_len: 14,
+                payload_len: 12,
+                header: *b"UF",
+            },
             OutputFormat::PacketMv1
             | OutputFormat::PacketIv1
             | OutputFormat::PacketBv1
@@ -216,6 +221,7 @@ pub(crate) fn xbee_test_format_label(kind: XbeeTestFrameKind) -> &'static str {
         XbeeTestFrameKind::Format(OutputFormat::PacketGcV1) => "GC(PacketGCv1)",
         XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => "RU(RoverUpGeneral)",
         XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => "AD(PacketJFv1)",
+        XbeeTestFrameKind::Format(OutputFormat::PacketUfV1) => "UF(PacketUFv1)",
         XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => "RD(RoverDownGeneral)",
         XbeeTestFrameKind::PollGreeting => "PollGreeting",
         XbeeTestFrameKind::PollResponse => "PollResponse",
@@ -333,6 +339,7 @@ fn packet_start_len(kind: XbeeTestFrameKind) -> usize {
         | XbeeTestFrameKind::Format(OutputFormat::PacketAcV6Usb)
         | XbeeTestFrameKind::Format(OutputFormat::PacketGcV1)
         | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketUfV1)
         | XbeeTestFrameKind::PollGreeting
         | XbeeTestFrameKind::PollResponse => 2,
         XbeeTestFrameKind::Format(OutputFormat::PacketMv1)
@@ -352,6 +359,7 @@ fn find_packet_start(buffer: &[u8], kind: XbeeTestFrameKind) -> Option<usize> {
         XbeeTestFrameKind::Format(OutputFormat::PacketIv1) => find_byte(buffer, b'I'),
         XbeeTestFrameKind::Format(OutputFormat::PacketBv1) => find_byte(buffer, b'B'),
         XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => find_header(buffer, b"JF"),
+        XbeeTestFrameKind::Format(OutputFormat::PacketUfV1) => find_header(buffer, b"UF"),
         XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => find_rover_up_start(buffer),
         XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => find_rover_down_start(buffer),
         XbeeTestFrameKind::PollGreeting => find_header(buffer, &POLL_GREETING_HEADER),
@@ -364,7 +372,8 @@ fn packet_matches(kind: XbeeTestFrameKind, packet: &[u8]) -> bool {
         XbeeTestFrameKind::Format(OutputFormat::PacketAcV6)
         | XbeeTestFrameKind::Format(OutputFormat::PacketAcV6Usb)
         | XbeeTestFrameKind::Format(OutputFormat::PacketGcV1)
-        | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => {
+        | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketUfV1) => {
             let XbeeTestFrameKind::Format(format) = kind else {
                 unreachable!()
             };
@@ -2612,6 +2621,22 @@ mod tests {
     }
 
     #[test]
+    fn packet_stream_decoder_accepts_packetufv1() {
+        let mut generator = OutputFormat::PacketUfV1
+            .create_dummy_generator()
+            .expect("generator");
+        let payload = generator.next_payload().expect("payload");
+        let mut decoder =
+            PacketStreamDecoder::new(XbeeTestFrameKind::Format(OutputFormat::PacketUfV1));
+
+        assert!(decoder.push(&payload[..3]).packets.is_empty());
+        let batch = decoder.push(&payload[3..]);
+
+        assert_eq!(batch.invalid_packets, 0);
+        assert_eq!(batch.packets, vec![payload]);
+    }
+
+    #[test]
     fn rover_down_decoder_accepts_variable_length_0x3xx_and_0x4xx_lines() {
         let mut decoder =
             PacketStreamDecoder::new(XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral));
@@ -2670,6 +2695,19 @@ mod tests {
 
         assert!(super::packet_is_valid(&payload, definition));
         payload[2] ^= 0x01;
+        assert!(!super::packet_is_valid(&payload, definition));
+    }
+
+    #[test]
+    fn packet_definition_for_uf_checks_crc_over_first_12_bytes() {
+        let mut generator = OutputFormat::PacketUfV1
+            .create_dummy_generator()
+            .expect("generator");
+        let mut payload = generator.next_payload().expect("payload");
+        let definition = PacketDefinition::for_format(OutputFormat::PacketUfV1);
+
+        assert!(super::packet_is_valid(&payload, definition));
+        payload[4] ^= 0x01;
         assert!(!super::packet_is_valid(&payload, definition));
     }
 

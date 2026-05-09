@@ -13,6 +13,7 @@
 - `packetiv1` / `packetbv1` で XBee 送信用に削減した `PacketACv6` 系ダミーフレームを生成します。
 - `packetgcv1` で compact report をアンテナサーボ向けの 9 バイト `PacketGCv1` コマンドへ変換します。
 - `packetjfv1` で `PacketJFv1` のダミーフレームを生成します。
+- `packetufv1` で `PacketUFv1` のダミーフレームを生成し、`io` の受信デコーダで 14 バイトの UF feedback を扱います。
 - `crc.rs` で CRC16-CCITT-FALSE を計算します。
 
 ## 実装の要点
@@ -21,4 +22,4 @@
 - フォーマットごとの差分はサブディレクトリに閉じ込め、上位層は `OutputDriver` 越しに扱います。
 - `packetgcv1` は `acs control` 用に HOME / STOP / MANUAL_POSITION / MANUAL_RATE だけを出力します。
   - 位置値は 0.1 度単位で、角度範囲は `0..270` 度です。HOME は中央の `135.0` 度を送ります。
-- `packetjfv1` は現状ダミー送信専用で、compact からの一般エンコードは未対応です。
+- `packetjfv1` / `packetufv1` は現状ダミー送信専用で、compact からの一般エンコードは未対応です。
