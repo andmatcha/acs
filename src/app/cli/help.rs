@@ -251,6 +251,7 @@ pub(crate) fn print_io_help(bin_name: &str) {
     println!(
         "送信ポートは選択したフォーマットのダミーペイロードを繰り返し送信し、受信側は raw または指定フォーマットで表示します。"
     );
+    println!("`packetufv1` 受信は UF の flags と緯度経度をASCII行に展開して表示します。");
     println!(
         "`-i` または `-o` を値なしで指定すると、矢印上下と Enter でポート、フォーマット、ボーレート、送信レートを選択できます。"
     );
@@ -266,6 +267,7 @@ pub(crate) fn print_io_help(bin_name: &str) {
         "                              送信ポート（繰り返し指定可）。値を省略すると対話式に選択"
     );
     println!("                              ID= は同一ポートへ複数形式を送る場合に指定します");
+    println!("                              RATE: Hz 数値、または `2s` / `3s` のような送信間隔");
     println!("                              DISPLAY: hex/ascii/utf8/hex+ascii/hex+utf8");
     println!("                              受信では +line/+packet/+wrap/+crlf も指定できます");
     println!(
@@ -288,6 +290,7 @@ pub(crate) fn print_io_help(bin_name: &str) {
         "  {bin_name} io -i /dev/ttyUSB1,packetacv6+packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,100"
     );
     println!("  {bin_name} io -o usb=/dev/ttyUSB0@921600,hex,packetacv6usb,10");
+    println!("  {bin_name} io -o usb=/dev/ttyUSB0@921600,hex,packetacv6usb,2s");
     println!(
         "  {bin_name} io -i /dev/ttyUSB1,ascii+crlf,roverdowngeneral -o rover=/dev/ttyUSB0,ascii,roverupgeneral,20"
     );

@@ -13,7 +13,7 @@
 - `packetiv1` / `packetbv1` で XBee 送信用に削減した `PacketACv6` 系ダミーフレームを生成します。
 - `packetgcv1` で compact report をアンテナサーボ向けの 9 バイト `PacketGCv1` コマンドへ変換します。
 - `packetjfv1` で `PacketJFv1` のダミーフレームを生成します。
-- `packetufv1` で `PacketUFv1` のダミーフレームを生成し、`io` の受信デコーダで 14 バイトの UF feedback を扱います。
+- `packetufv1` で `PacketUFv1` のダミーフレームを生成し、`io` の受信デコーダで 14 バイトの UF feedback を扱い、flags と緯度経度をASCII表示へ展開します。
 - `crc.rs` で CRC16-CCITT-FALSE を計算します。
 
 ## 実装の要点

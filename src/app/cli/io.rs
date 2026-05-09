@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_IO_SEND_RATE_HZ: u32 = 10;
 pub(crate) const IO_SEND_RATE_CHOICES: &[u32] = &[10, 50, 100, 20, 1];
+const IO_SEND_RATE_PROMPT_CHOICES: &[&str] = &["10", "50", "100", "20", "1", "2s", "3s", "5s"];
 const SEND_LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
 const RATE_WINDOW: Duration = Duration::from_secs(1);
@@ -40,7 +41,7 @@ const ROVER_DOWN_GENERAL_MAX_PACKET_LEN: usize = 256;
 struct IoRuntimeOptions {
     outputs: Vec<IoOutputBinding>,
     baud: Option<u32>,
-    rate_hz: Option<u32>,
+    rate_hz: Option<IoSendRate>,
     format: Option<String>,
     display: PortDisplayConfig,
     inputs: Vec<IoInputBinding>,
@@ -54,7 +55,7 @@ struct IoOutputBinding {
     id: String,
     port: String,
     baud: Option<u32>,
-    rate_hz: Option<u32>,
+    rate_hz: Option<IoSendRate>,
     format: Option<String>,
     display_mode: Option<crate::port_display::PortDisplayMode>,
 }
@@ -72,7 +73,7 @@ struct IoInputBinding {
 struct IoOutputSettings {
     session: SessionOutputSpec,
     format: OutputFormat,
-    rate_hz: u32,
+    rate_hz: IoSendRate,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +100,7 @@ struct IoOutputRunResult {
     port: String,
     baud_rate: u32,
     format: OutputFormat,
-    rate_hz: u32,
+    rate_hz: IoSendRate,
     sent_count: u64,
     payload_len: usize,
 }
@@ -125,12 +126,96 @@ struct IoCommandOutput {
     baud_rate: u32,
     display_mode: PortDisplayMode,
     format: OutputFormat,
-    rate_hz: u32,
+    rate_hz: IoSendRate,
 }
 
 struct OutputSchedule {
     next_send_at: Instant,
     period: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct IoSendRate {
+    hz: f64,
+}
+
+impl IoSendRate {
+    fn hz(hz: f64) -> Self {
+        Self { hz }
+    }
+
+    fn parse(context: &str, value: &str) -> Result<Self, String> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(format!("{context} must not be empty"));
+        }
+
+        let lower = trimmed.to_ascii_lowercase();
+        let (number_text, unit) = parse_rate_unit(&lower);
+        let number = number_text
+            .parse::<f64>()
+            .map_err(|_| format!("invalid {context}: {value}"))?;
+        if !number.is_finite() || number <= 0.0 {
+            return Err(format!("{context} must be greater than 0"));
+        }
+
+        let hz = match unit {
+            RateUnit::Hz => number,
+            RateUnit::Seconds => 1.0 / number,
+        };
+        Ok(Self { hz })
+    }
+
+    fn period(self) -> Duration {
+        Duration::from_secs_f64(1.0 / self.hz)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RateUnit {
+    Hz,
+    Seconds,
+}
+
+fn parse_rate_unit(value: &str) -> (&str, RateUnit) {
+    let trimmed = value.trim();
+    for suffix in ["seconds", "second", "secs", "sec", "s"] {
+        if let Some(number) = trimmed.strip_suffix(suffix) {
+            return (number.trim(), RateUnit::Seconds);
+        }
+    }
+    for suffix in ["hz", "h"] {
+        if let Some(number) = trimmed.strip_suffix(suffix) {
+            return (number.trim(), RateUnit::Hz);
+        }
+    }
+    (trimmed, RateUnit::Hz)
+}
+
+fn looks_like_rate_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return true;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let (number_text, unit) = parse_rate_unit(&lower);
+    unit != RateUnit::Hz
+        && number_text
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_digit() || byte == b'.')
+}
+
+fn default_io_send_rate() -> IoSendRate {
+    IoSendRate::hz(DEFAULT_IO_SEND_RATE_HZ as f64)
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +224,7 @@ struct IoHeaderOutput {
     port: String,
     baud_rate: u32,
     format: OutputFormat,
-    rate_hz: u32,
+    rate_hz: IoSendRate,
     payload_len: Option<usize>,
 }
 
@@ -290,12 +375,12 @@ impl IoRuntimeState {
                 .rx_rate_hz(&output.port, output.format, now)
                 .unwrap_or_default();
             lines.push(format!(
-                "output[{}]: {} @ {} baud, format={}, tx_target={} Hz, rx={rx_rate_hz:.1} Hz, payload={} bytes",
+                "output[{}]: {} @ {} baud, format={}, tx_target={}, rx={rx_rate_hz:.1} Hz, payload={} bytes",
                 output.id,
                 output.port,
                 output.baud_rate,
                 output.format.as_str(),
-                output.rate_hz,
+                format_rate_label(output.rate_hz),
                 output.payload_len.unwrap_or_default()
             ));
         }
@@ -367,15 +452,10 @@ impl ObservedInput {
             let totals = per_format_totals.entry(packet.format).or_insert((0, 0));
             totals.0 += packet.bytes.len();
             totals.1 += 1;
-            let display_mode = if packet.format == OutputFormat::RoverUpGeneral {
-                Some(PortDisplayMode::Ascii)
-            } else {
-                self.per_format_display_modes
-                    .as_ref()
-                    .and_then(|display_modes| display_modes.get(&packet.format).copied())
-            };
+            let (display_bytes, display_mode, preserve_line_breaks) =
+                self.display_entry_for_packet(&packet);
             self.display_queue
-                .enqueue(packet.bytes, display_mode, self.preserve_line_breaks);
+                .enqueue(display_bytes, display_mode, preserve_line_breaks);
         }
 
         ObservedInputBatch {
@@ -402,6 +482,34 @@ impl ObservedInput {
 
     pub(crate) fn known_formats(&self) -> &[OutputFormat] {
         &self.formats
+    }
+
+    fn display_entry_for_packet(
+        &self,
+        packet: &DecodedPacket,
+    ) -> (Vec<u8>, Option<PortDisplayMode>, bool) {
+        match packet.format.decoded_display_payload(&packet.bytes) {
+            Ok(Some(display_payload)) => (display_payload, Some(PortDisplayMode::Ascii), true),
+            Err(error) => (
+                format!("{} decode error: {error}", packet.format.display_name()).into_bytes(),
+                Some(PortDisplayMode::Ascii),
+                true,
+            ),
+            Ok(None) => {
+                let display_mode = if packet.format == OutputFormat::RoverUpGeneral {
+                    Some(PortDisplayMode::Ascii)
+                } else {
+                    self.per_format_display_modes
+                        .as_ref()
+                        .and_then(|display_modes| display_modes.get(&packet.format).copied())
+                };
+                (
+                    packet.bytes.clone(),
+                    display_mode,
+                    self.preserve_line_breaks,
+                )
+            }
+        }
     }
 }
 
@@ -962,26 +1070,26 @@ fn print_io_result(result: &IoRunResult) {
     } else if result.outputs.len() == 1 {
         let output = &result.outputs[0];
         println!(
-            "sent {} packets ({} bytes each) to {} @ {} baud, format={}, target={} Hz",
+            "sent {} packets ({} bytes each) to {} @ {} baud, format={}, target={}",
             output.sent_count,
             output.payload_len,
             output.port,
             output.baud_rate,
             output.format.as_str(),
-            output.rate_hz
+            format_rate_label(output.rate_hz)
         );
     } else {
         println!("sent dummy packets to {} outputs", result.outputs.len());
         for output in &result.outputs {
             println!(
-                "  {}: {} packets ({} bytes each) to {} @ {} baud, format={}, target={} Hz",
+                "  {}: {} packets ({} bytes each) to {} @ {} baud, format={}, target={}",
                 output.id,
                 output.sent_count,
                 output.payload_len,
                 output.port,
                 output.baud_rate,
                 output.format.as_str(),
-                output.rate_hz
+                format_rate_label(output.rate_hz)
             );
         }
     }
@@ -999,7 +1107,7 @@ fn parse_io_args(args: Vec<String>) -> Result<IoCliOptions, String> {
         inputs: Vec::new(),
         outputs: Vec::new(),
         runtime_options: IoRuntimeOptions {
-            rate_hz: Some(DEFAULT_IO_SEND_RATE_HZ),
+            rate_hz: Some(default_io_send_rate()),
             ..IoRuntimeOptions::default()
         },
     };
@@ -1038,7 +1146,7 @@ fn parse_io_args(args: Vec<String>) -> Result<IoCliOptions, String> {
             }
             "--rate" | "-r" => {
                 let value = next_value(&mut iter, "--rate")?;
-                options.runtime_options.rate_hz = Some(parse_u32_arg("--rate", &value)?);
+                options.runtime_options.rate_hz = Some(IoSendRate::parse("--rate", &value)?);
             }
             "--format" | "-f" => {
                 options.runtime_options.format = Some(next_value(&mut iter, "--format")?)
@@ -1207,22 +1315,18 @@ fn prompt_io_output_binding(
         ))))
     })?;
     let rate_prompt = position.label("送信レート (Hz)");
-    let rate_hz = prompt_u32_choice_with_preview(
-        &rate_prompt,
-        DEFAULT_IO_SEND_RATE_HZ,
-        IO_SEND_RATE_CHOICES,
-        |rate_hz| {
-            Some(command.render(Some(IoPromptBindingPreview::Output(
-                &format_prompt_io_output_binding(
-                    &port,
-                    Some(&baud_text),
-                    display.as_deref(),
-                    Some(&format),
-                    Some(rate_hz),
-                ),
-            ))))
-        },
-    )?;
+    let rate_hz = prompt_io_send_rate_with_preview(&rate_prompt, |rate| {
+        let rate_value = format_rate_value(rate);
+        Some(command.render(Some(IoPromptBindingPreview::Output(
+            &format_prompt_io_output_binding(
+                &port,
+                Some(&baud_text),
+                display.as_deref(),
+                Some(&format),
+                Some(&rate_value),
+            ),
+        ))))
+    })?;
 
     Ok(format_io_output_binding(
         &port,
@@ -1231,6 +1335,38 @@ fn prompt_io_output_binding(
         &format,
         rate_hz,
     ))
+}
+
+fn prompt_io_send_rate_with_preview<F>(prompt: &str, preview: F) -> Result<IoSendRate, String>
+where
+    F: Fn(IoSendRate) -> Option<String>,
+{
+    let choices = IO_SEND_RATE_PROMPT_CHOICES
+        .iter()
+        .map(|value| IoSendRate::parse(prompt, value).map(|rate| (value.to_string(), rate)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut labels = choices
+        .iter()
+        .map(|(_, rate)| format_rate_label(*rate))
+        .collect::<Vec<_>>();
+    labels.push(String::from("手入力..."));
+
+    let selected = choose_from_menu_with_preview(prompt, &labels, 0, |index| {
+        if index == choices.len() {
+            preview(default_io_send_rate())
+        } else {
+            preview(choices[index].1)
+        }
+    })?;
+    if selected == choices.len() {
+        let value = prompt_text(
+            &format!("{prompt} (例: 10, 0.5, 2s): "),
+            Some(&format_rate_value(default_io_send_rate())),
+        )?;
+        IoSendRate::parse(prompt, &value)
+    } else {
+        Ok(choices[selected].1)
+    }
 }
 
 pub(crate) fn format_io_input_binding(
@@ -1278,7 +1414,7 @@ fn format_io_output_binding(
     baud: u32,
     display: Option<&str>,
     format: &str,
-    rate_hz: u32,
+    rate_hz: IoSendRate,
 ) -> String {
     let mut value = format!("{port}@{baud}");
     if let Some(display) = display {
@@ -1288,7 +1424,7 @@ fn format_io_output_binding(
     value.push(',');
     value.push_str(format);
     value.push(',');
-    value.push_str(&rate_hz.to_string());
+    value.push_str(&format_rate_value(rate_hz));
     value
 }
 
@@ -1404,6 +1540,59 @@ pub(crate) fn line_break_mode_value(mode: LineBreakMode) -> &'static str {
         LineBreakMode::Wrap => "wrap",
         LineBreakMode::Crlf => "crlf",
     }
+}
+
+fn format_rate_value(rate: IoSendRate) -> String {
+    if let Some(integer_hz) = integer_if_close(rate.hz)
+        && integer_hz >= 1
+    {
+        return integer_hz.to_string();
+    }
+
+    let period_secs = 1.0 / rate.hz;
+    if let Some(integer_period_secs) = integer_if_close(period_secs)
+        && integer_period_secs >= 1
+    {
+        return format!("{integer_period_secs}s");
+    }
+
+    format_decimal(rate.hz)
+}
+
+fn format_rate_label(rate: IoSendRate) -> String {
+    if let Some(integer_hz) = integer_if_close(rate.hz)
+        && integer_hz >= 1
+    {
+        return format!("{integer_hz} Hz");
+    }
+
+    let period_secs = 1.0 / rate.hz;
+    if let Some(integer_period_secs) = integer_if_close(period_secs)
+        && integer_period_secs >= 1
+    {
+        return format!(
+            "every {integer_period_secs}s ({} Hz)",
+            format_decimal(rate.hz)
+        );
+    }
+
+    format!("{} Hz", format_decimal(rate.hz))
+}
+
+fn integer_if_close(value: f64) -> Option<u64> {
+    let rounded = value.round();
+    ((value - rounded).abs() < 0.000_000_001).then_some(rounded as u64)
+}
+
+fn format_decimal(value: f64) -> String {
+    let mut text = format!("{value:.6}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
 }
 
 pub(crate) fn shell_quote_arg(value: &str) -> String {
@@ -1948,7 +2137,7 @@ fn run_with_options(cli_options: IoRuntimeOptions) -> Result<IoRunResult, String
                 output.session.id.clone(),
                 OutputSchedule {
                     next_send_at: started_at,
-                    period: Duration::from_secs_f64(1.0 / output.rate_hz as f64),
+                    period: output.rate_hz.period(),
                 },
             )
         })
@@ -2022,10 +2211,7 @@ fn run_with_options(cli_options: IoRuntimeOptions) -> Result<IoRunResult, String
 
 fn build_settings(cli_options: IoRuntimeOptions) -> Result<IoRuntimeSettings, String> {
     let default_baud = cli_options.baud.unwrap_or_else(default_baud_rate);
-    let default_rate_hz = cli_options.rate_hz.unwrap_or(DEFAULT_IO_SEND_RATE_HZ);
-    if default_rate_hz == 0 {
-        return Err(String::from("--rate must be greater than 0"));
-    }
+    let default_rate_hz = cli_options.rate_hz.unwrap_or_else(default_io_send_rate);
     let default_format_name = cli_options
         .format
         .clone()
@@ -2236,7 +2422,7 @@ pub(crate) fn resolve_input_line_break_mode(
 }
 
 fn validate_output_port_loads(outputs: &[IoOutputSettings]) -> Result<(), String> {
-    let mut loads = BTreeMap::<(String, u32), Vec<(String, u32, u64)>>::new();
+    let mut loads = BTreeMap::<(String, u32), Vec<(String, IoSendRate, u64)>>::new();
 
     for output in outputs {
         let estimated_bps = estimated_output_line_bps(output.format, output.rate_hz);
@@ -2255,7 +2441,9 @@ fn validate_output_port_loads(outputs: &[IoOutputSettings]) -> Result<(), String
         if total_bps > baud_rate as u64 {
             let detail = entries
                 .into_iter()
-                .map(|(format_name, rate_hz, bps)| format!("{format_name} {rate_hz}Hz={bps}bps"))
+                .map(|(format_name, rate_hz, bps)| {
+                    format!("{format_name} {}={bps}bps", format_rate_label(rate_hz))
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
@@ -2267,8 +2455,8 @@ fn validate_output_port_loads(outputs: &[IoOutputSettings]) -> Result<(), String
     Ok(())
 }
 
-fn estimated_output_line_bps(format: OutputFormat, rate_hz: u32) -> u64 {
-    format.packet_len() as u64 * SERIAL_FRAME_BITS_PER_BYTE * rate_hz as u64
+fn estimated_output_line_bps(format: OutputFormat, rate_hz: IoSendRate) -> u64 {
+    (format.packet_len() as f64 * SERIAL_FRAME_BITS_PER_BYTE as f64 * rate_hz.hz).ceil() as u64
 }
 
 fn realign_output_schedule(schedule: &mut OutputSchedule, now: Instant) {
@@ -2294,7 +2482,7 @@ fn realign_output_schedule(schedule: &mut OutputSchedule, now: Instant) {
 fn resolve_output_bindings(
     cli_options: &IoRuntimeOptions,
     default_baud: u32,
-    default_rate_hz: u32,
+    default_rate_hz: IoSendRate,
     default_format: OutputFormat,
 ) -> Result<Vec<ResolvedIoOutputBinding>, String> {
     cli_options
@@ -2312,7 +2500,7 @@ struct ResolvedIoOutputBinding {
     id: String,
     port: String,
     baud: Option<u32>,
-    rate_hz: u32,
+    rate_hz: IoSendRate,
     format: Option<OutputFormat>,
     display_mode: Option<crate::port_display::PortDisplayMode>,
 }
@@ -2320,13 +2508,10 @@ struct ResolvedIoOutputBinding {
 fn resolve_io_output_binding(
     binding: IoOutputBinding,
     _default_baud: u32,
-    default_rate_hz: u32,
+    default_rate_hz: IoSendRate,
     default_format: OutputFormat,
 ) -> Result<ResolvedIoOutputBinding, String> {
     let rate_hz = binding.rate_hz.unwrap_or(default_rate_hz);
-    if rate_hz == 0 {
-        return Err(String::from("io output rate must be greater than 0"));
-    }
 
     Ok(ResolvedIoOutputBinding {
         id: binding.id,
@@ -2379,7 +2564,7 @@ fn apply_io_config_args(options: &mut IoRuntimeOptions, value: &str) -> Result<(
     for assignment in parse_key_value_args("--config", value)? {
         let key = assignment.key.to_ascii_uppercase();
         match key.as_str() {
-            "RATE" => options.rate_hz = Some(parse_u32_arg("RATE", &assignment.value)?),
+            "RATE" => options.rate_hz = Some(IoSendRate::parse("RATE", &assignment.value)?),
             "FORMAT" => options.format = Some(assignment.value),
             "DISPLAY" => {
                 let display = parse_display_assignment(&assignment.value)?;
@@ -2444,12 +2629,15 @@ fn parse_io_output_binding(value: &str) -> Result<IoOutputBinding, String> {
 
     let mut binding_text = value;
     let mut rate_hz = None;
-    if let Some((candidate_binding, candidate_rate)) = binding_text.rsplit_once(',')
-        && !candidate_rate.is_empty()
-        && candidate_rate.chars().all(|ch| ch.is_ascii_digit())
-    {
-        rate_hz = Some(parse_u32_arg("io output rate", candidate_rate)?);
-        binding_text = candidate_binding;
+    if let Some((candidate_binding, candidate_rate)) = binding_text.rsplit_once(',') {
+        match IoSendRate::parse("io output rate", candidate_rate) {
+            Ok(rate) => {
+                rate_hz = Some(rate);
+                binding_text = candidate_binding;
+            }
+            Err(error) if looks_like_rate_value(candidate_rate) => return Err(error),
+            Err(_) => {}
+        }
     }
     let (binding_text, format) =
         if let Some((candidate_binding, format_name)) = binding_text.rsplit_once(',') {
@@ -2486,12 +2674,12 @@ fn parse_io_output_binding(value: &str) -> Result<IoOutputBinding, String> {
 mod tests {
     use super::{
         IoCommandInput, IoCommandOutput, IoOutputSettings, IoPromptBindingPreview, IoPromptCommand,
-        IoPromptPortPosition, IoRuntimeOptions, MixedFormatDecoder, ObservedInput, OutputSchedule,
-        build_io_executed_command, estimated_output_line_bps, format_io_input_binding,
-        format_io_output_binding, matches_reduced_ac_packet, matches_rover_down_packet,
-        parse_io_args, parse_io_input_binding, parse_io_output_binding, parse_output_format_list,
-        realign_output_schedule, resolve_display_mode, resolve_input_line_break_mode,
-        validate_output_port_loads,
+        IoPromptPortPosition, IoRuntimeOptions, IoSendRate, MixedFormatDecoder, ObservedInput,
+        OutputSchedule, build_io_executed_command, estimated_output_line_bps,
+        format_io_input_binding, format_io_output_binding, matches_reduced_ac_packet,
+        matches_rover_down_packet, parse_io_args, parse_io_input_binding, parse_io_output_binding,
+        parse_output_format_list, realign_output_schedule, resolve_display_mode,
+        resolve_input_line_break_mode, validate_output_port_loads,
     };
     use crate::output::OutputFormat;
     use crate::port_display::{LineBreakMode, PortDisplayMode};
@@ -2589,9 +2777,64 @@ mod tests {
         assert_eq!(binding.id, "main");
         assert_eq!(binding.port, "/dev/ttyUSB0");
         assert_eq!(binding.baud, Some(921_600));
-        assert_eq!(binding.rate_hz, Some(100));
+        assert_eq!(binding.rate_hz, Some(IoSendRate::hz(100.0)));
         assert_eq!(binding.format.as_deref(), Some("packetacv6"));
         assert_eq!(binding.display_mode, Some(PortDisplayMode::Hex));
+    }
+
+    #[test]
+    fn parse_io_output_binding_accepts_period_rate() {
+        let binding =
+            parse_io_output_binding("main=/dev/ttyUSB0@921600,hex,packetacv6,2s").unwrap();
+
+        assert_eq!(binding.id, "main");
+        assert_eq!(binding.format.as_deref(), Some("packetacv6"));
+        assert_eq!(binding.rate_hz, Some(IoSendRate::hz(0.5)));
+    }
+
+    #[test]
+    fn parse_io_output_binding_accepts_fractional_hz_rate() {
+        let binding =
+            parse_io_output_binding("main=/dev/ttyUSB0@921600,hex,packetacv6,0.333").unwrap();
+
+        assert_eq!(binding.id, "main");
+        assert_eq!(binding.format.as_deref(), Some("packetacv6"));
+        assert_eq!(binding.rate_hz, Some(IoSendRate::hz(0.333)));
+    }
+
+    #[test]
+    fn parse_io_args_accepts_period_rate_option() {
+        let options = parse_io_args(vec![
+            String::from("-o"),
+            String::from("main=/dev/ttyUSB0@921600,hex,packetacv6"),
+            String::from("--rate"),
+            String::from("3s"),
+        ])
+        .expect("should parse");
+
+        assert_eq!(options.outputs.len(), 1);
+        assert_eq!(
+            options.runtime_options.rate_hz,
+            Some(IoSendRate::hz(1.0 / 3.0))
+        );
+    }
+
+    #[test]
+    fn format_rate_value_preserves_integer_periods() {
+        assert_eq!(super::format_rate_value(IoSendRate::hz(10.0)), "10");
+        assert_eq!(super::format_rate_value(IoSendRate::hz(0.5)), "2s");
+        assert_eq!(
+            super::format_rate_label(IoSendRate::hz(0.5)),
+            "every 2s (0.5 Hz)"
+        );
+    }
+
+    #[test]
+    fn parse_io_output_binding_rejects_zero_rate() {
+        let error = parse_io_output_binding("main=/dev/ttyUSB0@921600,hex,packetacv6,0")
+            .expect_err("should reject");
+
+        assert_eq!(error, "io output rate must be greater than 0");
     }
 
     #[test]
@@ -2601,7 +2844,7 @@ mod tests {
 
         assert_eq!(binding.id, "main");
         assert_eq!(binding.format.as_deref(), Some("PacketACv6USB"));
-        assert_eq!(binding.rate_hz, Some(10));
+        assert_eq!(binding.rate_hz, Some(IoSendRate::hz(10.0)));
     }
 
     #[test]
@@ -2617,7 +2860,7 @@ mod tests {
 
         assert_eq!(options.inputs.len(), 1);
         assert_eq!(options.outputs.len(), 1);
-        assert_eq!(options.runtime_options.rate_hz, Some(10));
+        assert_eq!(options.runtime_options.rate_hz, Some(IoSendRate::hz(10.0)));
         assert!(options.runtime_options.no_log);
     }
 
@@ -2638,8 +2881,13 @@ mod tests {
             Some("utf8+packet"),
             Some("packetacv6+packetjfv1"),
         );
-        let output =
-            format_io_output_binding("/dev/ttyUSB0", 921_600, Some("hex"), "packetacv6", 10);
+        let output = format_io_output_binding(
+            "/dev/ttyUSB0",
+            921_600,
+            Some("hex"),
+            "packetacv6",
+            IoSendRate::hz(10.0),
+        );
 
         let input = parse_io_input_binding(&input).expect("input binding should parse");
         let output = parse_io_output_binding(&output).expect("output binding should parse");
@@ -2655,7 +2903,7 @@ mod tests {
         assert_eq!(output.port, "/dev/ttyUSB0");
         assert_eq!(output.baud, Some(921_600));
         assert_eq!(output.format.as_deref(), Some("packetacv6"));
-        assert_eq!(output.rate_hz, Some(10));
+        assert_eq!(output.rate_hz, Some(IoSendRate::hz(10.0)));
     }
 
     #[test]
@@ -2674,7 +2922,7 @@ mod tests {
                 baud_rate: 921_600,
                 display_mode: PortDisplayMode::Hex,
                 format: OutputFormat::PacketAcV6,
-                rate_hz: 10,
+                rate_hz: IoSendRate::hz(10.0),
             }],
             Some(&PathBuf::from("tmp/io logs")),
             true,
@@ -2787,6 +3035,37 @@ mod tests {
     }
 
     #[test]
+    fn observed_input_displays_packetufv1_as_decoded_ascii() {
+        let packet = OutputFormat::PacketUfV1
+            .encode_dummy_payload()
+            .expect("packetufv1 dummy payload");
+        let mut observed = ObservedInput::new(
+            String::from("input-uf"),
+            String::from("/dev/ttyUSB1"),
+            vec![OutputFormat::PacketUfV1],
+            None,
+            false,
+        );
+
+        let batch = observed.observe(&packet, Instant::now());
+
+        assert_eq!(batch.valid_packet_count, 1);
+        assert_eq!(batch.valid_byte_len, packet.len());
+        assert_eq!(observed.display_queue.pending_packets.len(), 1);
+        let queued = observed
+            .display_queue
+            .pending_packets
+            .front()
+            .expect("queued uf packet");
+        assert_eq!(queued.display_mode, Some(PortDisplayMode::Ascii));
+        assert!(queued.preserve_line_breaks);
+        assert_eq!(
+            String::from_utf8_lossy(&queued.bytes),
+            "UF seq=1 flags=0x03(valid=1, usb_present=1, read_busy=0, read_error=0, reserved=0x0) lat=35.6812362 lon=139.7671248 lat_e7=356812362 lon_e7=1397671248"
+        );
+    }
+
+    #[test]
     fn reduced_ac_packet_matcher_checks_crc() {
         let mut packet = OutputFormat::PacketMv1
             .encode_dummy_payload()
@@ -2862,20 +3141,24 @@ mod tests {
     #[test]
     fn estimated_output_line_bps_uses_packet_length_and_rate() {
         assert_eq!(
-            estimated_output_line_bps(OutputFormat::PacketAcV6, 100),
+            estimated_output_line_bps(OutputFormat::PacketAcV6, IoSendRate::hz(100.0)),
             39_000
         );
         assert_eq!(
-            estimated_output_line_bps(OutputFormat::PacketAcV6Usb, 100),
+            estimated_output_line_bps(OutputFormat::PacketAcV6Usb, IoSendRate::hz(100.0)),
             39_000
         );
         assert_eq!(
-            estimated_output_line_bps(OutputFormat::PacketUfV1, 100),
+            estimated_output_line_bps(OutputFormat::PacketUfV1, IoSendRate::hz(100.0)),
             14_000
         );
         assert_eq!(
-            estimated_output_line_bps(OutputFormat::RoverUpGeneral, 100),
+            estimated_output_line_bps(OutputFormat::RoverUpGeneral, IoSendRate::hz(100.0)),
             12_000
+        );
+        assert_eq!(
+            estimated_output_line_bps(OutputFormat::PacketAcV6, IoSendRate::hz(0.5)),
+            195
         );
     }
 
@@ -2891,7 +3174,7 @@ mod tests {
                     display_mode: PortDisplayMode::Hex,
                 },
                 format: OutputFormat::PacketAcV6,
-                rate_hz: 1_000,
+                rate_hz: IoSendRate::hz(1_000.0),
             },
             IoOutputSettings {
                 session: SessionOutputSpec {
@@ -2902,7 +3185,7 @@ mod tests {
                     display_mode: PortDisplayMode::Ascii,
                 },
                 format: OutputFormat::RoverUpGeneral,
-                rate_hz: 1_000,
+                rate_hz: IoSendRate::hz(1_000.0),
             },
         ];
 

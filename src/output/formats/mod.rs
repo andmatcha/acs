@@ -186,6 +186,15 @@ impl OutputFormat {
             )),
         }
     }
+
+    pub(crate) fn decoded_display_payload(self, payload: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Self::PacketUfV1 => Ok(Some(
+                packetufv1::format_decoded_packet(payload)?.into_bytes(),
+            )),
+            _ => Ok(None),
+        }
+    }
 }
 
 pub trait OutputDriver {

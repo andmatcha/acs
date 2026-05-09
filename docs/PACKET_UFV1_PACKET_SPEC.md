@@ -29,6 +29,7 @@ Packet length は 14 byte です。
 ## `acs io`
 
 `acs io` の受信 format として `packetufv1` / `PacketUFv1` を指定できます。
+受信 UI では raw bytes ではなく、`seq`、各 flag bit、10^-7 degree の緯度経度を human-readable ASCII に展開して表示します。
 
 ```bash
 acs io -i /dev/ttyUSB1@921600,hex+packet,packetufv1
