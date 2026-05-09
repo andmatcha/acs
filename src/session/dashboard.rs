@@ -12,6 +12,7 @@ pub(crate) struct SessionDashboard {
     input_line_break_modes: BTreeMap<String, LineBreakMode>,
     paused: bool,
     status: String,
+    read_usb_requested: bool,
 }
 
 impl SessionDashboard {
@@ -37,6 +38,7 @@ impl SessionDashboard {
             input_line_break_modes: BTreeMap::new(),
             paused: false,
             status: String::from("running"),
+            read_usb_requested: false,
         })
     }
 
@@ -122,6 +124,10 @@ impl SessionDashboard {
             Some(TextDashboardAction::InputChanged) => {
                 self.render()?;
             }
+            Some(TextDashboardAction::Shortcut('r')) => {
+                self.read_usb_requested = true;
+            }
+            Some(TextDashboardAction::Shortcut(_)) => {}
             Some(TextDashboardAction::Submit(text)) => {
                 self.render()?;
                 return Ok(Some(text));
@@ -134,6 +140,10 @@ impl SessionDashboard {
 
     pub(crate) fn is_paused(&self) -> bool {
         self.paused
+    }
+
+    pub(crate) fn take_read_usb_request(&mut self) -> bool {
+        std::mem::take(&mut self.read_usb_requested)
     }
 
     pub(crate) fn record_output_with_options(

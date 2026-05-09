@@ -4,10 +4,15 @@ mod reduced;
 mod sound;
 
 use crate::input::compact::CompactReport;
+use crate::output::formats::crc::crc16_ccitt_false;
 use crate::output::formats::{DummyPayloadGenerator, OutputDriver};
+use definition::{PACKET_ACV6_DEFINITION, PACKET_ACV6_PACKET_LEN, PACKET_ACV6_PAYLOAD_LEN};
 use encoder::PacketAcV6PacketEncoder;
 use reduced::ReducedAcPacketKind;
 use sound::ModeSoundPlayer;
+
+const PACKET_ACV6_FLAGS_OFFSET: usize = 3;
+const PACKET_ACV6_FLAG_USB_READ: u8 = 1 << 6;
 
 pub(crate) fn create_driver() -> Box<dyn OutputDriver> {
     Box::new(PacketAcV6OutputDriver::new())
@@ -18,7 +23,24 @@ pub(crate) fn create_packet_mv1_driver() -> Box<dyn OutputDriver> {
 }
 
 pub(crate) const fn packet_len() -> usize {
-    crate::output::formats::packetacv6::definition::PACKET_ACV6_PACKET_LEN
+    PACKET_ACV6_PACKET_LEN
+}
+
+pub(crate) fn set_usb_read_flag(packet: &mut [u8]) -> Result<(), String> {
+    if packet.len() != PACKET_ACV6_PACKET_LEN {
+        return Err(format!(
+            "packetacv6 usb_read flag expects {PACKET_ACV6_PACKET_LEN} bytes, got {}",
+            packet.len()
+        ));
+    }
+    if packet[..2] != PACKET_ACV6_DEFINITION.header {
+        return Err(String::from("packetacv6 usb_read flag expects AC header"));
+    }
+
+    packet[PACKET_ACV6_FLAGS_OFFSET] |= PACKET_ACV6_FLAG_USB_READ;
+    let crc = crc16_ccitt_false(&packet[..PACKET_ACV6_PAYLOAD_LEN]);
+    packet[PACKET_ACV6_PAYLOAD_LEN..PACKET_ACV6_PACKET_LEN].copy_from_slice(&crc.to_le_bytes());
+    Ok(())
 }
 
 pub(crate) fn create_dummy_generator() -> Result<Box<dyn DummyPayloadGenerator>, String> {
@@ -151,4 +173,24 @@ fn build_dummy_compact_report(step: u8) -> CompactReport {
     }
 
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{crc16_ccitt_false, encoder::PacketAcV6PacketEncoder, set_usb_read_flag};
+
+    #[test]
+    fn set_usb_read_flag_sets_ac_flags_bit_and_refreshes_crc() {
+        let mut encoder = PacketAcV6PacketEncoder::new();
+        let mut packet = encoder.encode_compact_report(&[0; 8]).to_vec();
+
+        set_usb_read_flag(&mut packet).expect("should set USB_READ flag");
+
+        assert_eq!(packet[3] & 0x40, 0x40);
+        assert_eq!(read_u16_le(&packet, 37), crc16_ccitt_false(&packet[..37]));
+    }
+
+    fn read_u16_le(packet: &[u8], offset: usize) -> u16 {
+        u16::from_le_bytes([packet[offset], packet[offset + 1]])
+    }
 }

@@ -9,7 +9,7 @@
 ## 全体フロー
 
 ```text
-DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet -> CAN
+DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet (+ PC keyboard R USB_READ) -> CAN
 ```
 
 現行実装の `packetacv6` 出力は Manual モード専用で、生成されるパケット長は 39 byte である。
@@ -81,7 +81,7 @@ DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet -> CAN
 | --- | ---: | --- | --- | --- |
 | `0..1` | 2 | `[u8; 2]` | `header` | 常に `b"AC"` |
 | `2` | 1 | `u8` | `seq` | 送信ごとにインクリメント、`wrapping_add(1)` |
-| `3` | 1 | `u8` | `flags` | Manual モードと enable |
+| `3` | 1 | `u8` | `flags` | Manual モード、enable、`USB_READ` |
 | `4..17` | 14 | `u16[7]` | `current` | `current[0]..current[6]` |
 | `18..23` | 6 | `u16[3]` | `angle` | 現行 Manual 実装ではすべて `0` |
 | `24..29` | 6 | `i16[3]` | `vel` | 現行 Manual 実装ではすべて `0` |
@@ -99,6 +99,7 @@ DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet -> CAN
 | ---: | --- |
 | `0` | enable |
 | `4..5` | control mode。現行実装では常に `1` (`Manual`) |
+| `6` | `USB_READ`。`acs control` では PC キーボードの `R` / `r` で短時間 `1` |
 
 そのほかの bit は、この実装では 0 のままである。
 

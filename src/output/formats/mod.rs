@@ -155,6 +155,16 @@ impl OutputFormat {
             Self::RoverUpGeneral | Self::RoverDownGeneral => PortDisplayMode::Ascii,
         }
     }
+
+    pub(crate) fn set_usb_read_flag(self, payload: &mut [u8]) -> Result<(), String> {
+        match self {
+            Self::PacketAcV6 => packetacv6::set_usb_read_flag(payload),
+            _ => Err(format!(
+                "output format `{}` does not carry packetacv6 USB_READ",
+                self.as_str()
+            )),
+        }
+    }
 }
 
 pub trait OutputDriver {

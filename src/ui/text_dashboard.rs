@@ -76,6 +76,7 @@ pub struct TextDashboard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextDashboardAction {
     TogglePause,
+    Shortcut(char),
     InputChanged,
     Submit(String),
 }
@@ -334,13 +335,7 @@ impl TextDashboard {
                 if self.interactive_mode {
                     return Ok(process_interactive_input(&bytes, &mut self.input_buffer));
                 } else {
-                    let mut action = None;
-                    for b in &bytes {
-                        if *b == b' ' {
-                            action = Some(TextDashboardAction::TogglePause);
-                        }
-                    }
-                    return Ok(action);
+                    return Ok(process_dashboard_shortcuts(&bytes));
                 }
             }
         }
@@ -434,6 +429,18 @@ impl Drop for TerminalInputGuard {
             )
         };
     }
+}
+
+fn process_dashboard_shortcuts(bytes: &[u8]) -> Option<TextDashboardAction> {
+    let mut action = None;
+    for b in bytes {
+        match *b {
+            b' ' => action = Some(TextDashboardAction::TogglePause),
+            b'r' | b'R' => action = Some(TextDashboardAction::Shortcut('r')),
+            _ => {}
+        }
+    }
+    action
 }
 
 fn process_interactive_input(
@@ -1038,7 +1045,7 @@ mod tests {
         CLEAR_LINE_END, CLEAR_TO_SCREEN_END, Entry, FG_CYAN, FG_GREEN, HOME_CURSOR, RESET, REVERSE,
         RateSample, Section, SectionKind, append_multiline_entry, bytes_text_lines,
         fit_line_to_terminal_width, format_heading_line, format_screen_delta, format_status_line,
-        paint_text,
+        paint_text, process_dashboard_shortcuts,
     };
     use crate::port_display::PortDisplayMode;
     use std::collections::{BTreeMap, VecDeque};
@@ -1074,6 +1081,18 @@ mod tests {
         assert_eq!(
             format_status_line(Some("paused (space: resume)")),
             "status: paused (space: resume)"
+        );
+    }
+
+    #[test]
+    fn dashboard_shortcuts_recognize_read_usb_key() {
+        assert_eq!(
+            process_dashboard_shortcuts(b"r"),
+            Some(super::TextDashboardAction::Shortcut('r'))
+        );
+        assert_eq!(
+            process_dashboard_shortcuts(b"R"),
+            Some(super::TextDashboardAction::Shortcut('r'))
         );
     }
 

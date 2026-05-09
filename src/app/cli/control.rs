@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 const SEND_LOOP_INTERVAL: Duration = Duration::from_millis(1);
 const CONTROLLER_POLL_MILLIS: i32 = 0;
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
+const READ_USB_PULSE_DURATION: Duration = Duration::from_millis(250);
 const DISPLAY_FLUSH_SLICE: usize = 32;
 const DISPLAY_FLUSH_PACKET_BUDGET: usize = 256;
 
@@ -260,6 +261,7 @@ struct ControlRuntimeState {
     log_path_display: String,
     controller_line: String,
     output_line: String,
+    read_usb_enabled: bool,
     monitors: Vec<ControlHeaderMonitor>,
     observed_inputs: BTreeMap<String, ObservedInput>,
     last_status_update: Instant,
@@ -309,6 +311,7 @@ impl ControlRuntimeState {
                 settings.format.as_str(),
                 settings.rate_hz
             ),
+            read_usb_enabled: settings.format == OutputFormat::PacketAcV6,
             monitors: settings.header_monitors.clone(),
             observed_inputs,
             last_status_update: started_at
@@ -428,7 +431,12 @@ impl ControlRuntimeState {
         } else {
             lines.push(String::from("log: disabled (--no-log)"));
         }
-        lines.push(String::from("Space で表示を一時停止/再開  Ctrl-C で終了"));
+        let controls = if self.read_usb_enabled {
+            "Space で表示を一時停止/再開  R で READ USB  Ctrl-C で終了"
+        } else {
+            "Space で表示を一時停止/再開  Ctrl-C で終了"
+        };
+        lines.push(String::from(controls));
         lines
     }
 
@@ -709,11 +717,21 @@ fn run_with_options(cli_options: ControlRuntimeOptions) -> Result<ControlRunResu
     let send_period = Duration::from_secs_f64(1.0 / settings.rate_hz as f64);
     let mut next_send_at = started_at;
     let mut latest_controller_report = None::<Vec<u8>>;
+    let mut read_usb_until = None::<Instant>;
+    let mut read_usb_pending_packet = false;
     session.run_loop_with_tick(
         SEND_LOOP_INTERVAL,
         signal::is_stop_requested,
         |frame, session| runtime_state.borrow_mut().handle_input(frame, session),
         |session| {
+            let now = Instant::now();
+            if session.take_read_usb_request() {
+                read_usb_until = Some(now + READ_USB_PULSE_DURATION);
+                read_usb_pending_packet = true;
+            }
+            let read_usb_window_active = read_usb_until.is_some_and(|deadline| now < deadline);
+            let read_usb_requested = read_usb_pending_packet || read_usb_window_active;
+
             let maybe_report = match controller.read_next_report(CONTROLLER_POLL_MILLIS) {
                 Ok(report) => report,
                 Err(error) => {
@@ -726,13 +744,23 @@ fn run_with_options(cli_options: ControlRuntimeOptions) -> Result<ControlRunResu
                 latest_controller_report = Some(report);
             }
 
-            let now = Instant::now();
             if now >= next_send_at {
                 realign_control_send_schedule(&mut next_send_at, send_period, now);
                 if let Some(report) = latest_controller_report.as_ref() {
-                    dispatch_control_report(&mut engine, session, &controller_input_id, report)?;
+                    dispatch_control_report(
+                        &mut engine,
+                        session,
+                        &controller_input_id,
+                        report,
+                        settings.format,
+                        read_usb_requested,
+                    )?;
+                    read_usb_pending_packet = false;
                 }
                 next_send_at += send_period;
+            }
+            if !read_usb_pending_packet && !read_usb_window_active {
+                read_usb_until = None;
             }
             runtime_state.borrow_mut().on_tick(session)?;
             Ok(())
@@ -751,6 +779,8 @@ fn dispatch_control_report(
     session: &mut SessionRuntime,
     controller_input_id: &str,
     report: &[u8],
+    format: OutputFormat,
+    read_usb_requested: bool,
 ) -> Result<(), String> {
     let frame = IngressFrame {
         input_id: controller_input_id.to_owned(),
@@ -759,7 +789,10 @@ fn dispatch_control_report(
 
     match engine.process_frame(&frame) {
         Ok(dispatches) => {
-            for dispatch in dispatches {
+            for mut dispatch in dispatches {
+                if read_usb_requested && format == OutputFormat::PacketAcV6 {
+                    format.set_usb_read_flag(&mut dispatch.bytes)?;
+                }
                 match session.write_output(&dispatch.output_id, &dispatch.bytes) {
                     Ok(()) => {
                         session.clear_output_error(&dispatch.output_id)?;

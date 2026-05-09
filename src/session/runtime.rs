@@ -286,6 +286,10 @@ impl SessionRuntime {
         self.pending_user_input.take()
     }
 
+    pub(crate) fn take_read_usb_request(&mut self) -> bool {
+        self.dashboard.take_read_usb_request()
+    }
+
     pub(crate) fn set_header_lines(&mut self, lines: Vec<String>) {
         self.dashboard.set_header_lines(lines);
         self.dirty = true;

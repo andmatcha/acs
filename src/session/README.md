@@ -18,3 +18,4 @@
 - 入力フレーム本体は `ingress` モジュールの共有型を使い、`pipeline` などの処理コアが `session` に依存しないようにしています。
 - monitor 表示は `line` / `packet` / `wrap` / `crlf` を切り替えられ、改行単位、受信チャンク単位、端末幅で折り返す raw stream、または ASCII/UTF-8 内の CR/LF を実改行にした表示として記録します。
 - ダッシュボードは Space キーで一時停止でき、停止時には残っている未表示行も flush してから終了します。
+- `acs control` では PC キーボードの `R` / `r` を `packetacv6` の `USB_READ` 要求として扱います。
