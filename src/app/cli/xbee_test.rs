@@ -192,9 +192,9 @@ impl PacketDefinition {
                 payload_len: 14,
                 header: *b"JF",
             },
-            OutputFormat::PacketUfV1 => Self {
-                packet_len: 14,
-                payload_len: 12,
+            OutputFormat::PacketUfV2 => Self {
+                packet_len: 40,
+                payload_len: 38,
                 header: *b"UF",
             },
             OutputFormat::PacketMv1
@@ -221,7 +221,7 @@ pub(crate) fn xbee_test_format_label(kind: XbeeTestFrameKind) -> &'static str {
         XbeeTestFrameKind::Format(OutputFormat::PacketGcV1) => "GC(PacketGCv1)",
         XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => "RU(RoverUpGeneral)",
         XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => "AD(PacketJFv1)",
-        XbeeTestFrameKind::Format(OutputFormat::PacketUfV1) => "UF(PacketUFv1)",
+        XbeeTestFrameKind::Format(OutputFormat::PacketUfV2) => "UF(PacketUFv2)",
         XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => "RD(RoverDownGeneral)",
         XbeeTestFrameKind::PollGreeting => "PollGreeting",
         XbeeTestFrameKind::PollResponse => "PollResponse",
@@ -339,7 +339,7 @@ fn packet_start_len(kind: XbeeTestFrameKind) -> usize {
         | XbeeTestFrameKind::Format(OutputFormat::PacketAcV6Usb)
         | XbeeTestFrameKind::Format(OutputFormat::PacketGcV1)
         | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1)
-        | XbeeTestFrameKind::Format(OutputFormat::PacketUfV1)
+        | XbeeTestFrameKind::Format(OutputFormat::PacketUfV2)
         | XbeeTestFrameKind::PollGreeting
         | XbeeTestFrameKind::PollResponse => 2,
         XbeeTestFrameKind::Format(OutputFormat::PacketMv1)
@@ -359,7 +359,7 @@ fn find_packet_start(buffer: &[u8], kind: XbeeTestFrameKind) -> Option<usize> {
         XbeeTestFrameKind::Format(OutputFormat::PacketIv1) => find_byte(buffer, b'I'),
         XbeeTestFrameKind::Format(OutputFormat::PacketBv1) => find_byte(buffer, b'B'),
         XbeeTestFrameKind::Format(OutputFormat::PacketJfV1) => find_header(buffer, b"JF"),
-        XbeeTestFrameKind::Format(OutputFormat::PacketUfV1) => find_header(buffer, b"UF"),
+        XbeeTestFrameKind::Format(OutputFormat::PacketUfV2) => find_header(buffer, b"UF"),
         XbeeTestFrameKind::Format(OutputFormat::RoverUpGeneral) => find_rover_up_start(buffer),
         XbeeTestFrameKind::Format(OutputFormat::RoverDownGeneral) => find_rover_down_start(buffer),
         XbeeTestFrameKind::PollGreeting => find_header(buffer, &POLL_GREETING_HEADER),
@@ -373,7 +373,7 @@ fn packet_matches(kind: XbeeTestFrameKind, packet: &[u8]) -> bool {
         | XbeeTestFrameKind::Format(OutputFormat::PacketAcV6Usb)
         | XbeeTestFrameKind::Format(OutputFormat::PacketGcV1)
         | XbeeTestFrameKind::Format(OutputFormat::PacketJfV1)
-        | XbeeTestFrameKind::Format(OutputFormat::PacketUfV1) => {
+        | XbeeTestFrameKind::Format(OutputFormat::PacketUfV2) => {
             let XbeeTestFrameKind::Format(format) = kind else {
                 unreachable!()
             };
@@ -2478,6 +2478,7 @@ mod tests {
         matches_reduced_ac_packet, matches_rover_down_packet, parse_xbee_test_args,
         parse_xbee_test_port_binding,
     };
+    use crate::output::formats::crc16_ccitt_false;
 
     #[test]
     fn parse_xbee_test_args_accepts_labeled_ports_and_rates() {
@@ -2621,18 +2622,43 @@ mod tests {
     }
 
     #[test]
-    fn packet_stream_decoder_accepts_packetufv1() {
-        let mut generator = OutputFormat::PacketUfV1
+    fn packet_stream_decoder_accepts_packetufv2() {
+        let mut generator = OutputFormat::PacketUfV2
             .create_dummy_generator()
             .expect("generator");
         let payload = generator.next_payload().expect("payload");
         let mut decoder =
-            PacketStreamDecoder::new(XbeeTestFrameKind::Format(OutputFormat::PacketUfV1));
+            PacketStreamDecoder::new(XbeeTestFrameKind::Format(OutputFormat::PacketUfV2));
 
         assert!(decoder.push(&payload[..3]).packets.is_empty());
         let batch = decoder.push(&payload[3..]);
 
         assert_eq!(batch.invalid_packets, 0);
+        assert_eq!(batch.packets, vec![payload]);
+    }
+
+    #[test]
+    fn packet_stream_decoder_excludes_legacy_uf_packets() {
+        let mut generator = OutputFormat::PacketUfV2
+            .create_dummy_generator()
+            .expect("generator");
+        let payload = generator.next_payload().expect("payload");
+        let mut legacy = [0u8; 14];
+        legacy[0..2].copy_from_slice(b"UF");
+        legacy[2] = 1;
+        legacy[3] = 3;
+        legacy[4..8].copy_from_slice(&356_812_362i32.to_le_bytes());
+        legacy[8..12].copy_from_slice(&1_397_671_248i32.to_le_bytes());
+        let crc = crc16_ccitt_false(&legacy[..12]).to_le_bytes();
+        legacy[12] = crc[0];
+        legacy[13] = crc[1];
+        let mut decoder =
+            PacketStreamDecoder::new(XbeeTestFrameKind::Format(OutputFormat::PacketUfV2));
+
+        assert!(decoder.push(&legacy).packets.is_empty());
+        let batch = decoder.push(&payload);
+
+        assert_eq!(batch.invalid_packets, 1);
         assert_eq!(batch.packets, vec![payload]);
     }
 
@@ -2699,12 +2725,12 @@ mod tests {
     }
 
     #[test]
-    fn packet_definition_for_uf_checks_crc_over_first_12_bytes() {
-        let mut generator = OutputFormat::PacketUfV1
+    fn packet_definition_for_uf_checks_crc_over_first_38_bytes() {
+        let mut generator = OutputFormat::PacketUfV2
             .create_dummy_generator()
             .expect("generator");
         let mut payload = generator.next_payload().expect("payload");
-        let definition = PacketDefinition::for_format(OutputFormat::PacketUfV1);
+        let definition = PacketDefinition::for_format(OutputFormat::PacketUfV2);
 
         assert!(super::packet_is_valid(&payload, definition));
         payload[4] ^= 0x01;

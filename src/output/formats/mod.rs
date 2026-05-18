@@ -2,13 +2,14 @@ mod crc;
 mod packetacv6;
 mod packetgcv1;
 mod packetjfv1;
-mod packetufv1;
+mod packetufv2;
 mod roverdowngeneral;
 mod roverupgeneral;
 
 use crate::input::compact::CompactReport;
 use crate::port_display::PortDisplayMode;
 pub(crate) use crc::crc16_ccitt_false;
+pub(crate) use packetufv2::{PacketUfV2Packet, decode_packet as decode_packet_ufv2};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OutputFormat {
@@ -19,7 +20,7 @@ pub enum OutputFormat {
     PacketBv1,
     PacketGcV1,
     PacketJfV1,
-    PacketUfV1,
+    PacketUfV2,
     RoverUpGeneral,
     RoverDownGeneral,
 }
@@ -83,11 +84,11 @@ const OUTPUT_FORMATS: &[OutputFormatDefinition] = &[
         create_dummy_generator: packetjfv1::create_dummy_generator,
     },
     OutputFormatDefinition {
-        format: OutputFormat::PacketUfV1,
-        names: &["packetufv1"],
-        packet_len: packetufv1::packet_len(),
+        format: OutputFormat::PacketUfV2,
+        names: &["packetufv2"],
+        packet_len: packetufv2::packet_len(),
         create_driver: None,
-        create_dummy_generator: packetufv1::create_dummy_generator,
+        create_dummy_generator: packetufv2::create_dummy_generator,
     },
     OutputFormatDefinition {
         format: OutputFormat::RoverUpGeneral,
@@ -132,7 +133,7 @@ impl OutputFormat {
             Self::PacketBv1 => "PacketBv1",
             Self::PacketGcV1 => "PacketGCv1",
             Self::PacketJfV1 => "PacketJFv1",
-            Self::PacketUfV1 => "PacketUFv1",
+            Self::PacketUfV2 => "PacketUFv2",
             Self::RoverUpGeneral => "RoverUpGeneral",
             Self::RoverDownGeneral => "RoverDownGeneral",
         }
@@ -172,7 +173,7 @@ impl OutputFormat {
             | Self::PacketBv1
             | Self::PacketGcV1
             | Self::PacketJfV1
-            | Self::PacketUfV1 => PortDisplayMode::Hex,
+            | Self::PacketUfV2 => PortDisplayMode::Hex,
             Self::RoverUpGeneral | Self::RoverDownGeneral => PortDisplayMode::Ascii,
         }
     }
@@ -189,8 +190,8 @@ impl OutputFormat {
 
     pub(crate) fn decoded_display_payload(self, payload: &[u8]) -> Result<Option<Vec<u8>>, String> {
         match self {
-            Self::PacketUfV1 => Ok(Some(
-                packetufv1::format_decoded_packet(payload)?.into_bytes(),
+            Self::PacketUfV2 => Ok(Some(
+                packetufv2::format_decoded_packet(payload)?.into_bytes(),
             )),
             _ => Ok(None),
         }
@@ -458,43 +459,51 @@ mod tests {
     }
 
     #[test]
-    fn parse_supports_packetufv1() {
+    fn parse_supports_packetufv2() {
         assert_eq!(
-            OutputFormat::parse("packetufv1").expect("should parse"),
-            OutputFormat::PacketUfV1
+            OutputFormat::parse("packetufv2").expect("should parse"),
+            OutputFormat::PacketUfV2
         );
         assert_eq!(
-            OutputFormat::parse("PacketUFv1").expect("should parse"),
-            OutputFormat::PacketUfV1
+            OutputFormat::parse("PacketUFv2").expect("should parse"),
+            OutputFormat::PacketUfV2
         );
     }
 
     #[test]
-    fn packetufv1_rejects_compact_encoding_driver() {
-        match OutputFormat::PacketUfV1.create_driver() {
-            Ok(_) => panic!("packetufv1 should not create a compact encoding driver"),
+    fn parse_rejects_legacy_packetufv1() {
+        assert_eq!(
+            OutputFormat::parse("packetufv1").expect_err("should reject"),
+            "unsupported output format: packetufv1"
+        );
+    }
+
+    #[test]
+    fn packetufv2_rejects_compact_encoding_driver() {
+        match OutputFormat::PacketUfV2.create_driver() {
+            Ok(_) => panic!("packetufv2 should not create a compact encoding driver"),
             Err(error) => {
                 assert_eq!(
                     error,
-                    "output format `packetufv1` does not support compact encoding"
+                    "output format `packetufv2` does not support compact encoding"
                 );
             }
         }
     }
 
     #[test]
-    fn packetufv1_dummy_generator_advances_sequence() {
-        let mut generator = OutputFormat::PacketUfV1
+    fn packetufv2_dummy_generator_advances_sequence() {
+        let mut generator = OutputFormat::PacketUfV2
             .create_dummy_generator()
             .expect("should create generator");
         let first = generator.next_payload().expect("should encode");
         let second = generator.next_payload().expect("should encode");
 
-        assert_eq!(first.len(), 14);
+        assert_eq!(first.len(), 40);
         assert_eq!(&first[..2], b"UF");
         assert_eq!(first[2], 0x01);
         assert_eq!(second[2], 0x02);
-        assert_eq!(read_u16_le(&first, 12), crc16_ccitt_false(&first[..12]));
+        assert_eq!(read_u16_le(&first, 38), crc16_ccitt_false(&first[..38]));
         assert_ne!(first, second);
     }
 
@@ -583,7 +592,7 @@ mod tests {
         assert_eq!(OutputFormat::PacketBv1.packet_len(), 15);
         assert_eq!(OutputFormat::PacketGcV1.packet_len(), 9);
         assert_eq!(OutputFormat::PacketJfV1.packet_len(), 16);
-        assert_eq!(OutputFormat::PacketUfV1.packet_len(), 14);
+        assert_eq!(OutputFormat::PacketUfV2.packet_len(), 40);
         assert_eq!(OutputFormat::RoverUpGeneral.packet_len(), 12);
         assert_eq!(OutputFormat::RoverDownGeneral.packet_len(), 13);
     }
@@ -603,7 +612,7 @@ mod tests {
             crate::port_display::PortDisplayMode::Hex
         );
         assert_eq!(
-            OutputFormat::PacketUfV1.default_display_mode(),
+            OutputFormat::PacketUfV2.default_display_mode(),
             crate::port_display::PortDisplayMode::Hex
         );
         assert_eq!(

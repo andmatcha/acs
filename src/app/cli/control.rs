@@ -365,9 +365,12 @@ impl ControlRuntimeState {
     }
 
     fn on_tick(&mut self, session: &mut SessionRuntime) -> Result<(), String> {
+        let now = Instant::now();
+        for input in self.observed_inputs.values_mut() {
+            input.expire_pending_transfers(now);
+        }
         self.flush_display_queues(session)?;
 
-        let now = Instant::now();
         if now.duration_since(self.last_status_update) >= STATUS_INTERVAL {
             self.last_status_update = now;
             let header_lines = self.build_header_lines(now);

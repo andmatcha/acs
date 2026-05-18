@@ -38,7 +38,7 @@
 - `send` の実行基盤を使い、複数の送信ポートと受信ポートを同一ダッシュボードで扱います。
 - `-i` が受信、`-o` が送信で、各ポートの baud / format / display / rate は `PORT@BAUD,DISPLAY,FORMAT,RATE` のようにポート文字列へ直接付けます。
 - `RATE` は Hz 数値に加えて、`2s` / `3s` のような低頻度送信用の周期指定にも対応しています。
-- `packetufv1` 受信では UF packet の `flags` と緯度経度をASCII行へ展開して表示します。
+- `packetufv2` 受信では UF v2 text chunk を復元し、完了した本文を表示します。
 - 値なしの `-i` / `-o` では、利用可能なシリアルポート、フォーマット、ボーレート、送信レートを対話式に選択できます。
 
 ### `route`
@@ -53,7 +53,7 @@
 - 20ms 周期で連番ループのダミーペイロードを繰り返し送信し、送信履歴を monitor と同じ UI で表示します。
 - 複数の出力ポートを同時に扱え、出力ごとに baud / format / display を分けて設定できます。
 - 出力ポートの受信側や、追加で指定した monitor ポートも同時に監視できます。
-- 現時点で `packetacv6`、`packetacv6usb`、`packetjfv1`、`packetufv1`、`roverupgeneral`、`roverdowngeneral` のダミーデータ送信に対応しています。
+- 現時点で `packetacv6`、`packetacv6usb`、`packetjfv1`、`packetufv2`、`roverupgeneral`、`roverdowngeneral` のダミーデータ送信に対応しています。
 
 ## 主要モジュール
 
@@ -80,7 +80,7 @@
 
 - 出力形式名と実装の対応付け
 - `PacketACv6` の状態付きエンコード
-- `PacketJFv1` / `PacketUFv1` のダミーフレーム生成
+- `PacketJFv1` / `PacketUFv2` のダミーフレーム生成
 - CRC16-CCITT-FALSE 計算
 
 ### `serial` / `session` / `ui`

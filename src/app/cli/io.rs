@@ -6,7 +6,9 @@ use super::help::{is_help_flag, print_io_help};
 use super::signal;
 use crate::ingress::IngressFrame;
 use crate::output::OutputFormat;
-use crate::output::formats::{DummyPayloadGenerator, crc16_ccitt_false};
+use crate::output::formats::{
+    DummyPayloadGenerator, PacketUfV2Packet, crc16_ccitt_false, decode_packet_ufv2,
+};
 use crate::port_display::{
     LineBreakMode, PortDisplayConfig, PortDisplayMode, parse_display_assignment,
     parse_display_value,
@@ -34,6 +36,7 @@ const DISPLAY_FLUSH_SLICE: usize = 32;
 const DISPLAY_FLUSH_PACKET_BUDGET: usize = 256;
 const DISPLAY_QUEUE_LIMIT: usize = 65_536;
 const SERIAL_FRAME_BITS_PER_BYTE: u64 = 10;
+const UF_V2_REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(5);
 const ROVER_DOWN_GENERAL_PREFIX_LEN: usize = 6;
 const ROVER_DOWN_GENERAL_MAX_PACKET_LEN: usize = 256;
 
@@ -330,9 +333,12 @@ impl IoRuntimeState {
     }
 
     fn on_tick(&mut self, session: &mut SessionRuntime) -> Result<(), String> {
+        let now = Instant::now();
+        for input in self.observed_inputs.values_mut() {
+            input.expire_pending_transfers(now);
+        }
         self.flush_display_queues(session)?;
 
-        let now = Instant::now();
         if now.duration_since(self.last_status_update) >= STATUS_INTERVAL {
             self.last_status_update = now;
             let header_lines = self.build_header_lines(now);
@@ -408,6 +414,7 @@ pub(crate) struct ObservedInput {
     formats: Vec<OutputFormat>,
     decoder: MixedFormatDecoder,
     display_queue: PacketDisplayQueue,
+    uf_v2_reassembler: UfV2TextReassembler,
     rate_trackers: BTreeMap<OutputFormat, PacketRateTracker>,
     per_format_display_modes: Option<BTreeMap<OutputFormat, PortDisplayMode>>,
     preserve_line_breaks: bool,
@@ -431,6 +438,7 @@ impl ObservedInput {
             formats: formats.clone(),
             decoder: MixedFormatDecoder::new(formats),
             display_queue: PacketDisplayQueue::new(),
+            uf_v2_reassembler: UfV2TextReassembler::new(),
             rate_trackers,
             per_format_display_modes,
             preserve_line_breaks,
@@ -452,10 +460,10 @@ impl ObservedInput {
             let totals = per_format_totals.entry(packet.format).or_insert((0, 0));
             totals.0 += packet.bytes.len();
             totals.1 += 1;
-            let (display_bytes, display_mode, preserve_line_breaks) =
-                self.display_entry_for_packet(&packet);
-            self.display_queue
-                .enqueue(display_bytes, display_mode, preserve_line_breaks);
+            let entries = self.display_entries_for_packet(&packet, at);
+            for entry in entries {
+                self.display_queue.enqueue_entry(entry);
+            }
         }
 
         ObservedInputBatch {
@@ -474,6 +482,12 @@ impl ObservedInput {
             .flush_input_batch(session, &self.port, max_packets)
     }
 
+    pub(crate) fn expire_pending_transfers(&mut self, now: Instant) {
+        if let Some(entry) = self.uf_v2_reassembler.expire(now) {
+            self.display_queue.enqueue_entry(entry);
+        }
+    }
+
     pub(crate) fn packet_rate_hz(&mut self, format: OutputFormat, now: Instant) -> Option<f64> {
         self.rate_trackers
             .get_mut(&format)
@@ -484,17 +498,26 @@ impl ObservedInput {
         &self.formats
     }
 
-    fn display_entry_for_packet(
-        &self,
+    fn display_entries_for_packet(
+        &mut self,
         packet: &DecodedPacket,
-    ) -> (Vec<u8>, Option<PortDisplayMode>, bool) {
+        at: Instant,
+    ) -> Vec<DisplayedPacket> {
+        if packet.format == OutputFormat::PacketUfV2 {
+            return self.uf_v2_reassembler.observe(&packet.bytes, at);
+        }
+
         match packet.format.decoded_display_payload(&packet.bytes) {
-            Ok(Some(display_payload)) => (display_payload, Some(PortDisplayMode::Ascii), true),
-            Err(error) => (
+            Ok(Some(display_payload)) => vec![DisplayedPacket::new(
+                display_payload,
+                Some(PortDisplayMode::Ascii),
+                true,
+            )],
+            Err(error) => vec![DisplayedPacket::new(
                 format!("{} decode error: {error}", packet.format.display_name()).into_bytes(),
                 Some(PortDisplayMode::Ascii),
                 true,
-            ),
+            )],
             Ok(None) => {
                 let display_mode = if packet.format == OutputFormat::RoverUpGeneral {
                     Some(PortDisplayMode::Ascii)
@@ -503,11 +526,11 @@ impl ObservedInput {
                         .as_ref()
                         .and_then(|display_modes| display_modes.get(&packet.format).copied())
                 };
-                (
+                vec![DisplayedPacket::new(
                     packet.bytes.clone(),
                     display_mode,
                     self.preserve_line_breaks,
-                )
+                )]
             }
         }
     }
@@ -572,17 +595,8 @@ impl PacketDisplayQueue {
         }
     }
 
-    fn enqueue(
-        &mut self,
-        packet: Vec<u8>,
-        display_mode: Option<PortDisplayMode>,
-        preserve_line_breaks: bool,
-    ) {
-        self.pending_packets.push_back(DisplayedPacket {
-            bytes: packet,
-            display_mode,
-            preserve_line_breaks,
-        });
+    fn enqueue_entry(&mut self, packet: DisplayedPacket) {
+        self.pending_packets.push_back(packet);
         while self.pending_packets.len() > DISPLAY_QUEUE_LIMIT {
             self.pending_packets.pop_front();
         }
@@ -615,6 +629,157 @@ struct DisplayedPacket {
     bytes: Vec<u8>,
     display_mode: Option<PortDisplayMode>,
     preserve_line_breaks: bool,
+}
+
+impl DisplayedPacket {
+    fn new(
+        bytes: Vec<u8>,
+        display_mode: Option<PortDisplayMode>,
+        preserve_line_breaks: bool,
+    ) -> Self {
+        Self {
+            bytes,
+            display_mode,
+            preserve_line_breaks,
+        }
+    }
+}
+
+struct UfV2TextReassembler {
+    buffer: Vec<u8>,
+    expected_chunk_index: u8,
+    active: bool,
+    last_valid_at: Option<Instant>,
+}
+
+impl UfV2TextReassembler {
+    fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            expected_chunk_index: 0,
+            active: false,
+            last_valid_at: None,
+        }
+    }
+
+    fn observe(&mut self, bytes: &[u8], at: Instant) -> Vec<DisplayedPacket> {
+        let mut entries = Vec::new();
+        if let Some(entry) = self.expire(at) {
+            entries.push(entry);
+        }
+
+        let packet = match decode_packet_ufv2(bytes) {
+            Ok(packet) => packet,
+            Err(error) => {
+                entries.push(uf_v2_status_entry(format!("UFv2 decode error: {error}")));
+                return entries;
+            }
+        };
+
+        if packet.read_error() {
+            self.reset();
+            entries.push(uf_v2_status_entry(format_uf_v2_packet_status(
+                &packet, "error",
+            )));
+            return entries;
+        }
+
+        if packet.read_busy() {
+            entries.push(uf_v2_status_entry(format_uf_v2_packet_status(
+                &packet, "busy",
+            )));
+            return entries;
+        }
+
+        if !packet.valid() {
+            entries.push(uf_v2_status_entry(format_uf_v2_packet_status(
+                &packet, "idle",
+            )));
+            return entries;
+        }
+
+        if packet.chunk_index != self.expected_chunk_index {
+            let expected = self.expected_chunk_index;
+            let buffered_len = self.buffer.len();
+            self.reset();
+            entries.push(uf_v2_status_entry(format!(
+                "UFv2 seq={} status=incomplete expected_chunk={} got_chunk={} discarded={} bytes",
+                packet.seq, expected, packet.chunk_index, buffered_len
+            )));
+            return entries;
+        }
+
+        if !self.active {
+            self.active = true;
+        }
+        self.buffer.extend_from_slice(packet.payload_bytes());
+        self.last_valid_at = Some(at);
+
+        if packet.end() {
+            let text = std::mem::take(&mut self.buffer);
+            self.reset();
+            entries.push(DisplayedPacket::new(
+                text,
+                Some(PortDisplayMode::Utf8),
+                true,
+            ));
+        } else {
+            self.expected_chunk_index = self.expected_chunk_index.wrapping_add(1);
+        }
+
+        entries
+    }
+
+    fn expire(&mut self, now: Instant) -> Option<DisplayedPacket> {
+        if !self.active {
+            return None;
+        }
+
+        let last_valid_at = self.last_valid_at?;
+        if now.saturating_duration_since(last_valid_at) < UF_V2_REASSEMBLY_TIMEOUT {
+            return None;
+        }
+
+        let expected = self.expected_chunk_index;
+        let buffered_len = self.buffer.len();
+        self.reset();
+        Some(uf_v2_status_entry(format!(
+            "UFv2 status=timeout expected_chunk={} discarded={} bytes",
+            expected, buffered_len
+        )))
+    }
+
+    fn reset(&mut self) {
+        self.buffer.clear();
+        self.expected_chunk_index = 0;
+        self.active = false;
+        self.last_valid_at = None;
+    }
+}
+
+fn uf_v2_status_entry(message: String) -> DisplayedPacket {
+    DisplayedPacket::new(message.into_bytes(), Some(PortDisplayMode::Ascii), true)
+}
+
+fn format_uf_v2_packet_status(packet: &PacketUfV2Packet, status: &str) -> String {
+    format!(
+        "UFv2 seq={} status={} flags=0x{:02X}(valid={}, usb_present={}, read_busy={}, read_error={}, end={}, reserved=0x{:X}) chunk={} len={}",
+        packet.seq,
+        status,
+        packet.flags,
+        flag_value(packet.valid()),
+        flag_value(packet.usb_present()),
+        flag_value(packet.read_busy()),
+        flag_value(packet.read_error()),
+        flag_value(packet.end()),
+        packet.reserved_flags(),
+        packet.chunk_index,
+        packet.payload_len,
+    )
+}
+
+fn flag_value(enabled: bool) -> u8 {
+    u8::from(enabled)
 }
 
 struct MixedFormatDecoder {
@@ -686,7 +851,7 @@ enum PacketMatcher {
     PacketBv1,
     PacketGcV1,
     PacketJfV1,
-    PacketUfV1,
+    PacketUfV2,
     RoverUpGeneral,
     RoverDownGeneral,
 }
@@ -701,7 +866,7 @@ impl PacketMatcher {
             OutputFormat::PacketBv1 => Self::PacketBv1,
             OutputFormat::PacketGcV1 => Self::PacketGcV1,
             OutputFormat::PacketJfV1 => Self::PacketJfV1,
-            OutputFormat::PacketUfV1 => Self::PacketUfV1,
+            OutputFormat::PacketUfV2 => Self::PacketUfV2,
             OutputFormat::RoverUpGeneral => Self::RoverUpGeneral,
             OutputFormat::RoverDownGeneral => Self::RoverDownGeneral,
         }
@@ -716,7 +881,7 @@ impl PacketMatcher {
             Self::PacketBv1 => OutputFormat::PacketBv1,
             Self::PacketGcV1 => OutputFormat::PacketGcV1,
             Self::PacketJfV1 => OutputFormat::PacketJfV1,
-            Self::PacketUfV1 => OutputFormat::PacketUfV1,
+            Self::PacketUfV2 => OutputFormat::PacketUfV2,
             Self::RoverUpGeneral => OutputFormat::RoverUpGeneral,
             Self::RoverDownGeneral => OutputFormat::RoverDownGeneral,
         }
@@ -747,7 +912,7 @@ impl PacketMatcher {
             Self::PacketBv1 => matches_reduced_ac_packet(bytes, b'B', 15),
             Self::PacketGcV1 => matches_crc_packet(bytes, b"GC", 7),
             Self::PacketJfV1 => matches_crc_packet(bytes, b"JF", 14),
-            Self::PacketUfV1 => matches_crc_packet(bytes, b"UF", 12),
+            Self::PacketUfV2 => matches_crc_packet(bytes, b"UF", 38),
             Self::RoverUpGeneral => matches_rover_up_packet(bytes),
             Self::RoverDownGeneral => matches_rover_down_packet(bytes),
         }
@@ -767,7 +932,7 @@ impl PacketMatcher {
             Self::PacketBv1 => could_match_reduced_ac_packet_prefix(bytes, b'B', 15),
             Self::PacketGcV1 => could_match_crc_packet_prefix(bytes, b"GC", 9),
             Self::PacketJfV1 => could_match_crc_packet_prefix(bytes, b"JF", 16),
-            Self::PacketUfV1 => could_match_crc_packet_prefix(bytes, b"UF", 14),
+            Self::PacketUfV2 => could_match_crc_packet_prefix(bytes, b"UF", 40),
             Self::RoverUpGeneral => matches_rover_up_prefix(bytes),
             Self::RoverDownGeneral => matches_rover_down_prefix(bytes),
         }
@@ -1839,7 +2004,7 @@ pub(crate) fn output_format_choices() -> Vec<OutputFormat> {
         OutputFormat::PacketBv1,
         OutputFormat::PacketGcV1,
         OutputFormat::PacketJfV1,
-        OutputFormat::PacketUfV1,
+        OutputFormat::PacketUfV2,
         OutputFormat::RoverUpGeneral,
         OutputFormat::RoverDownGeneral,
     ]
@@ -2675,7 +2840,7 @@ mod tests {
     use super::{
         IoCommandInput, IoCommandOutput, IoOutputSettings, IoPromptBindingPreview, IoPromptCommand,
         IoPromptPortPosition, IoRuntimeOptions, IoSendRate, MixedFormatDecoder, ObservedInput,
-        OutputSchedule, build_io_executed_command, estimated_output_line_bps,
+        OutputSchedule, build_io_executed_command, crc16_ccitt_false, estimated_output_line_bps,
         format_io_input_binding, format_io_output_binding, matches_reduced_ac_packet,
         matches_rover_down_packet, parse_io_args, parse_io_input_binding, parse_io_output_binding,
         parse_output_format_list, realign_output_schedule, resolve_display_mode,
@@ -2685,7 +2850,22 @@ mod tests {
     use crate::port_display::{LineBreakMode, PortDisplayMode};
     use crate::session::runtime::SessionOutputSpec;
     use std::path::PathBuf;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
+
+    fn build_uf_v2_packet(seq: u8, flags: u8, chunk_index: u8, payload: &[u8]) -> Vec<u8> {
+        assert!(payload.len() <= 32);
+        let mut packet = vec![0u8; 40];
+        packet[0..2].copy_from_slice(b"UF");
+        packet[2] = seq;
+        packet[3] = flags;
+        packet[4] = chunk_index;
+        packet[5] = payload.len() as u8;
+        packet[6..6 + payload.len()].copy_from_slice(payload);
+        let crc = crc16_ccitt_false(&packet[..38]).to_le_bytes();
+        packet[38] = crc[0];
+        packet[39] = crc[1];
+        packet
+    }
 
     #[test]
     fn parse_io_input_binding_accepts_format_and_packet_mode() {
@@ -2711,12 +2891,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_io_input_binding_accepts_packetufv1_format() {
-        let binding = parse_io_input_binding("/dev/ttyUSB1@921600,hex+packet,PacketUFv1").unwrap();
+    fn parse_io_input_binding_accepts_packetufv2_format() {
+        let binding = parse_io_input_binding("/dev/ttyUSB1@921600,hex+packet,PacketUFv2").unwrap();
 
         assert_eq!(binding.port, "/dev/ttyUSB1");
         assert_eq!(binding.baud, Some(921_600));
-        assert_eq!(binding.formats, vec![String::from("packetufv1")]);
+        assert_eq!(binding.formats, vec![String::from("packetufv2")]);
         assert_eq!(binding.display_mode, Some(PortDisplayMode::Hex));
         assert_eq!(binding.line_break_mode, Some(LineBreakMode::Packet));
     }
@@ -3020,29 +3200,53 @@ mod tests {
     }
 
     #[test]
-    fn mixed_decoder_accepts_packetufv1_packets() {
-        let packet = OutputFormat::PacketUfV1
+    fn mixed_decoder_accepts_packetufv2_packets() {
+        let packet = OutputFormat::PacketUfV2
             .encode_dummy_payload()
-            .expect("packetufv1 dummy payload");
-        let mut decoder = MixedFormatDecoder::new(vec![OutputFormat::PacketUfV1]);
+            .expect("packetufv2 dummy payload");
+        let mut decoder = MixedFormatDecoder::new(vec![OutputFormat::PacketUfV2]);
 
         assert!(decoder.push(&packet[..5]).is_empty());
         let decoded = decoder.push(&packet[5..]);
 
         assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].format, OutputFormat::PacketUfV1);
+        assert_eq!(decoded[0].format, OutputFormat::PacketUfV2);
         assert_eq!(decoded[0].bytes, packet);
     }
 
     #[test]
-    fn observed_input_displays_packetufv1_as_decoded_ascii() {
-        let packet = OutputFormat::PacketUfV1
+    fn mixed_decoder_excludes_legacy_uf_packets() {
+        let packet = OutputFormat::PacketUfV2
             .encode_dummy_payload()
-            .expect("packetufv1 dummy payload");
+            .expect("packetufv2 dummy payload");
+        let mut legacy = [0u8; 14];
+        legacy[0..2].copy_from_slice(b"UF");
+        legacy[2] = 1;
+        legacy[3] = 3;
+        legacy[4..8].copy_from_slice(&356_812_362i32.to_le_bytes());
+        legacy[8..12].copy_from_slice(&1_397_671_248i32.to_le_bytes());
+        let crc = crc16_ccitt_false(&legacy[..12]).to_le_bytes();
+        legacy[12] = crc[0];
+        legacy[13] = crc[1];
+        let mut decoder = MixedFormatDecoder::new(vec![OutputFormat::PacketUfV2]);
+
+        assert!(decoder.push(&legacy).is_empty());
+        let decoded = decoder.push(&packet);
+
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].format, OutputFormat::PacketUfV2);
+        assert_eq!(decoded[0].bytes, packet);
+    }
+
+    #[test]
+    fn observed_input_displays_packetufv2_complete_text_as_utf8() {
+        let packet = OutputFormat::PacketUfV2
+            .encode_dummy_payload()
+            .expect("packetufv2 dummy payload");
         let mut observed = ObservedInput::new(
             String::from("input-uf"),
             String::from("/dev/ttyUSB1"),
-            vec![OutputFormat::PacketUfV1],
+            vec![OutputFormat::PacketUfV2],
             None,
             false,
         );
@@ -3057,11 +3261,94 @@ mod tests {
             .pending_packets
             .front()
             .expect("queued uf packet");
-        assert_eq!(queued.display_mode, Some(PortDisplayMode::Ascii));
+        assert_eq!(queued.display_mode, Some(PortDisplayMode::Utf8));
         assert!(queued.preserve_line_breaks);
         assert_eq!(
             String::from_utf8_lossy(&queued.bytes),
-            "UF seq=1 flags=0x03(valid=1, usb_present=1, read_busy=0, read_error=0, reserved=0x0) lat=35.6812362 lon=139.7671248 lat_e7=356812362 lon_e7=1397671248"
+            "38.12345, -110.98765\n"
+        );
+    }
+
+    #[test]
+    fn observed_input_reassembles_packetufv2_chunks() {
+        let first = build_uf_v2_packet(1, 0x03, 0, b"hello ");
+        let second = build_uf_v2_packet(2, 0x13, 1, b"world\n");
+        let mut observed = ObservedInput::new(
+            String::from("input-uf"),
+            String::from("/dev/ttyUSB1"),
+            vec![OutputFormat::PacketUfV2],
+            None,
+            false,
+        );
+        let now = Instant::now();
+
+        let first_batch = observed.observe(&first, now);
+        let second_batch = observed.observe(&second, now + Duration::from_millis(1));
+
+        assert_eq!(first_batch.valid_packet_count, 1);
+        assert_eq!(second_batch.valid_packet_count, 1);
+        assert_eq!(observed.display_queue.pending_packets.len(), 1);
+        let queued = observed
+            .display_queue
+            .pending_packets
+            .front()
+            .expect("queued uf text");
+        assert_eq!(queued.display_mode, Some(PortDisplayMode::Utf8));
+        assert_eq!(String::from_utf8_lossy(&queued.bytes), "hello world\n");
+    }
+
+    #[test]
+    fn observed_input_reports_packetufv2_chunk_gap() {
+        let packet = build_uf_v2_packet(1, 0x13, 1, b"world\n");
+        let mut observed = ObservedInput::new(
+            String::from("input-uf"),
+            String::from("/dev/ttyUSB1"),
+            vec![OutputFormat::PacketUfV2],
+            None,
+            false,
+        );
+
+        let batch = observed.observe(&packet, Instant::now());
+
+        assert_eq!(batch.valid_packet_count, 1);
+        assert_eq!(observed.display_queue.pending_packets.len(), 1);
+        let queued = observed
+            .display_queue
+            .pending_packets
+            .front()
+            .expect("queued uf status");
+        assert_eq!(queued.display_mode, Some(PortDisplayMode::Ascii));
+        assert_eq!(
+            String::from_utf8_lossy(&queued.bytes),
+            "UFv2 seq=1 status=incomplete expected_chunk=0 got_chunk=1 discarded=0 bytes"
+        );
+    }
+
+    #[test]
+    fn observed_input_expires_packetufv2_incomplete_text() {
+        let packet = build_uf_v2_packet(1, 0x03, 0, b"hello ");
+        let mut observed = ObservedInput::new(
+            String::from("input-uf"),
+            String::from("/dev/ttyUSB1"),
+            vec![OutputFormat::PacketUfV2],
+            None,
+            false,
+        );
+        let now = Instant::now();
+
+        observed.observe(&packet, now);
+        observed.expire_pending_transfers(now + Duration::from_secs(6));
+
+        assert_eq!(observed.display_queue.pending_packets.len(), 1);
+        let queued = observed
+            .display_queue
+            .pending_packets
+            .front()
+            .expect("queued uf timeout");
+        assert_eq!(queued.display_mode, Some(PortDisplayMode::Ascii));
+        assert_eq!(
+            String::from_utf8_lossy(&queued.bytes),
+            "UFv2 status=timeout expected_chunk=1 discarded=6 bytes"
         );
     }
 
@@ -3149,8 +3436,8 @@ mod tests {
             39_000
         );
         assert_eq!(
-            estimated_output_line_bps(OutputFormat::PacketUfV1, IoSendRate::hz(100.0)),
-            14_000
+            estimated_output_line_bps(OutputFormat::PacketUfV2, IoSendRate::hz(100.0)),
+            40_000
         );
         assert_eq!(
             estimated_output_line_bps(OutputFormat::RoverUpGeneral, IoSendRate::hz(100.0)),
