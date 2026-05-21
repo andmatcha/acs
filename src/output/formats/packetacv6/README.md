@@ -9,7 +9,7 @@
 - `definition.rs` でパケット長、しきい値、中立電流値、各プロファイルの定数を定義します。
 - `encoder.rs` で compact report の各入力を電流値や制御ビットへ変換し、CRC 付きの 39 バイトパケットを組み立てます。
 - `reduced.rs` で `PacketACv6` を XBee 送信用の `PacketMv1` / `PacketIv1` / `PacketBv1` へ削減します。
-- `mod.rs` で `PacketACv6` driver、`USB_READ` 用の中立ダミー generator、`PacketACv6` driver 出力を削減する `PacketMv1` driver を提供します。
+- `mod.rs` で `PacketACv6` driver、`control_byte.bit5` の `USB_READ` 用の中立ダミー generator、`PacketACv6` driver 出力を削減する `PacketMv1` driver を提供します。
 - `sound.rs` でプロファイル切替時の効果音再生を扱います。
 
 ## 実装の要点

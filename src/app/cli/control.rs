@@ -311,7 +311,7 @@ impl ControlRuntimeState {
                 settings.format.as_str(),
                 settings.rate_hz
             ),
-            read_usb_enabled: settings.format == OutputFormat::PacketAcV6,
+            read_usb_enabled: control_read_usb_enabled(settings.format),
             monitors: settings.header_monitors.clone(),
             observed_inputs,
             last_status_update: started_at
@@ -793,7 +793,7 @@ fn dispatch_control_report(
     match engine.process_frame(&frame) {
         Ok(dispatches) => {
             for mut dispatch in dispatches {
-                if read_usb_requested && format == OutputFormat::PacketAcV6 {
+                if read_usb_requested && control_read_usb_enabled(format) {
                     format.set_usb_read_flag(&mut dispatch.bytes)?;
                 }
                 match session.write_output(&dispatch.output_id, &dispatch.bytes) {
@@ -833,6 +833,10 @@ fn realign_control_send_schedule(next_send_at: &mut Instant, period: Duration, n
             *next_send_at = now;
         }
     }
+}
+
+fn control_read_usb_enabled(format: OutputFormat) -> bool {
+    matches!(format, OutputFormat::PacketAcV6 | OutputFormat::PacketMv1)
 }
 
 fn build_control_pipeline_spec(controller_input_id: &str, format: OutputFormat) -> PipelineSpec {
@@ -1459,7 +1463,8 @@ mod tests {
     use super::{
         ControlFormatArg, ControlMonitorArg, ControlPortArg, ControlPromptCandidate,
         ControlPromptCommand, ControlRuntimeOptions, build_control_pipeline_spec,
-        default_control_rate_hz, parse_control_args, parse_control_monitor_binding,
+        control_read_usb_enabled, default_control_rate_hz, parse_control_args,
+        parse_control_monitor_binding,
     };
     use crate::output::OutputFormat;
     use crate::pipeline::PipelineEngine;
@@ -1567,6 +1572,13 @@ mod tests {
         assert_eq!(default_control_rate_hz(OutputFormat::PacketAcV6), 100);
         assert_eq!(default_control_rate_hz(OutputFormat::PacketMv1), 100);
         assert_eq!(default_control_rate_hz(OutputFormat::PacketGcV1), 20);
+    }
+
+    #[test]
+    fn read_usb_shortcut_is_enabled_for_ac_and_m_control_packets() {
+        assert!(control_read_usb_enabled(OutputFormat::PacketAcV6));
+        assert!(control_read_usb_enabled(OutputFormat::PacketMv1));
+        assert!(!control_read_usb_enabled(OutputFormat::PacketGcV1));
     }
 
     #[test]

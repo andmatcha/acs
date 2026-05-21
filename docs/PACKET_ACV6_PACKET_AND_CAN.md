@@ -9,7 +9,7 @@
 ## 全体フロー
 
 ```text
-DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet (+ PC keyboard R USB_READ) -> CAN
+DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet (+ PC keyboard R/r READ_USB on control_byte.bit5) -> CAN
 ```
 
 現行実装の `packetacv6` 出力は Manual モード専用で、生成されるパケット長は 39 byte である。
@@ -60,7 +60,7 @@ DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet (+ PC keyboard R U
 
 ### `control_byte`
 
-`control_byte` は次のボタンから生成する。
+`control_byte` は次の DS4 ボタンと、`acs control` の PC キーボード要求から生成する。
 
 | bit | 名前 | 入力 |
 | ---: | --- | --- |
@@ -69,7 +69,7 @@ DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet (+ PC keyboard R U
 | `2` | `KBD_YAMAN` | Manual encoder では未使用、`0` 固定 |
 | `3` | `NYOKKI_PUSH` | D-pad Up |
 | `4` | `NYOKKI_PULL` | D-pad Down |
-| `5` | `INIT` | `r3` |
+| `5` | `READ_USB` / `INIT` | `acs control` の PC キーボード `R` / `r`、または `r3` |
 | `6` | `HOME` | `l3` |
 | `7` | `KBD_START` | Manual encoder では未使用、`0` 固定 |
 
@@ -81,7 +81,7 @@ DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet (+ PC keyboard R U
 | --- | ---: | --- | --- | --- |
 | `0..1` | 2 | `[u8; 2]` | `header` | 常に `b"AC"` |
 | `2` | 1 | `u8` | `seq` | 送信ごとにインクリメント、`wrapping_add(1)` |
-| `3` | 1 | `u8` | `flags` | Manual モード、enable、`USB_READ` |
+| `3` | 1 | `u8` | `flags` | Manual モード、enable |
 | `4..17` | 14 | `u16[7]` | `current` | `current[0]..current[6]` |
 | `18..23` | 6 | `u16[3]` | `angle` | 現行 Manual 実装ではすべて `0` |
 | `24..29` | 6 | `i16[3]` | `vel` | 現行 Manual 実装ではすべて `0` |
@@ -99,20 +99,19 @@ DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet (+ PC keyboard R U
 | ---: | --- |
 | `0` | enable |
 | `4..5` | control mode。現行実装では常に `1` (`Manual`) |
-| `6` | `USB_READ`。`acs control` では PC キーボードの `R` / `r` で短時間 `1` |
 
-そのほかの bit は、この実装では 0 のままである。
+そのほかの bit は、この実装では 0 のままである。`READ_USB` は `AC` / `M` の両方で保持できるよう、`flags.bit6` ではなく `control_byte.bit5` を使う。
 
 ### `PacketACv6USB`
 
 `acs io` 用の `packetacv6usb` は、`PacketACv6` と同じ 39 byte の AC v6 パケットを生成する。
-通常のダミー `packetacv6` と違い、`USB_READ` (`flags.bit6`) 以外は初期値に保つ。
+通常のダミー `packetacv6` と違い、`USB_READ` (`control_byte.bit5`) 以外は初期値に保つ。
 
-- `flags = 0x50` (`Manual` + `USB_READ`)
+- `flags = 0x10` (`Manual`)
 - `current[0..6] = 255`
 - `angle[0..2] = 0`
 - `vel[0..2] = 0`
-- `control_byte = 0`
+- `control_byte = 0x20` (`USB_READ`)
 - `base_target_mm_j0 = 0`
 - `auto_flags = 0`
 - `fault_code = 0`
@@ -175,7 +174,7 @@ motor_command = (current - 255) * 64
 | `2` | `control_byte.bit2` = `KBD_YAMAN` |
 | `3` | `control_byte.bit3` = `NYOKKI_PUSH` |
 | `4` | `control_byte.bit4` = `NYOKKI_PULL` |
-| `5` | `control_byte.bit5` = `INIT` |
+| `5` | `control_byte.bit5` = `READ_USB` / `INIT` |
 | `6` | `control_byte.bit6` = `HOME` |
 | `7` | `control_byte.bit7` = `KBD_START` |
 
@@ -192,7 +191,7 @@ motor_command = (current - 255) * 64
 | `D-pad Right / Left` | `current[6]` | `0x1FF Data[4..5]` |
 | D-pad Up | `control_byte.bit3` | `0x208 Data[3]` |
 | D-pad Down | `control_byte.bit4` | `0x208 Data[4]` |
-| `r3` | `control_byte.bit5` | `0x208 Data[5]` |
+| PC keyboard `R` / `r`、`r3` | `control_byte.bit5` | `0x208 Data[5]` |
 | `l3` | `control_byte.bit6` | `0x208 Data[6]` |
 
 ## CAN に載らない項目
@@ -227,6 +226,8 @@ motor_command = (current - 255) * 64
 | `2..15` | `4..17` | `current[0..6]` |
 | `16` | `30` | `control_byte` |
 | `17..18` | 生成 | `crc16` (`0..16` に対する CRC16-CCITT-FALSE) |
+
+`READ_USB` は `control_byte.bit5` なので、`PacketMv1` では offset `16` に保持される。
 
 ### `PacketIv1`
 

@@ -180,7 +180,9 @@ impl OutputFormat {
 
     pub(crate) fn set_usb_read_flag(self, payload: &mut [u8]) -> Result<(), String> {
         match self {
-            Self::PacketAcV6 | Self::PacketAcV6Usb => packetacv6::set_usb_read_flag(payload),
+            Self::PacketAcV6 | Self::PacketAcV6Usb | Self::PacketMv1 => {
+                packetacv6::set_usb_read_flag(payload)
+            }
             _ => Err(format!(
                 "output format `{}` does not carry packetacv6 USB_READ",
                 self.as_str()
@@ -270,11 +272,11 @@ mod tests {
 
         assert_eq!(payload.len(), 39);
         assert_eq!(&payload[..2], b"AC");
-        assert_eq!(payload[3], 0x50);
+        assert_eq!(payload[3], 0x10);
         for index in 0..7 {
             assert_eq!(read_u16_le(&payload, 4 + index * 2), 255);
         }
-        assert_eq!(payload[30], 0);
+        assert_eq!(payload[30], 1 << 5);
         assert_eq!(read_u16_le(&payload, 37), crc16_ccitt_false(&payload[..37]));
     }
 
@@ -353,6 +355,23 @@ mod tests {
             crc16_ccitt_false(&second[..17])
         );
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn packetmv1_usb_read_flag_sets_control_byte_bit() {
+        let mut payload = OutputFormat::PacketMv1
+            .encode_dummy_payload()
+            .expect("packetmv1 dummy payload");
+
+        OutputFormat::PacketMv1
+            .set_usb_read_flag(&mut payload)
+            .expect("packetmv1 carries USB_READ");
+
+        assert_eq!(payload[16] & (1 << 5), 1 << 5);
+        assert_eq!(
+            u16::from_le_bytes([payload[17], payload[18]]),
+            crc16_ccitt_false(&payload[..17])
+        );
     }
 
     #[test]

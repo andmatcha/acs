@@ -18,11 +18,11 @@
 
 ## ビットとして載る入力
 
-### `flags`
+### `READ_USB`
 
 | 入力 | `AC v6` field | デフォルト値 | 入力後の値 |
 | --- | --- | ---: | ---: |
-| PC キーボード `R` / `r` | `flags.bit6` (`USB_READ`) | `0` | `1` |
+| PC キーボード `R` / `r` | `control_byte.bit5` (`READ_USB`) | `0` | `1` |
 
 ### `control_byte`
 
@@ -33,7 +33,7 @@
 | 未使用 | bit2 `KBD_YAMAN` | `0x208 Data[2]` | `0` | `0` |
 | `D-pad Up` | bit3 `NYOKKI_PUSH` | `0x208 Data[3]` | `0` | `1` |
 | `D-pad Down` | bit4 `NYOKKI_PULL` | `0x208 Data[4]` | `0` | `1` |
-| `r3` | bit5 `INIT` | `0x208 Data[5]` | `0` | `1` |
+| PC キーボード `R` / `r`、`r3` | bit5 `READ_USB` / `INIT` | `0x208 Data[5]` | `0` | `1` |
 | `l3` | bit6 `HOME` | `0x208 Data[6]` | `0` | `1` |
 | 未使用 | bit7 `KBD_START` | `0x208 Data[7]` | `0` | `0` |
 
