@@ -126,6 +126,9 @@ acs ports
 acs controllers
 acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6,RATE=100
 acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketMv1,RATE=100
+acs control --port 192.168.1.50
+acs control --port 192.168.1.50 --erc
+acs control --port 192.168.1.50 --format packetmv1
 acs control --port /dev/ttyUSB0@115200 --config FORMAT=PacketGCv1,RATE=20
 acs route merge -i in_a=/dev/ttyUSB0@921600 -o out_main=/dev/ttyUSB1@921600 --no-log
 acs io -i /dev/ttyUSB1@115200,utf8,packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,10
@@ -146,6 +149,33 @@ acs xbee-test --port base=/dev/ttyUSB0@921600 --port remote=/dev/ttyUSB1@921600 
 acs --version
 acs update list
 ```
+
+ARES 9のRaspberry Pi 5で`ares9_ip_can_gateway`を動かしている場合は、USBポートの代わりにPiのLAN IP、Tailscale IP、または`ホスト名:ポート`を`--port`へ指定できます。IPだけを指定した場合はUDP port 5000を使い、送信形式は`PacketACv6`、送信レートは100 Hzが自動選択されます。
+
+```sh
+acs control --port 192.168.1.50
+acs control --port 100.64.0.20
+acs control --port ares9-pi.local:5000
+```
+
+この場合、`@BAUD`と`--baud`は不要です。UDP出力では既定の`PacketACv6`に加えて`PacketMv1`を明示選択でき、どちらも1 packetを1 UDP datagramとして送信します。
+
+```sh
+acs control --port 192.168.1.50 --format packetmv1
+# --configを使う既存形式も利用可能
+acs control --port 192.168.1.50 --config FORMAT=PacketACv6,RATE=100
+```
+
+`PacketACv6`は39 byte、`PacketMv1`は19 byteです。現行の`ares9_ip_can_gateway`の`packet-m-v1-to-serial` routeは19 byteの`PacketMv1`専用なので、同routeへ送る場合は`--format packetmv1`を指定してください。既定の`PacketACv6`を使用する場合は、受信側も39 byteの`PacketACv6` datagramに対応している必要があります。USBシリアル宛ての従来のコマンドと対話操作はそのまま利用できます。
+
+European Rover Challenge Mode（ERCモード）は、PacketACv6出力に`--erc`を追加して有効にします。Enable（DUALSHOCK 4のOPTIONS）で無効状態から有効状態へ切り替えると、直後から5秒間はコントローラー入力の処理とPacketACv6送信を停止し、代わりにPacketAMを設定中の送信レートで繰り返し送信します。5秒後は最新のコントローラー入力を使ってPacketACv6送信を再開します。
+
+```sh
+acs control --port 192.168.1.50 --erc
+acs control --port /dev/ttyUSB0@115200 --format packetacv6 --erc
+```
+
+PacketAMはASCIIの`AM`ヘッダーと、その2 byteに対するCRC16-CCITT-FALSEをlittle-endianで格納した合計4 byteのパケットです。wire dataは`41 4D 9B BA`です。USBシリアルとIP gatewayのどちらでも利用でき、UDPでは1 PacketAMを1 datagramとして送ります。ERCモードはPacketACv6専用であり、`--format packetmv1`などほかの形式と`--erc`を同時指定するとエラーになります。`--erc-mode`は`--erc`の別名です。
 
 - 1 台だけコントローラーやシリアルポートが見つかる場合は、自動選択されます。
 - すべてのポート指定で、ボーレート省略時は `115200` が使われます。

@@ -1,5 +1,6 @@
 mod crc;
 mod packetacv6;
+pub(crate) mod packetam;
 mod packetgcv1;
 mod packetjfv1;
 mod roverdowngeneral;

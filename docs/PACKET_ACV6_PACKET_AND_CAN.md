@@ -14,6 +14,8 @@ DS4 HID -> compact -> PacketAcV6PacketEncoder -> AC v6 packet -> CAN
 
 現行実装の `packetacv6` 出力は Manual モード専用で、生成されるパケット長は 39 byte である。
 
+`acs control --erc`では、`options`によってenableが無効から有効へ変わった直後の5秒間、このPacketACv6エンコーダーを更新せず、PacketACv6の代わりに4 byteのPacketAM（`41 4D 9B BA`）を送る。これは`control`コマンドの送信制御であり、PacketACv6自体のwire形式は変わらない。
+
 ## `compact` から Manual 制御状態への対応
 
 ### enable とプロファイル

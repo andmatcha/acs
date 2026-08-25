@@ -165,7 +165,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("使い方: {bin_name} control [オプション]");
     println!();
     println!(
-        "DUALSHOCK 4 コントローラーを読み取り、整形したバイト列をシリアルポートへ書き込みます。"
+        "DUALSHOCK 4 コントローラーを読み取り、整形したバイト列をUSBシリアルまたはIP gatewayへ送信します。"
     );
     println!(
         "受信監視は `--monitor` で明示したポートだけを開きます。出力ポートを監視したい場合も `--monitor` で指定してください。"
@@ -177,11 +177,16 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("DUALSHOCK 4 が 1 台だけの場合は自動選択し、複数台ある場合だけ対話式に選択します。");
     println!();
     println!("オプション:");
-    println!("  -p, --port <PORT[@BAUD][,DISPLAY]> シリアル出力ポート");
+    println!("  -p, --port <TARGET[@BAUD][,DISPLAY]> 出力先");
     println!(
-        "                              PORT にはデバイスパスまたは `acs ports` の番号を指定できます"
+        "                              TARGET にはUSBデバイスパス、`acs ports` の番号、PiのIPまたはホスト名:portを指定できます"
     );
-    println!("                              BAUD を省略した場合は 115200 が使われます");
+    println!(
+        "                              USBのBAUD省略時は115200、IP gatewayのport省略時は5000です"
+    );
+    println!(
+        "                              UDP出力はPacketACv6/PacketMv1対応。既定はPacketACv6で、BAUD指定は不要です"
+    );
     println!("                              省略すると対話式に選択します");
     println!("  -f, --format <FORMAT>      送信フォーマット。値を省略すると対話式に選択");
     println!("                              FORMAT: packetacv6/packetmv1/packetgcv1");
@@ -216,6 +221,11 @@ pub(crate) fn print_control_help(bin_name: &str) {
     );
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
     println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
+    println!("      --erc                  European Rover Challenge Modeを有効化");
+    println!(
+        "                              PacketACv6のEnable押下後5秒間、ACを止めて4 byteのAMを同じレートで送信します"
+    );
+    println!("                              PacketACv6専用。`--erc-mode`も同じ意味です");
     println!(
         "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
     );
@@ -225,6 +235,10 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("  {bin_name} control");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6,RATE=100");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketMv1,RATE=100");
+    println!("  {bin_name} control --port 192.168.1.50");
+    println!("  {bin_name} control --port 192.168.1.50 --erc");
+    println!("  {bin_name} control --port 192.168.1.50 --format packetmv1");
+    println!("  {bin_name} control --port ares9-pi.local:5000");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketGCv1,RATE=20");
     println!(
         "  {bin_name} control --port /dev/ttyUSB0@921600,hex --monitor /dev/ttyUSB1@115200,utf8+packet,packetjfv1 --config FORMAT=PacketACv6"

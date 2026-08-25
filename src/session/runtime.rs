@@ -1,4 +1,5 @@
 use crate::ingress::IngressFrame;
+use crate::network::{UdpWriter, is_udp_target, udp_target_address};
 use crate::output::OutputFormat;
 use crate::port_display::{LineBreakMode, PortDisplayMode};
 use crate::serial::{
@@ -68,7 +69,21 @@ struct SessionOutputHandle {
 
 struct SessionConnectionHandle {
     status_label: String,
-    connection: SerialWriter,
+    connection: OutputConnection,
+}
+
+enum OutputConnection {
+    Serial(SerialWriter),
+    Udp(UdpWriter),
+}
+
+impl OutputConnection {
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
+        match self {
+            Self::Serial(writer) => writer.write_bytes(bytes).map_err(|error| error.to_string()),
+            Self::Udp(writer) => writer.write_bytes(bytes).map_err(|error| error.to_string()),
+        }
+    }
 }
 
 pub(crate) struct SessionRuntime {
@@ -124,14 +139,15 @@ impl SessionRuntime {
                 .insert(output.format_name.clone());
         }
         for (key, formats) in &output_port_formats {
-            dashboard.configure_output_port(
-                &key.port,
-                key.baud_rate,
-                output_port_modes
-                    .get(key)
-                    .copied()
-                    .unwrap_or(PortDisplayMode::Hex),
-            );
+            let display_mode = output_port_modes
+                .get(key)
+                .copied()
+                .unwrap_or(PortDisplayMode::Hex);
+            if let Some(destination) = udp_target_address(&key.port) {
+                dashboard.configure_udp_output(&key.port, destination, display_mode);
+            } else {
+                dashboard.configure_output_port(&key.port, key.baud_rate, display_mode);
+            }
             dashboard.set_output_known_formats(
                 &key.port,
                 formats
@@ -152,20 +168,26 @@ impl SessionRuntime {
                 baud_rate: output.baud_rate,
             };
             if !connections.contains_key(&connection_key) {
-                let status_label = format!(
-                    "baud={} format={}",
-                    output.baud_rate,
-                    output_port_formats
-                        .get(&connection_key)
-                        .map(|formats| formats.iter().cloned().collect::<Vec<_>>().join("+"))
-                        .unwrap_or_else(|| output.format_name.clone())
-                );
-                let connection = if let Some((input_index, input)) =
+                let formats = output_port_formats
+                    .get(&connection_key)
+                    .map(|formats| formats.iter().cloned().collect::<Vec<_>>().join("+"))
+                    .unwrap_or_else(|| output.format_name.clone());
+                let (status_label, connection) = if is_udp_target(&output.port) {
+                    let destination = udp_target_address(&output.port)
+                        .expect("checked UDP target must have an address");
+                    (
+                        format!("udp destination={destination} format={formats}"),
+                        OutputConnection::Udp(UdpWriter::open(&output.port).map_err(|error| {
+                            format!("failed to open UDP output `{destination}`: {error}")
+                        })?),
+                    )
+                } else if let Some((input_index, input)) =
                     spec.inputs.iter().enumerate().find(|(index, input)| {
                         !shared_input_indexes[*index]
                             && input.port == output.port
                             && input.baud_rate == output.baud_rate
-                    }) {
+                    })
+                {
                     let (monitor, writer) = open_monitor_and_writer(
                         &SerialConfig {
                             port: output.port.clone(),
@@ -177,14 +199,22 @@ impl SessionRuntime {
                     .map_err(|error| error.to_string())?;
                     input_monitors.push(monitor);
                     shared_input_indexes[input_index] = true;
-                    writer
+                    (
+                        format!("baud={} format={formats}", output.baud_rate),
+                        OutputConnection::Serial(writer),
+                    )
                 } else {
-                    SerialWriter::open(&SerialConfig {
-                        port: output.port.clone(),
-                        baud_rate: output.baud_rate,
-                        xbee_s3b_recovery: spec.xbee_s3b_recovery,
-                    })
-                    .map_err(|error| error.to_string())?
+                    (
+                        format!("baud={} format={formats}", output.baud_rate),
+                        OutputConnection::Serial(
+                            SerialWriter::open(&SerialConfig {
+                                port: output.port.clone(),
+                                baud_rate: output.baud_rate,
+                                xbee_s3b_recovery: spec.xbee_s3b_recovery,
+                            })
+                            .map_err(|error| error.to_string())?,
+                        ),
+                    )
                 };
                 connections.insert(
                     connection_key.clone(),
@@ -367,7 +397,25 @@ impl SessionRuntime {
     }
 
     pub(crate) fn write_output(&mut self, output_id: &str, bytes: &[u8]) -> Result<(), String> {
-        let (port, connection_key, display_mode, format_name) = self
+        self.write_output_as(output_id, bytes, None)
+    }
+
+    pub(crate) fn write_output_with_format(
+        &mut self,
+        output_id: &str,
+        bytes: &[u8],
+        format_name: &str,
+    ) -> Result<(), String> {
+        self.write_output_as(output_id, bytes, Some(format_name))
+    }
+
+    fn write_output_as(
+        &mut self,
+        output_id: &str,
+        bytes: &[u8],
+        format_name: Option<&str>,
+    ) -> Result<(), String> {
+        let (port, connection_key, display_mode, configured_format_name) = self
             .outputs
             .get_mut(output_id)
             .map(|output| {
@@ -397,10 +445,10 @@ impl SessionRuntime {
             .get_mut(&connection_key)
             .ok_or_else(|| format!("missing output connection for `{output_id}`"))?
             .connection
-            .write_bytes(bytes)
-            .map_err(|error| error.to_string())?;
+            .write_bytes(bytes)?;
         if !self.manual_output_recording.contains(output_id) {
-            let pretty_format_name = pretty_format_name(&format_name);
+            let pretty_format_name =
+                pretty_format_name(format_name.unwrap_or(&configured_format_name));
             self.dashboard
                 .record_output_with_options(&port, bytes, Some(display_mode), false)?;
             self.dashboard
