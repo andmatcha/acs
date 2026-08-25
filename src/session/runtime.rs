@@ -397,7 +397,25 @@ impl SessionRuntime {
     }
 
     pub(crate) fn write_output(&mut self, output_id: &str, bytes: &[u8]) -> Result<(), String> {
-        let (port, connection_key, display_mode, format_name) = self
+        self.write_output_as(output_id, bytes, None)
+    }
+
+    pub(crate) fn write_output_with_format(
+        &mut self,
+        output_id: &str,
+        bytes: &[u8],
+        format_name: &str,
+    ) -> Result<(), String> {
+        self.write_output_as(output_id, bytes, Some(format_name))
+    }
+
+    fn write_output_as(
+        &mut self,
+        output_id: &str,
+        bytes: &[u8],
+        format_name: Option<&str>,
+    ) -> Result<(), String> {
+        let (port, connection_key, display_mode, configured_format_name) = self
             .outputs
             .get_mut(output_id)
             .map(|output| {
@@ -429,7 +447,8 @@ impl SessionRuntime {
             .connection
             .write_bytes(bytes)?;
         if !self.manual_output_recording.contains(output_id) {
-            let pretty_format_name = pretty_format_name(&format_name);
+            let pretty_format_name =
+                pretty_format_name(format_name.unwrap_or(&configured_format_name));
             self.dashboard
                 .record_output_with_options(&port, bytes, Some(display_mode), false)?;
             self.dashboard

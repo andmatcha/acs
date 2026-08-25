@@ -15,6 +15,7 @@ use crate::ingress::IngressFrame;
 use crate::input::ds4_hid::{Ds4Controller, Ds4DeviceInfo, list_devices};
 use crate::network::{UDP_TARGET_PREFIX, is_udp_target, udp_target_address};
 use crate::output::OutputFormat;
+use crate::output::formats::packetam::encode_packet_am;
 use crate::pipeline::{
     ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineEngine, PipelineSpec,
     RouterModuleConfig, TransformChainConfig, TransformModuleConfig,
@@ -37,6 +38,7 @@ const STATUS_INTERVAL: Duration = Duration::from_millis(200);
 const DISPLAY_FLUSH_SLICE: usize = 32;
 const DISPLAY_FLUSH_PACKET_BUDGET: usize = 256;
 const DEFAULT_GATEWAY_PORT: u16 = 5000;
+const ERC_ACTIVATION_DURATION: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default)]
 struct ControlCliOptions {
@@ -50,6 +52,7 @@ struct ControlCliOptions {
     log_dir: Option<PathBuf>,
     no_log: bool,
     s3b: bool,
+    erc_mode: bool,
 }
 
 #[derive(Debug, Default)]
@@ -64,6 +67,7 @@ struct ControlRuntimeOptions {
     log_dir: Option<PathBuf>,
     no_log: bool,
     s3b: bool,
+    erc_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +98,7 @@ struct ControlPromptCommand {
     log_dir: Option<PathBuf>,
     no_log: bool,
     s3b: bool,
+    erc_mode: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,6 +127,7 @@ impl ControlPromptCommand {
             log_dir: options.log_dir.clone(),
             no_log: options.no_log,
             s3b: options.s3b,
+            erc_mode: options.erc_mode,
         }
     }
 
@@ -200,7 +206,13 @@ impl ControlPromptCommand {
             args.push(monitor.to_owned());
         }
 
-        append_control_prompt_common_args(&mut args, self.log_dir.as_ref(), self.no_log, self.s3b);
+        append_control_prompt_common_args(
+            &mut args,
+            self.log_dir.as_ref(),
+            self.no_log,
+            self.s3b,
+            self.erc_mode,
+        );
         format_command_preview(&args)
     }
 }
@@ -225,6 +237,7 @@ struct ControlSettings {
     log_dir: PathBuf,
     logging_enabled: bool,
     s3b: bool,
+    erc_mode: bool,
     executed_command: Option<String>,
 }
 
@@ -232,6 +245,62 @@ struct ControlRunResult {
     logging_enabled: bool,
     log_path: PathBuf,
     executed_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ErcActivationPhase {
+    Inactive,
+    Active,
+    Completed,
+}
+
+#[derive(Debug)]
+struct ErcModeState {
+    enabled: bool,
+    activation_deadline: Option<Instant>,
+    previous_ac_enabled: bool,
+}
+
+impl ErcModeState {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            activation_deadline: None,
+            previous_ac_enabled: false,
+        }
+    }
+
+    fn activation_phase(&mut self, now: Instant) -> ErcActivationPhase {
+        let Some(deadline) = self.activation_deadline else {
+            return ErcActivationPhase::Inactive;
+        };
+        if now < deadline {
+            return ErcActivationPhase::Active;
+        }
+
+        self.activation_deadline = None;
+        ErcActivationPhase::Completed
+    }
+
+    fn observe_packet_ac_v6(&mut self, packet: &[u8], now: Instant) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let Some(ac_enabled) = packet_ac_v6_enabled(packet) else {
+            return false;
+        };
+        let activation_started = ac_enabled && !self.previous_ac_enabled;
+        self.previous_ac_enabled = ac_enabled;
+        if activation_started {
+            self.activation_deadline = now.checked_add(ERC_ACTIVATION_DURATION);
+        }
+        activation_started
+    }
+}
+
+fn packet_ac_v6_enabled(packet: &[u8]) -> Option<bool> {
+    (packet.len() == OutputFormat::PacketAcV6.packet_len() && packet.starts_with(b"AC"))
+        .then(|| packet[3] & 0x01 != 0)
 }
 
 #[derive(Debug, Clone)]
@@ -306,10 +375,11 @@ impl ControlRuntimeState {
                 controller_info.path
             ),
             output_line: format!(
-                "output: {}, format={}, tx_target={} Hz",
+                "output: {}, format={}, tx_target={} Hz{}",
                 format_control_output_description(&settings.output),
                 settings.format.as_str(),
-                settings.rate_hz
+                settings.rate_hz,
+                if settings.erc_mode { ", ERC mode" } else { "" }
             ),
             monitors: settings.header_monitors.clone(),
             observed_inputs,
@@ -478,6 +548,7 @@ fn build_control_executed_command(
     log_dir: Option<&PathBuf>,
     no_log: bool,
     s3b: bool,
+    erc_mode: bool,
 ) -> String {
     let mut args = vec![String::from("acs"), String::from("control")];
 
@@ -515,6 +586,9 @@ fn build_control_executed_command(
     }
     if s3b {
         args.push(String::from("--s3b"));
+    }
+    if erc_mode {
+        args.push(String::from("--erc"));
     }
 
     args.iter()
@@ -630,6 +704,7 @@ fn append_control_prompt_common_args(
     log_dir: Option<&PathBuf>,
     no_log: bool,
     s3b: bool,
+    erc_mode: bool,
 ) {
     if let Some(log_dir) = log_dir {
         args.push(String::from("--log-dir"));
@@ -640,6 +715,9 @@ fn append_control_prompt_common_args(
     }
     if s3b {
         args.push(String::from("--s3b"));
+    }
+    if erc_mode {
+        args.push(String::from("--erc"));
     }
 }
 
@@ -725,6 +803,7 @@ fn run_with_options(cli_options: ControlRuntimeOptions) -> Result<ControlRunResu
     let send_period = Duration::from_secs_f64(1.0 / settings.rate_hz as f64);
     let mut next_send_at = started_at;
     let mut latest_controller_report = None::<Vec<u8>>;
+    let mut erc_mode = ErcModeState::new(settings.erc_mode);
     session.run_loop_with_tick(
         SEND_LOOP_INTERVAL,
         signal::is_stop_requested,
@@ -746,7 +825,14 @@ fn run_with_options(cli_options: ControlRuntimeOptions) -> Result<ControlRunResu
             if now >= next_send_at {
                 realign_control_send_schedule(&mut next_send_at, send_period, now);
                 if let Some(report) = latest_controller_report.as_ref() {
-                    dispatch_control_report(&mut engine, session, &controller_input_id, report)?;
+                    dispatch_control_report(
+                        &mut engine,
+                        session,
+                        &controller_input_id,
+                        report,
+                        &mut erc_mode,
+                        now,
+                    )?;
                 }
                 next_send_at += send_period;
             }
@@ -767,7 +853,17 @@ fn dispatch_control_report(
     session: &mut SessionRuntime,
     controller_input_id: &str,
     report: &[u8],
+    erc_mode: &mut ErcModeState,
+    now: Instant,
 ) -> Result<(), String> {
+    match erc_mode.activation_phase(now) {
+        ErcActivationPhase::Active => return dispatch_packet_am(session, "main"),
+        ErcActivationPhase::Completed => {
+            session.set_status("ERC mode: 5秒間の待機を完了し、PacketACv6送信を再開");
+        }
+        ErcActivationPhase::Inactive => {}
+    }
+
     let frame = IngressFrame {
         input_id: controller_input_id.to_owned(),
         bytes: report.to_vec(),
@@ -776,13 +872,13 @@ fn dispatch_control_report(
     match engine.process_frame(&frame) {
         Ok(dispatches) => {
             for dispatch in dispatches {
-                match session.write_output(&dispatch.output_id, &dispatch.bytes) {
-                    Ok(()) => {
-                        session.clear_output_error(&dispatch.output_id)?;
-                    }
-                    Err(error) => {
-                        session.set_output_error(&dispatch.output_id, &error)?;
-                    }
+                let activation_started = erc_mode.observe_packet_ac_v6(&dispatch.bytes, now);
+                if activation_started {
+                    session.set_status("ERC mode: PacketACv6を停止し、PacketAMを5秒間送信");
+                    dispatch_packet_am(session, &dispatch.output_id)?;
+                } else {
+                    let result = session.write_output(&dispatch.output_id, &dispatch.bytes);
+                    handle_control_write_result(session, &dispatch.output_id, result)?;
                 }
             }
         }
@@ -793,6 +889,23 @@ fn dispatch_control_report(
     }
 
     Ok(())
+}
+
+fn dispatch_packet_am(session: &mut SessionRuntime, output_id: &str) -> Result<(), String> {
+    let packet = encode_packet_am();
+    let result = session.write_output_with_format(output_id, &packet, "PacketAM");
+    handle_control_write_result(session, output_id, result)
+}
+
+fn handle_control_write_result(
+    session: &mut SessionRuntime,
+    output_id: &str,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    match result {
+        Ok(()) => session.clear_output_error(output_id),
+        Err(error) => session.set_output_error(output_id, &error),
+    }
 }
 
 fn realign_control_send_schedule(next_send_at: &mut Instant, period: Duration, now: Instant) {
@@ -850,6 +963,7 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
     let requested_controller = cli_options.controller;
     let format =
         resolve_control_output_format(cli_options.format.as_deref(), gateway_target.is_some())?;
+    validate_erc_mode(cli_options.erc_mode, format)?;
     let rate_hz = cli_options
         .rate_hz
         .unwrap_or_else(|| default_control_rate_hz(format));
@@ -1046,6 +1160,7 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
             explicit_log_dir.as_ref(),
             cli_options.no_log,
             cli_options.s3b,
+            cli_options.erc_mode,
         )
     })?;
     let executed_command = Some(build_control_executed_command(
@@ -1057,6 +1172,7 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
         explicit_log_dir.as_ref(),
         cli_options.no_log,
         cli_options.s3b,
+        cli_options.erc_mode,
     ));
 
     Ok(ControlSettings {
@@ -1070,8 +1186,19 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
         log_dir,
         logging_enabled: !cli_options.no_log,
         s3b: cli_options.s3b,
+        erc_mode: cli_options.erc_mode,
         executed_command,
     })
+}
+
+fn validate_erc_mode(enabled: bool, format: OutputFormat) -> Result<(), String> {
+    if enabled && format != OutputFormat::PacketAcV6 {
+        return Err(format!(
+            "ERC mode is only available with PacketACv6 output (got {})",
+            format.display_name()
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_gateway_target(value: &str) -> Result<Option<String>, String> {
@@ -1193,6 +1320,7 @@ fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
             }
             "--no-log" => options.no_log = true,
             "--s3b" => options.s3b = true,
+            "--erc" | "--erc-mode" => options.erc_mode = true,
             other => return Err(format!("unknown option for control: {other}")),
         }
     }
@@ -1227,6 +1355,7 @@ fn resolve_control_options(
         log_dir: cli_options.log_dir,
         no_log: cli_options.no_log,
         s3b: cli_options.s3b,
+        erc_mode: cli_options.erc_mode,
         ..ControlRuntimeOptions::default()
     };
     let mut prompt_command = ControlPromptCommand::new(&runtime_options);
@@ -1516,14 +1645,16 @@ fn apply_control_config_args(options: &mut ControlCliOptions, value: &str) -> Re
 mod tests {
     use super::{
         ControlFormatArg, ControlMonitorArg, ControlPortArg, ControlPromptCandidate,
-        ControlPromptCommand, ControlRuntimeOptions, build_control_pipeline_spec,
-        default_control_rate_hz, normalize_gateway_target, parse_control_args,
-        parse_control_monitor_binding, resolve_control_output_format,
+        ControlPromptCommand, ControlRuntimeOptions, ERC_ACTIVATION_DURATION, ErcActivationPhase,
+        ErcModeState, build_control_pipeline_spec, default_control_rate_hz,
+        normalize_gateway_target, parse_control_args, parse_control_monitor_binding,
+        resolve_control_output_format, validate_erc_mode,
     };
     use crate::output::OutputFormat;
     use crate::pipeline::PipelineEngine;
     use crate::port_display::{LineBreakMode, PortDisplayMode};
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn parse_control_args_accepts_config_and_no_log() {
@@ -1682,6 +1813,71 @@ mod tests {
     }
 
     #[test]
+    fn parse_control_args_accepts_erc_mode_aliases() {
+        for option in ["--erc", "--erc-mode"] {
+            let options = parse_control_args(vec![String::from(option)]).expect("should parse");
+
+            assert!(options.erc_mode);
+        }
+    }
+
+    #[test]
+    fn erc_mode_only_accepts_packetacv6() {
+        validate_erc_mode(true, OutputFormat::PacketAcV6).expect("PacketACv6 should be accepted");
+        let error = validate_erc_mode(true, OutputFormat::PacketMv1).unwrap_err();
+
+        assert!(error.contains("only available with PacketACv6"));
+        validate_erc_mode(false, OutputFormat::PacketMv1)
+            .expect("disabled ERC mode should not restrict formats");
+    }
+
+    #[test]
+    fn erc_mode_sends_activation_for_exactly_five_seconds_on_enable() {
+        let started_at = Instant::now();
+        let mut state = ErcModeState::new(true);
+        let mut disabled_packet = [0u8; 39];
+        disabled_packet[..2].copy_from_slice(b"AC");
+        disabled_packet[3] = 0x10;
+        let mut enabled_packet = disabled_packet;
+        enabled_packet[3] = 0x11;
+
+        assert!(!state.observe_packet_ac_v6(&disabled_packet, started_at));
+        assert!(state.observe_packet_ac_v6(&enabled_packet, started_at));
+        assert_eq!(
+            state.activation_phase(started_at + ERC_ACTIVATION_DURATION - Duration::from_nanos(1)),
+            ErcActivationPhase::Active
+        );
+        assert_eq!(
+            state.activation_phase(started_at + ERC_ACTIVATION_DURATION),
+            ErcActivationPhase::Completed
+        );
+        assert_eq!(
+            state.activation_phase(started_at + ERC_ACTIVATION_DURATION),
+            ErcActivationPhase::Inactive
+        );
+        assert!(!state.observe_packet_ac_v6(&enabled_packet, started_at + ERC_ACTIVATION_DURATION));
+    }
+
+    #[test]
+    fn erc_mode_starts_again_after_disable_and_next_enable() {
+        let started_at = Instant::now();
+        let mut state = ErcModeState::new(true);
+        let mut packet = [0u8; 39];
+        packet[..2].copy_from_slice(b"AC");
+        packet[3] = 0x11;
+
+        assert!(state.observe_packet_ac_v6(&packet, started_at));
+        assert_eq!(
+            state.activation_phase(started_at + ERC_ACTIVATION_DURATION),
+            ErcActivationPhase::Completed
+        );
+        packet[3] = 0x10;
+        assert!(!state.observe_packet_ac_v6(&packet, started_at + ERC_ACTIVATION_DURATION));
+        packet[3] = 0x11;
+        assert!(state.observe_packet_ac_v6(&packet, started_at + ERC_ACTIVATION_DURATION));
+    }
+
+    #[test]
     fn default_control_rates_match_formats() {
         assert_eq!(default_control_rate_hz(OutputFormat::PacketAcV6), 100);
         assert_eq!(default_control_rate_hz(OutputFormat::PacketMv1), 100);
@@ -1695,6 +1891,7 @@ mod tests {
             log_dir: Some(PathBuf::from("tmp/control logs")),
             no_log: true,
             s3b: true,
+            erc_mode: true,
             ..ControlRuntimeOptions::default()
         };
         let mut command = ControlPromptCommand::new(&options);
@@ -1705,7 +1902,7 @@ mod tests {
             command.render(Some(ControlPromptCandidate::Monitor(
                 "/dev/ttyUSB1@115200,utf8+packet,packetjfv1"
             ))),
-            "acs control -p /dev/ttyUSB0@921600,hex --format packetacv6 --controller 0 -m /dev/ttyUSB1@115200,utf8+packet,packetjfv1 --log-dir 'tmp/control logs' --no-log --s3b"
+            "acs control -p /dev/ttyUSB0@921600,hex --format packetacv6 --controller 0 -m /dev/ttyUSB1@115200,utf8+packet,packetjfv1 --log-dir 'tmp/control logs' --no-log --s3b --erc"
         );
     }
 
