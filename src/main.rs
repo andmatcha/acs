@@ -2,6 +2,7 @@ mod app;
 mod common;
 mod ingress;
 mod input;
+mod network;
 mod output;
 mod pipeline;
 mod port_display;

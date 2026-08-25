@@ -13,6 +13,7 @@ use super::io::{
 use super::signal;
 use crate::ingress::IngressFrame;
 use crate::input::ds4_hid::{Ds4Controller, Ds4DeviceInfo, list_devices};
+use crate::network::{UDP_TARGET_PREFIX, is_udp_target, udp_target_address};
 use crate::output::OutputFormat;
 use crate::pipeline::{
     ClassifyModuleConfig, FilterModuleConfig, PipelineDefinition, PipelineEngine, PipelineSpec,
@@ -25,6 +26,7 @@ use crate::serial;
 use crate::session::runtime::{SessionInputSpec, SessionOutputSpec, SessionRuntime, SessionSpec};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -34,6 +36,7 @@ const CONTROLLER_POLL_MILLIS: i32 = 0;
 const STATUS_INTERVAL: Duration = Duration::from_millis(200);
 const DISPLAY_FLUSH_SLICE: usize = 32;
 const DISPLAY_FLUSH_PACKET_BUDGET: usize = 256;
+const DEFAULT_GATEWAY_PORT: u16 = 5000;
 
 #[derive(Debug, Default)]
 struct ControlCliOptions {
@@ -303,9 +306,8 @@ impl ControlRuntimeState {
                 controller_info.path
             ),
             output_line: format!(
-                "output: {} @ {} baud, format={}, tx_target={} Hz",
-                settings.output.port,
-                settings.output.baud_rate,
+                "output: {}, format={}, tx_target={} Hz",
+                format_control_output_description(&settings.output),
                 settings.format.as_str(),
                 settings.rate_hz
             ),
@@ -480,11 +482,7 @@ fn build_control_executed_command(
     let mut args = vec![String::from("acs"), String::from("control")];
 
     args.push(String::from("-p"));
-    args.push(format_control_port_binding(
-        &output.port,
-        output.baud_rate,
-        Some(output.display_mode),
-    ));
+    args.push(format_control_output_binding(output));
     args.push(String::from("--format"));
     args.push(format.as_str().to_owned());
     args.push(String::from("--rate"));
@@ -523,6 +521,24 @@ fn build_control_executed_command(
         .map(|arg| shell_quote_arg(arg))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn format_control_output_binding(output: &SessionOutputSpec) -> String {
+    if let Some(destination) = udp_target_address(&output.port) {
+        return format_prompt_control_port_binding(
+            destination,
+            None,
+            Some(super::io::display_mode_value(output.display_mode)),
+        );
+    }
+    format_control_port_binding(&output.port, output.baud_rate, Some(output.display_mode))
+}
+
+fn format_control_output_description(output: &SessionOutputSpec) -> String {
+    match udp_target_address(&output.port) {
+        Some(destination) => format!("{destination} (IP gateway)"),
+        None => format!("{} @ {} baud", output.port, output.baud_rate),
+    }
 }
 
 fn format_control_port_binding(
@@ -825,12 +841,15 @@ fn control_transform_modules(format: OutputFormat) -> Vec<TransformModuleConfig>
 
 fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings, String> {
     let selected_port = cli_options.port.and_then(PortSpec::normalized);
+    let gateway_target = selected_port
+        .as_ref()
+        .map(|port_spec| normalize_gateway_target(&port_spec.port))
+        .transpose()?
+        .flatten();
     let default_baud = cli_options.baud.unwrap_or_else(default_baud_rate);
     let requested_controller = cli_options.controller;
-    let format_name = cli_options
-        .format
-        .unwrap_or_else(|| String::from("packetacv6"));
-    let format = OutputFormat::parse(&format_name)?;
+    let format =
+        resolve_control_output_format(cli_options.format.as_deref(), gateway_target.is_some())?;
     let rate_hz = cli_options
         .rate_hz
         .unwrap_or_else(|| default_control_rate_hz(format));
@@ -839,16 +858,37 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
     }
     let display = cli_options.display;
     let monitor_port_specs = cli_options.monitor_ports;
-    let port = match &selected_port {
-        Some(port_spec) => {
+    if gateway_target.is_some()
+        && (selected_port
+            .as_ref()
+            .and_then(|port_spec| port_spec.baud)
+            .is_some()
+            || cli_options.baud.is_some())
+    {
+        return Err(String::from(
+            "IP gateway output does not use a baud rate; remove `@BAUD` or `--baud`",
+        ));
+    }
+    if gateway_target.is_some() && cli_options.s3b {
+        return Err(String::from(
+            "`--s3b` is only available for a directly connected serial output",
+        ));
+    }
+    let port = match (&selected_port, gateway_target) {
+        (_, Some(target)) => target,
+        (Some(port_spec), None) => {
             serial::resolve_port(Some(&port_spec.port)).map_err(|error| error.to_string())?
         }
-        None => serial::resolve_port(None).map_err(|error| error.to_string())?,
+        (None, None) => serial::resolve_port(None).map_err(|error| error.to_string())?,
     };
-    let output_baud = selected_port
-        .as_ref()
-        .and_then(|port_spec| port_spec.baud)
-        .unwrap_or(default_baud);
+    let output_baud = if is_udp_target(&port) {
+        0
+    } else {
+        selected_port
+            .as_ref()
+            .and_then(|port_spec| port_spec.baud)
+            .unwrap_or(default_baud)
+    };
     let output_display_mode = selected_port
         .as_ref()
         .and_then(|port_spec| port_spec.display_mode)
@@ -1032,6 +1072,64 @@ fn build_settings(cli_options: ControlRuntimeOptions) -> Result<ControlSettings,
         s3b: cli_options.s3b,
         executed_command,
     })
+}
+
+fn normalize_gateway_target(value: &str) -> Result<Option<String>, String> {
+    let (address, explicit_udp) = match value.strip_prefix(UDP_TARGET_PREFIX) {
+        Some(address) => (address, true),
+        None => (value, false),
+    };
+    let address = address.trim();
+    if explicit_udp && address.is_empty() {
+        return Err(String::from("IP gateway target must not be empty"));
+    }
+
+    if let Ok(socket_address) = address.parse::<SocketAddr>() {
+        return Ok(Some(format!("{UDP_TARGET_PREFIX}{socket_address}")));
+    }
+    if let Ok(ip_address) = address.parse::<IpAddr>() {
+        let socket_address = SocketAddr::new(ip_address, DEFAULT_GATEWAY_PORT);
+        return Ok(Some(format!("{UDP_TARGET_PREFIX}{socket_address}")));
+    }
+
+    if !address.contains('/') {
+        if let Some((host, port)) = address.rsplit_once(':')
+            && !host.is_empty()
+            && port.parse::<u16>().is_ok()
+        {
+            return Ok(Some(format!("{UDP_TARGET_PREFIX}{address}")));
+        }
+        if explicit_udp || address == "localhost" || address.contains('.') {
+            return Ok(Some(format!(
+                "{UDP_TARGET_PREFIX}{address}:{DEFAULT_GATEWAY_PORT}"
+            )));
+        }
+    }
+
+    if explicit_udp {
+        return Err(format!(
+            "invalid IP gateway target `{value}`; expected {UDP_TARGET_PREFIX}HOST[:PORT]"
+        ));
+    }
+    Ok(None)
+}
+
+fn resolve_control_output_format(
+    requested_format: Option<&str>,
+    is_gateway: bool,
+) -> Result<OutputFormat, String> {
+    let format = OutputFormat::parse(requested_format.unwrap_or(if is_gateway {
+        "packetmv1"
+    } else {
+        "packetacv6"
+    }))?;
+    if is_gateway && !matches!(format, OutputFormat::PacketAcV6 | OutputFormat::PacketMv1) {
+        return Err(format!(
+            "UDP control output supports PacketACv6 and PacketMv1 (got {})",
+            format.as_str()
+        ));
+    }
+    Ok(format)
 }
 
 fn parse_control_args(args: Vec<String>) -> Result<ControlCliOptions, String> {
@@ -1423,7 +1521,8 @@ mod tests {
     use super::{
         ControlFormatArg, ControlMonitorArg, ControlPortArg, ControlPromptCandidate,
         ControlPromptCommand, ControlRuntimeOptions, build_control_pipeline_spec,
-        default_control_rate_hz, parse_control_args, parse_control_monitor_binding,
+        default_control_rate_hz, normalize_gateway_target, parse_control_args,
+        parse_control_monitor_binding, resolve_control_output_format,
     };
     use crate::output::OutputFormat;
     use crate::pipeline::PipelineEngine;
@@ -1516,6 +1615,66 @@ mod tests {
             options.format,
             Some(ControlFormatArg::Provided(String::from("PacketMv1")))
         );
+    }
+
+    #[test]
+    fn gateway_target_uses_default_port_for_ip_address() {
+        assert_eq!(
+            normalize_gateway_target("192.168.1.50").unwrap().as_deref(),
+            Some("udp://192.168.1.50:5000")
+        );
+        assert_eq!(
+            normalize_gateway_target("2001:db8::5").unwrap().as_deref(),
+            Some("udp://[2001:db8::5]:5000")
+        );
+    }
+
+    #[test]
+    fn gateway_target_accepts_hostname_and_custom_port() {
+        assert_eq!(
+            normalize_gateway_target("ares9-pi.local:6000")
+                .unwrap()
+                .as_deref(),
+            Some("udp://ares9-pi.local:6000")
+        );
+        assert_eq!(
+            normalize_gateway_target("udp://ares9-pi")
+                .unwrap()
+                .as_deref(),
+            Some("udp://ares9-pi:5000")
+        );
+    }
+
+    #[test]
+    fn gateway_target_does_not_change_serial_ports() {
+        assert_eq!(normalize_gateway_target("/dev/ttyUSB0").unwrap(), None);
+        assert_eq!(normalize_gateway_target("0").unwrap(), None);
+    }
+
+    #[test]
+    fn gateway_target_selects_packetmv1_without_format_option() {
+        assert_eq!(
+            resolve_control_output_format(None, true).unwrap(),
+            OutputFormat::PacketMv1
+        );
+        assert_eq!(
+            resolve_control_output_format(None, false).unwrap(),
+            OutputFormat::PacketAcV6
+        );
+    }
+
+    #[test]
+    fn gateway_target_accepts_packetacv6_format() {
+        assert_eq!(
+            resolve_control_output_format(Some("packetacv6"), true).unwrap(),
+            OutputFormat::PacketAcV6
+        );
+    }
+
+    #[test]
+    fn gateway_target_rejects_unsupported_udp_control_format() {
+        let error = resolve_control_output_format(Some("packetgcv1"), true).unwrap_err();
+        assert!(error.contains("supports PacketACv6 and PacketMv1"));
     }
 
     #[test]

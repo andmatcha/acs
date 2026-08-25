@@ -75,6 +75,17 @@ impl SessionDashboard {
         self.dashboard.set_output_display_mode(port, display_mode);
     }
 
+    pub(crate) fn configure_udp_output(
+        &mut self,
+        target: &str,
+        destination: &str,
+        display_mode: PortDisplayMode,
+    ) {
+        self.dashboard
+            .set_output_status(target, format!("udp destination={destination}"));
+        self.dashboard.set_output_display_mode(target, display_mode);
+    }
+
     pub(crate) fn set_output_known_formats(&mut self, port: &str, formats: Vec<String>) {
         self.dashboard.set_output_known_formats(port, formats);
     }
