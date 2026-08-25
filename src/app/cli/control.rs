@@ -1118,11 +1118,7 @@ fn resolve_control_output_format(
     requested_format: Option<&str>,
     is_gateway: bool,
 ) -> Result<OutputFormat, String> {
-    let format = OutputFormat::parse(requested_format.unwrap_or(if is_gateway {
-        "packetmv1"
-    } else {
-        "packetacv6"
-    }))?;
+    let format = OutputFormat::parse(requested_format.unwrap_or("packetacv6"))?;
     if is_gateway && !matches!(format, OutputFormat::PacketAcV6 | OutputFormat::PacketMv1) {
         return Err(format!(
             "UDP control output supports PacketACv6 and PacketMv1 (got {})",
@@ -1652,10 +1648,10 @@ mod tests {
     }
 
     #[test]
-    fn gateway_target_selects_packetmv1_without_format_option() {
+    fn control_selects_packetacv6_without_format_option() {
         assert_eq!(
             resolve_control_output_format(None, true).unwrap(),
-            OutputFormat::PacketMv1
+            OutputFormat::PacketAcV6
         );
         assert_eq!(
             resolve_control_output_format(None, false).unwrap(),

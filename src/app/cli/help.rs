@@ -185,7 +185,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
         "                              USBのBAUD省略時は115200、IP gatewayのport省略時は5000です"
     );
     println!(
-        "                              UDP出力はPacketACv6/PacketMv1対応。既定はPacketMv1で、BAUD指定は不要です"
+        "                              UDP出力はPacketACv6/PacketMv1対応。既定はPacketACv6で、BAUD指定は不要です"
     );
     println!("                              省略すると対話式に選択します");
     println!("  -f, --format <FORMAT>      送信フォーマット。値を省略すると対話式に選択");
@@ -231,7 +231,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6,RATE=100");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketMv1,RATE=100");
     println!("  {bin_name} control --port 192.168.1.50");
-    println!("  {bin_name} control --port 192.168.1.50 --format packetacv6");
+    println!("  {bin_name} control --port 192.168.1.50 --format packetmv1");
     println!("  {bin_name} control --port ares9-pi.local:5000");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketGCv1,RATE=20");
     println!(

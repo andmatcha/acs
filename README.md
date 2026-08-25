@@ -127,7 +127,7 @@ acs controllers
 acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketACv6,RATE=100
 acs control --port /dev/ttyUSB0@921600 --config FORMAT=PacketMv1,RATE=100
 acs control --port 192.168.1.50
-acs control --port 192.168.1.50 --format packetacv6
+acs control --port 192.168.1.50 --format packetmv1
 acs control --port /dev/ttyUSB0@115200 --config FORMAT=PacketGCv1,RATE=20
 acs route merge -i in_a=/dev/ttyUSB0@921600 -o out_main=/dev/ttyUSB1@921600 --no-log
 acs io -i /dev/ttyUSB1@115200,utf8,packetjfv1 -o ac=/dev/ttyUSB0@921600,hex,packetacv6,10
@@ -149,7 +149,7 @@ acs --version
 acs update list
 ```
 
-ARES 9のRaspberry Pi 5で`ares9_ip_can_gateway`を動かしている場合は、USBポートの代わりにPiのLAN IP、Tailscale IP、または`ホスト名:ポート`を`--port`へ指定できます。IPだけを指定した場合はUDP port 5000を使い、送信形式は`PacketMv1`、送信レートは100 Hzが自動選択されます。
+ARES 9のRaspberry Pi 5で`ares9_ip_can_gateway`を動かしている場合は、USBポートの代わりにPiのLAN IP、Tailscale IP、または`ホスト名:ポート`を`--port`へ指定できます。IPだけを指定した場合はUDP port 5000を使い、送信形式は`PacketACv6`、送信レートは100 Hzが自動選択されます。
 
 ```sh
 acs control --port 192.168.1.50
@@ -157,15 +157,15 @@ acs control --port 100.64.0.20
 acs control --port ares9-pi.local:5000
 ```
 
-この場合、`@BAUD`と`--baud`は不要です。UDP出力では`PacketMv1`に加えて`PacketACv6`を明示選択でき、どちらも1 packetを1 UDP datagramとして送信します。
+この場合、`@BAUD`と`--baud`は不要です。UDP出力では既定の`PacketACv6`に加えて`PacketMv1`を明示選択でき、どちらも1 packetを1 UDP datagramとして送信します。
 
 ```sh
-acs control --port 192.168.1.50 --format packetacv6
+acs control --port 192.168.1.50 --format packetmv1
 # --configを使う既存形式も利用可能
 acs control --port 192.168.1.50 --config FORMAT=PacketACv6,RATE=100
 ```
 
-`PacketACv6`は39 byte、`PacketMv1`は19 byteです。現行の`ares9_ip_can_gateway`の`packet-m-v1-to-serial` routeは19 byteの`PacketMv1`専用なので、同routeへ送る場合は既定の`PacketMv1`を使用してください。`PacketACv6`を選ぶ場合は、受信側も39 byteの`PacketACv6` datagramに対応している必要があります。USBシリアル宛ての従来のコマンドと対話操作はそのまま利用できます。
+`PacketACv6`は39 byte、`PacketMv1`は19 byteです。現行の`ares9_ip_can_gateway`の`packet-m-v1-to-serial` routeは19 byteの`PacketMv1`専用なので、同routeへ送る場合は`--format packetmv1`を指定してください。既定の`PacketACv6`を使用する場合は、受信側も39 byteの`PacketACv6` datagramに対応している必要があります。USBシリアル宛ての従来のコマンドと対話操作はそのまま利用できます。
 
 - 1 台だけコントローラーやシリアルポートが見つかる場合は、自動選択されます。
 - すべてのポート指定で、ボーレート省略時は `115200` が使われます。
