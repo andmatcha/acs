@@ -221,6 +221,11 @@ pub(crate) fn print_control_help(bin_name: &str) {
     );
     println!("      --no-log               ログファイル作成を無効化して最大スループットを優先");
     println!("      --s3b                  XBee Pro 900-HP (S3B) bootloader menu を事前復帰");
+    println!("      --erc                  European Rover Challenge Modeを有効化");
+    println!(
+        "                              PacketACv6のEnable押下後5秒間、ACを止めて4 byteのAMを同じレートで送信します"
+    );
+    println!("                              PacketACv6専用。`--erc-mode`も同じ意味です");
     println!(
         "                              互換性のため、値を取る旧形式フラグも引き続き利用可能です"
     );
@@ -231,6 +236,7 @@ pub(crate) fn print_control_help(bin_name: &str) {
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketACv6,RATE=100");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketMv1,RATE=100");
     println!("  {bin_name} control --port 192.168.1.50");
+    println!("  {bin_name} control --port 192.168.1.50 --erc");
     println!("  {bin_name} control --port 192.168.1.50 --format packetmv1");
     println!("  {bin_name} control --port ares9-pi.local:5000");
     println!("  {bin_name} control --port /dev/ttyUSB0 --config FORMAT=PacketGCv1,RATE=20");

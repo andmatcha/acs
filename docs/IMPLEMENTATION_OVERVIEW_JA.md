@@ -26,6 +26,7 @@
 - `pipeline` で `Ds4ToCompact -> OutputEncode(指定 FORMAT)` の変換を行います。
 - 結果をメイン出力ポートへ送信し、同時に出力ポート自身や追加 monitor ポートも監視できます。
 - `PacketACv6` エンコーダは enable 状態、シーケンス番号、操作プロファイルを内部状態として保持します。
+- `--erc`指定時はEnableの無効→有効遷移を検出し、5秒間パイプラインの更新とPacketACv6送信を止めてPacketAMへ差し替えます。
 - `FORMAT=PacketMv1` の場合は、同じ `PacketACv6` エンコーダ出力を `PacketMv1` へ削減して送信します。
 
 ### `monitor`
@@ -78,6 +79,7 @@
 
 - 出力形式名と実装の対応付け
 - `PacketACv6` の状態付きエンコード
+- ERCモード用`PacketAM`の生成
 - `PacketJFv1` のダミーフレーム生成
 - CRC16-CCITT-FALSE 計算
 
